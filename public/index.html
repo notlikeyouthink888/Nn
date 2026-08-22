@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Chess - Prototype</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Live Chess (prototype)</h1>
+    <div class="controls">
+      <button id="createBtn">Create Game</button>
+      <input id="gameInput" placeholder="Paste game id or open /game/<id>" />
+      <button id="joinBtn">Join Game</button>
+      <div id="linkArea"></div>
+    </div>
+
+    <div class="board-and-info">
+      <div id="board" style="width: 480px"></div>
+      <div class="info">
+        <div id="status">Not connected</div>
+        <div id="turn"></div>
+        <pre id="pgn"></pre>
+      </div>
+    </div>
+
+    <div class="notes">
+      <p>Share the URL /game/&lt;id&gt; with another player to play live. Server validates moves.</p>
+    </div>
+  </div>
+
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/1.0.0/chess.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let board = null;
+    let game = null; // client-side chess.js for fast UI updates
+    let currentGameId = null;
+    let myColor = null;
+
+    function setStatus(text){ document.getElementById('status').innerText = text; }
+    function setPGN(p){ document.getElementById('pgn').innerText = p; }
+
+    const cfg = {
+      draggable: true,
+      position: 'start',
+      onDrop: (source, target) => {
+        // try local move to give instant feedback, but server will confirm
+        const move = { from: source, to: target };
+        const legal = game.move(move);
+        if (legal) {
+          board.position(game.fen());
+          // send to server
+          socket.emit('makeMove', { id: currentGameId, from: source, to: target }, (res) => {
+            if (!res.ok) {
+              // revert
+              game.undo();
+              board.position(game.fen());
+              alert('Move rejected by server: ' + (res.error || 'unknown'));
+            } else {
+              setPGN(res.pgn);
+            }
+          });
+        } else {
+          return 'snapback';
+        }
+      }
+    };
+
+    board = Chessboard('board', cfg);
+    game = new Chess();
+
+    document.getElementById('createBtn').addEventListener('click', () => {
+      socket.emit('createGame', (res) => {
+        if (res.ok) {
+          currentGameId = res.id;
+          myColor = res.color;
+          board.start();
+          game.reset();
+          setStatus('Created. Share: ' + location.origin + res.url);
+          document.getElementById('linkArea').innerText = location.origin + res.url;
+          history.replaceState(null, '', '/game/' + res.id);
+        } else {
+          setStatus('Create failed');
+        }
+      });
+    });
+
+    document.getElementById('joinBtn').addEventListener('click', () => {
+      const id = document.getElementById('gameInput').value.trim();
+      if (!id) return alert('Enter game id');
+      joinById(id);
+    });
+
+    function joinById(id){
+      socket.emit('joinGame', id, (res) => {
+        if (!res.ok) return alert(res.error || 'join failed');
+        currentGameId = id;
+        myColor = res.color;
+        game = new Chess(res.fen);
+        board.position(res.fen);
+        setStatus('Joined as ' + myColor);
+        setPGN(res.pgn);
+        history.replaceState(null, '', '/game/' + id);
+      });
+    }
+
+    // if URL contains /game/<id>, auto-join
+    const m = location.pathname.match(/^\/game\/(.+)$/);
+    if (m) {
+      const id = m[1];
+      joinById(id);
+    }
+
+    socket.on('moveMade', (data) => {
+      // update client state
+      if (!data || !data.fen) return;
+      game = new Chess(data.fen);
+      board.position(data.fen);
+      setPGN(data.pgn || '');
+      setStatus('Last move: ' + (data.san || '') );
+    });
+
+    socket.on('presence', (p) => {
+      console.log('presence', p);
+    });
+  </script>
+</body>
+</html>

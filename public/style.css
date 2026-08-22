@@ -1,0 +1,6 @@
+body { font-family: Arial, Helvetica, sans-serif; margin: 24px; }
+.container { max-width: 1000px; margin: 0 auto; }
+.board-and-info { display: flex; gap: 16px; align-items: flex-start; }
+.info { width: 300px; }
+.controls { margin-bottom: 16px; }
+#linkArea { margin-top: 8px; color: #0066cc; }

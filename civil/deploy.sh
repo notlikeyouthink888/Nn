@@ -1,5 +1,10 @@
 set -e
-APP=/opt/civil5819 ; PORT=5819
+APP=/opt/civil5819
+UNIT=/etc/systemd/system/civil5819.service
+# احتفظ بالبورت المستعمل حالياً إن كانت الخدمة منصّبة من قبل
+PORT=$(grep -oP '(?<=^Environment=PORT=)\d+' "$UNIT" 2>/dev/null | head -1)
+PORT=${PORT:-5819}
+echo "==> [0/5] البورت المستعمل: $PORT"
 SRC="https://codeload.github.com/notlikeyouthink888/Nn/tar.gz/refs/heads/claude/civil-engineering-site-g9u9al"
 
 echo "==> [1/5] المتطلبات (python3 + curl)"
@@ -12,14 +17,14 @@ curl -fsSL "$SRC" | tar xz -C /tmp/civilsrc --strip-components=1
 cp -r /tmp/civilsrc/civil/. "$APP"/ && rm -rf /tmp/civilsrc
 
 echo "==> [3/5] إنشاء خدمة systemd على المنفذ $PORT"
-cat > /etc/systemd/system/civil5819.service <<'UNIT'
+cat > "$UNIT" <<UNIT
 [Unit]
 Description=Civil Engineering Platform (ACI 318-19 + Iraqi Code)
 After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/civil5819
-Environment=PORT=5819
+Environment=PORT=$PORT
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /opt/civil5819/app.py
 Restart=always

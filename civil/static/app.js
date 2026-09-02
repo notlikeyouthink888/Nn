@@ -684,9 +684,435 @@ function go(id) {
   try { p.init && p.init(); } catch (e) { console.error(e); }
   window.scrollTo(0, 0);
 }
+
+/* ======================= حزمة ما تحت الصفر (المرحلة ١) ==================== */
+let WZ = null, V3 = null;      // آخر نتيجة معالج + العارض
+
+function pickPanel(u) {
+  const p = document.getElementById('v3info');
+  if (!p) return;
+  if (!u || !u.title) { p.innerHTML = '<h4>اضغط على أي عنصر</h4><div style="color:var(--mut)">لعرض تفاصيله'
+    + ' — الطبقات والأسس والركائز والأعمدة</div>'; return; }
+  p.innerHTML = `<h4>${u.title}</h4><table><tbody>${(u.rows || []).map(r =>
+    `<tr><td style="color:var(--mut)">${r[0]}</td><td><b>${r[1]}</b></td></tr>`).join('')}</tbody></table>`;
+}
+function mount3D() {
+  const host = document.getElementById('v3d');
+  if (!host || !WZ) return;
+  V3 = Viewer3D(host, WZ, pickPanel);
+  pickPanel(null);
+  const sl = document.getElementById('v3clip');
+  if (sl && V3) { sl.min = -V3.R * 1.2; sl.max = V3.R * 1.2; sl.value = V3.R * 1.2;
+    sl.oninput = () => V3.clip(+sl.value); }
+}
+function sectionSVG2(ew) {
+  const st = ew.stack.slice().sort((a, b) => a.bottom - b.bottom);
+  const lo = Math.min(...st.map(s => s.bottom)), hi = Math.max(...st.map(s => s.top));
+  const W = 900, H = Math.max(300, 46 * st.length), ml = 210, mr = 200, mt = 24;
+  const Y = v => mt + (hi - v) / (hi - lo || 1) * (H - mt - 20);
+  let g = '';
+  st.forEach(s => {
+    const y1 = Y(s.top), y2 = Y(s.bottom);
+    g += `<rect x="${ml}" y="${y1}" width="${W - ml - mr}" height="${Math.max(2, y2 - y1)}"
+      fill="${s.color}" stroke="#0b1220" stroke-width="1"/>
+      <text x="${ml - 8}" y="${(y1 + y2) / 2 + 4}" fill="#e6edf7" font-size="11" text-anchor="end">${s.name}</text>
+      <text x="${W - mr + 8}" y="${(y1 + y2) / 2 + 4}" fill="#93a4c0" font-size="10.5">${s.t.toFixed(2)} م${
+        s.layers ? ' · ' + s.layers + ' طبقة' : ''} · ${s.volume.toFixed(1)} م³</text>`;
+  });
+  const mark = (v, t, c) => `<line x1="${ml - 60}" x2="${W - mr}" y1="${Y(v)}" y2="${Y(v)}" stroke="${c}"
+    stroke-dasharray="5 3"/><text x="${ml - 64}" y="${Y(v) - 3}" fill="${c}" font-size="10.5" text-anchor="end">${t} (${v >= 0 ? '+' : ''}${v.toFixed(2)})</text>`;
+  g += mark(ew.levels.bm, 'منسوب التشطيب BM', '#34d399');
+  g += mark(ew.levels.ground, 'الأرض الطبيعية', '#fbbf24');
+  if (Math.abs(ew.levels.existing - ew.levels.ground) > 0.01) g += mark(ew.levels.existing, 'قعر الهدم القديم', '#f87171');
+  g += mark(ew.levels.found_bot, 'قاعدة الأساس', '#38bdf8');
+  return `<svg viewBox="0 0 ${W} ${H}" class="sect">${g}</svg>`;
+}
+
+/* -------------------------------- المعالج -------------------------------- */
+PAGES.wizard = {
+  ic: '🪄', name: 'معالج المشروع', grp: 'المشروع',
+  ttl: 'معالج المشروع — من مساحة القطعة إلى حزمة الأساسات',
+  sub: 'اكتب المساحة وعدد الطوابق ونوع التربة — والباقي يُحسب تلقائياً',
+  desc: 'كل شي تلقائي من رقم واحد',
+  html: () => `<div class="steps"><div><b>١</b> القطعة والطوابق</div><div><b>٢</b> التربة والمناسيب</div>
+    <div><b>٣</b> شبكة الأعمدة والأحمال</div><div><b>٤</b> الأساس والركائز</div>
+    <div><b>٥</b> الحفر والردم والكميات</div></div>
+  <div class="grid g2">
+    <div class="card"><h3>١ · القطعة والبناء</h3><div class="f">
+      ${F('مساحة القطعة', 'w_area', 200, 10, 'م²')}
+      ${F('عدد الطوابق', 'w_floors', 2, 1)}
+      ${F('نسبة البناء من القطعة', 'w_cov', 1.0, .05, '0.3 – 1.0')}
+      ${F('ارتفاع الطابق', 'w_hs', 3.2, .1, 'م')}
+      ${S('الاستعمال', 'w_use', META.live.map(x => x.name), 'سكني / غرف نوم')}
+      ${F("f'c", 'w_fc', 25, 1, 'MPa')}${F('fy', 'w_fy', 420, 10, 'MPa')}
+      ${S('المحافظة', 'w_city', META.cities.map(c => c.name), 'بغداد')}</div></div>
+    <div class="card"><h3>٢ · التربة والمناسيب</h3><div class="f">
+      ${S('نوع التربة', 'w_soil', (META.soils || []).map(s => [s.name, s.name + ' — ' + s.qa + ' kPa']), 'طين قاسي')}
+      ${F('تحمّل التربة qa (0=حسب النوع)', 'w_qa', 0, 5, 'kPa')}
+      ${F('منسوب الأرض الطبيعية', 'w_ground', -0.30, .05, 'م من البنج مارك')}
+      ${F('عمق الهدم/الحفر القديم', 'w_old', 0, .1, 'م تحت الأرض')}
+      ${F('عمق التأسيس Df', 'w_df', 1.50, .05, 'م')}</div>
+      <div class="row"><button class="btn" onclick="PAGES.wizard.run()">🚀 صمّم المشروع</button>
+        <button class="btn gh" onclick="window.print()">🖨️ تقرير PDF</button>
+        <button class="btn gh" onclick="PAGES.wizard.dxf()">📐 تصدير DXF</button>
+        <button class="btn gh" onclick="PAGES.wizard.save()">💾 حفظ المشروع</button></div>
+      <div class="hint">البنج مارك 0.00 = منسوب أرضية الطابق الأرضي بعد التشطيب.</div></div></div>
+  <div id="w_out" style="margin-top:16px"></div>`,
+  payload: () => ({ area: val('w_area'), floors: val('w_floors'), coverage: val('w_cov'),
+    story_h: val('w_hs'), use: txt('w_use'), fc: val('w_fc'), fy: val('w_fy'), city: txt('w_city'),
+    soil: txt('w_soil'), qa: val('w_qa') || null, ground: val('w_ground'), old_depth: val('w_old'),
+    Df: val('w_df') }),
+  dxf: async () => {
+    if (!WZ) return alert('شغّل المعالج أولاً');
+    const r = await fetch('/api/dxf', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(WZ) });
+    const b = await r.blob(), a = document.createElement('a');
+    a.href = URL.createObjectURL(b); a.download = 'foundation.dxf'; a.click();
+  },
+  save: async () => {
+    if (!WZ) return alert('شغّل المعالج أولاً');
+    const name = prompt('اسم المشروع:', 'مشروع ' + WZ.input.area + 'م²');
+    if (!name) return;
+    await post('project/save', { name, input: WZ.input });
+    alert('تم الحفظ ✓');
+  },
+  run: async () => {
+    const r = await post('wizard', PAGES.wizard.payload());
+    WZ = r;
+    const a = r.advisor, d = r.design, ew = r.earth, g = r.grid;
+    let des = '';
+    if (d.mode === 'isolated') {
+      const t = d.typical;
+      des = `<div class="grid g4">${kpi('الأساس النموذجي', nf(t.B, 2) + '×' + nf(t.B, 2) + ' م')}
+        ${kpi('السماكة', int(t.h) + ' مم')}${kpi('التسليح', t.bars_label)}
+        ${kpi('قص الثقب', nf(t.punch_ratio, 2), t.punch_ratio <= 1 ? 'ok' : 'bad')}</div>
+        <div style="margin-top:12px">${table(['الأساس', 'الموقع', 'حمل الخدمة (kN)', 'الأبعاد (م)', 'ضغط التربة (kPa)'],
+          d.sizes.map((s, i) => ['F' + (i + 1), s.kind, nf(s.P, 0), nf(s.B, 2) + ' × ' + nf(s.B, 2),
+            nf(s.P / (s.B * s.B), 1)]))}</div>`;
+    } else if (d.mode === 'raft') {
+      const t = d.raft;
+      des = `<div class="grid g4">${kpi('أبعاد الحصيرة', nf(t.Lx, 1) + ' × ' + nf(t.Ly, 1) + ' م')}
+        ${kpi('السماكة', int(t.h) + ' مم')}${kpi('ضغط التربة', nf(t.q_serv, 1) + ' / ' + nf(t.qa, 0) + ' kPa', t.ok_press ? 'ok' : 'bad')}
+        ${kpi('قص الثقب', t.punch_ok ? 'مقبول ✓' : 'زد السماكة', t.punch_ok ? 'ok' : 'bad')}
+        ${kpi('التسليح العلوي', t.top.label)}${kpi('التسليح السفلي', t.bottom.label)}
+        ${kpi('الخرسانة', nf(t.conc, 1) + ' م³')}${kpi('الحديد التقريبي', nf(t.steel, 1) + ' طن')}</div>
+        <div class="note">${t.note}</div>`;
+    } else {
+      const t = d.pile;
+      des = `<div class="grid g4">${kpi('قطر الركيزة', int(t.D * 1000) + ' مم')}${kpi('طول الركيزة', nf(t.L, 0) + ' م')}
+        ${kpi('قدرة الركيزة المفردة', nf(t.Qall, 0) + ' kN')}${kpi('عدد الركائز/عمود', t.n)}
+        ${kpi('العدد الكلي', d.total_piles, 'ok')}${kpi('كفاءة المجموعة', nf(t.eff, 2))}
+        ${kpi('هامة الركائز', nf(t.cap.B, 2) + '×' + nf(t.cap.L, 2) + '×' + nf(t.cap.h, 2) + ' م')}
+        ${kpi('النوع الموصى به', (t.types.find(x => x.key === t.recommended) || {}).name || '—')}</div>
+        <div class="grid g2" style="margin-top:12px">
+        <div class="card"><h3>خطوات حساب القدرة الحاملة</h3>${table(['الخطوة', 'القيمة'], t.steps)}
+          ${table(['البند', 'القيمة'], [['القدرة القصوى Qu', nf(t.Qu, 0) + ' kN'],
+            ['وزن الركيزة', nf(t.W, 0) + ' kN'], ['معامل الأمان', nf(t.FS, 1)],
+            ['القدرة المسموحة', nf(t.Qall, 0) + ' kN'], ['التباعد', nf(t.spacing, 2) + ' م (3D)'],
+            ['قدرة المجموعة', nf(t.Qgroup, 0) + ' kN مقابل حمل ' + nf(t.P, 0) + ' kN']])}</div>
+        <div class="card"><h3>أنواع الركائز ومتى تُستعمل</h3>${t.types.map(x => `<div style="margin-bottom:9px">
+          <b style="color:${x.key === t.recommended ? 'var(--ok)' : '#fff'}">${x.name}${x.key === t.recommended ? ' ✓ موصى به' : ''}</b>
+          <div style="font-size:11.5px;color:var(--mut)">قطر ${x.D} · ${x.when}<br>+ ${x.pros}<br>− ${x.cons}</div></div>`).join('')}</div></div>
+        <div class="note">${t.notes.join(' · ')}</div>`;
+    }
+    $('#w_out').innerHTML = `
+    <div class="grid g4">${kpi('مساحة البناء', nf(r.footprint, 0) + ' م²')}
+      ${kpi('شبكة الأعمدة', g.nx + ' × ' + g.ny + ' بحر')}${kpi('عدد الأعمدة', g.cols, 'ok')}
+      ${kpi('البحر', nf(g.sx, 2) + ' × ' + nf(g.sy, 2) + ' م')}
+      ${kpi('مقطع العمود', r.col.b + '×' + r.col.h + ' مم')}${kpi('سماكة السقف المقترحة', int(r.floor.slab) + ' مم')}
+      ${kpi('الحمل الكلي على التربة', int(r.total) + ' kN')}${kpi('أثقل عمود', int(r.Pmax) + ' kN')}</div>
+
+    <div class="card" style="margin-top:16px"><h3>🧊 المجسم ثلاثي الأبعاد — طبقات الردم والأسس</h3>
+      <div class="v3d"><div id="v3d" style="min-height:430px"></div>
+        <div class="tools">
+          <button onclick="V3&&V3.reset()">إعادة الزاوية</button>
+          <button onclick="V3&&V3.top()">مسقط علوي</button>
+          <button onclick="window.__x=!window.__x;V3&&V3.xray(window.__x)">🩻 وضع الأشعة</button>
+        </div>
+        <div class="info" id="v3info"></div>
+        <div class="slider"><span style="font-size:11px;color:var(--mut)">قص المقطع</span>
+          <input type="range" id="v3clip" min="-20" max="30" step="0.2"></div>
+      </div>
+      <div class="hint">اسحب للتدوير · عجلة الماوس للتكبير · اضغط على أي طبقة أو أساس أو ركيزة لعرض تفاصيلها ·
+        استعمل شريط «قص المقطع» لرؤية ما تحت الأرض.</div></div>
+
+    <div class="rec" style="margin-top:16px"><h3>🏗️ التوصية: ${a.name}</h3>
+      <ul>${a.reasons.map(x => `<li>${x}</li>`).join('')}</ul>
+      ${a.alts.length ? `<ul class="alt"><b style="color:var(--mut);font-size:12px">بدائل وملاحظات:</b>
+        ${a.alts.map(x => `<li>${x}</li>`).join('')}</ul>` : ''}
+      <div style="margin-top:8px;font-size:12px;color:var(--mut)">تحمّل التربة الصافي ${nf(a.q_net, 0)} kPa ·
+        مجموع مساحات الأسس ${nf(a.sum_area, 1)} م² (${nf(a.ratio * 100, 0)}% من مساحة البناء)</div></div>
+
+    <div class="card" style="margin-top:16px"><h3>تصميم الأساس</h3>${des}</div>
+    <div class="card" style="margin-top:16px"><h3>مقطع الطبقات والمناسيب</h3>${sectionSVG2(ew)}</div>
+
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h3>المناسيب وخطوات العمل</h3>${table(['البند', 'القيمة'], ew.steps)}
+        <div class="note">${ew.notes[0]}</div></div>
+      <div class="card"><h3>كميات الحفر والردم</h3>${table(['البند', 'الكمية'], [
+        ['عمق الحفر', nf(ew.cut_depth, 2) + ' م'], ['حجم الحفر', nf(ew.cut_vol, 1) + ' م³'],
+        ['الحفر بعد الانتفاش (نقل)', nf(ew.cut_loose, 1) + ' م³'],
+        ['ردم هندسي تحت الأساس', nf(ew.fill_to_found, 2) + ' م'],
+        ['جلمود/ردم مختار (مدكوك)', nf(ew.boulder, 1) + ' م³ — يُشترى ' + nf(ew.boulder_buy, 1) + ' م³'],
+        ['عدد طبقات الجلمود', ew.boulder_layers + ' طبقة × 30 سم'],
+        ['سبيس (مدكوك)', nf(ew.subbase, 1) + ' م³ — يُشترى ' + nf(ew.subbase_buy, 1) + ' م³'],
+        ['عدد طبقات السبيس', ew.subbase_layers + ' طبقة × 25 سم'],
+        ['خرسانة نظافة', nf(ew.blinding, 1) + ' م³'],
+        ['سبيس ساحات القطعة', nf(ew.yard_subbase, 1) + ' م³']])}</div>
+      <div class="card"><h3>الكلفة التقديرية</h3>${table(['البند', 'الكمية', 'الوحدة', 'السعر', 'الكلفة (د.ع)'],
+        r.boq.rows.map(x => [x.name, nf(x.q, 1), x.unit, int(x.rate), int(x.cost)]))}
+        <div class="grid g2" style="margin-top:10px">${kpi('الإجمالي', int(r.boq.total) + ' د.ع', 'ok')}
+          ${kpi('قص القاعدة الزلزالي', nf(r.seismic.V, 0) + ' kN')}</div></div>
+      <div class="card"><h3>أحمال الأعمدة</h3><div style="max-height:340px;overflow:auto">
+        ${table(['#', 'الموقع', 'المساحة المؤثرة (م²)', 'حمل الخدمة (kN)', 'Pu (kN)'],
+          r.loads.map((l, i) => [i + 1, l.kind, nf(l.area, 2), nf(l.P, 0), nf(l.Pu, 0)]))}</div></div>
+      <div class="card"><h3>تركيب الطابق</h3>${table(['المكوّن', 'kN/m²'],
+        r.floor.items.map(i => [i.name, nf(i.v)]).concat([['بدل وزن الجسور', nf(r.floor.beams)],
+          ['<b>الحمل الميت D</b>', '<b>' + nf(r.floor.D) + '</b>'], ['الحمل الحي L', nf(r.floor.L)]]))}
+        <div class="note">${r.summary.join(' · ')}</div></div></div>`;
+    setTimeout(mount3D, 60);
+  },
+  init: () => PAGES.wizard.run()
+};
+
+/* -------------------------------- المساحة -------------------------------- */
+function ptRow(n, e, nn) {
+  return `<div class="sp" style="grid-template-columns:1fr 1fr 1fr auto">
+    <input value="${n}" data-k="name" placeholder="اسم النقطة">
+    <input type="number" step="0.001" value="${e}" data-k="E" placeholder="E شرقي">
+    <input type="number" step="0.001" value="${nn}" data-k="N" placeholder="N شمالي">
+    <button class="btn gh" onclick="this.parentNode.remove()">✕</button></div>`;
+}
+function polySVG(r) {
+  const W = 620, H = 360, m = 46;
+  const E = r.points.map(p => p.E), N = r.points.map(p => p.N);
+  const x0 = Math.min(...E), x1 = Math.max(...E), y0 = Math.min(...N), y1 = Math.max(...N);
+  const s = Math.min((W - 2 * m) / ((x1 - x0) || 1), (H - 2 * m) / ((y1 - y0) || 1));
+  const X = v => m + (v - x0) * s, Y = v => H - m - (v - y0) * s;
+  const pts = r.points.map(p => `${X(p.E)},${Y(p.N)}`).join(' ');
+  let g = `<polygon points="${pts}" fill="#38bdf822" stroke="#38bdf8" stroke-width="2"/>`;
+  r.points.forEach(p => { g += `<circle cx="${X(p.E)}" cy="${Y(p.N)}" r="4" fill="#fbbf24"/>
+    <text x="${X(p.E) + 7}" y="${Y(p.N) - 6}" fill="#e6edf7" font-size="11">${p.name}</text>`; });
+  r.sides.forEach(s2 => {
+    const a = r.points.find(p => p.name === s2.frm), b = r.points.find(p => p.name === s2.to);
+    g += `<text x="${(X(a.E) + X(b.E)) / 2}" y="${(Y(a.N) + Y(b.N)) / 2 - 5}" fill="#93a4c0"
+      font-size="10.5" text-anchor="middle">${nf(s2.L, 2)} م</text>`;
+  });
+  g += `<circle cx="${X(r.centroid.E)}" cy="${Y(r.centroid.N)}" r="3" fill="#34d399"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}">${g}</svg>`;
+}
+PAGES.survey = {
+  ic: '📐', name: 'المساحة', grp: 'ما تحت الصفر', ttl: 'أعمال المساحة',
+  sub: 'مساحة ومحيط من الإحداثيات · دفتر المناسيب · حساب القطع والردم',
+  desc: 'إحداثيات ومناسيب وقطع وردم',
+  html: () => `<div class="grid g2">
+    <div class="card"><h3>حدود القطعة بالإحداثيات</h3>
+      <div class="hint" style="margin-bottom:6px">أدخل النقاط بالتسلسل حول المضلع (اسم · E · N)</div>
+      <div id="sv_pts">${ptRow('A', 0, 0) + ptRow('B', 20, 0) + ptRow('C', 20, 10) + ptRow('D', 0, 10)}</div>
+      <div class="row"><button class="btn gh" onclick="$('#sv_pts').insertAdjacentHTML('beforeend', ptRow('P',0,0))">+ نقطة</button>
+        <button class="btn" onclick="PAGES.survey.run()">احسب المساحة</button>
+        <button class="btn gh" onclick="PAGES.survey.toWizard()">↗ استعمل المساحة بالمعالج</button></div>
+      <div id="sv_out" style="margin-top:12px"></div></div>
+    <div class="card"><h3>دفتر المناسيب (ارتفاع الجهاز HI)</h3><div class="f">
+      ${F('منسوب البنج مارك BM', 'lv_bm', 10.000, .001, 'م')}</div>
+      <div class="hint" style="margin:8px 0 6px">النقطة · خلفية BS · وسطية IS · أمامية FS (اترك الفارغ صفراً)</div>
+      <div id="lv_rows">${['BM,1.500,,', 'A,,1.200,', 'B,2.100,,0.800', 'C,,,1.900'].map(r => {
+        const [n, bs, is_, fs] = r.split(',');
+        return `<div class="sp" style="grid-template-columns:1fr 1fr 1fr 1fr auto">
+          <input value="${n}" data-k="point"><input type="number" step="0.001" value="${bs}" data-k="bs" placeholder="BS">
+          <input type="number" step="0.001" value="${is_}" data-k="is" placeholder="IS">
+          <input type="number" step="0.001" value="${fs}" data-k="fs" placeholder="FS">
+          <button class="btn gh" onclick="this.parentNode.remove()">✕</button></div>`; }).join('')}</div>
+      <div class="row"><button class="btn gh" onclick="$('#lv_rows').insertAdjacentHTML('beforeend',
+        $('#lv_rows').lastElementChild.outerHTML.replace(/value=\\"[^\\"]*\\"/g,'value=\\"\\"'))">+ رصدة</button>
+        <button class="btn" onclick="PAGES.survey.levels()">احسب المناسيب</button></div>
+      <div id="lv_out" style="margin-top:12px"></div></div>
+    <div class="card"><h3>القطع والردم — طريقة الشبكة</h3><div class="f">
+      ${F('ضلع الخلية', 'cf_cell', 5, .5, 'م')}${F('المنسوب التصميمي', 'cf_des', 0.5, .05, 'م')}</div>
+      <label style="margin-top:8px">مناسيب الأرض (كل سطر = صف، الأرقام مفصولة بفراغ)</label>
+      <textarea id="cf_grid" rows="5" style="width:100%;background:var(--bg2);border:1px solid var(--line);
+        color:var(--tx);border-radius:8px;padding:8px;font:inherit">0.00 0.20 0.40 0.35
+0.10 0.30 0.50 0.45
+0.20 0.40 0.60 0.55</textarea>
+      <div class="row"><button class="btn" onclick="PAGES.survey.cf()">احسب القطع والردم</button></div>
+      <div id="cf_out" style="margin-top:12px"></div></div></div>`,
+  pts: () => $$('#sv_pts .sp').map(r => { const o = {}; $$('input', r).forEach(i => o[i.dataset.k] =
+    i.dataset.k === 'name' ? i.value : parseFloat(i.value) || 0); return o; }),
+  run: async () => {
+    const r = await post('survey', { points: PAGES.survey.pts() });
+    window.__area = r.area;
+    $('#sv_out').innerHTML = `<div class="grid g3">${kpi('المساحة', nf(r.area, 2) + ' م²', 'ok')}
+      ${kpi('بالدونم', nf(r.area_donum, 3) + ' دونم')}${kpi('المحيط', nf(r.perimeter, 2) + ' م')}</div>
+      <div style="margin-top:10px">${polySVG(r)}</div>
+      <div style="margin-top:10px">${table(['الضلع', 'الطول (م)', 'الاتجاه', 'ΔE', 'ΔN'],
+        r.sides.map(s => [s.frm + ' → ' + s.to, nf(s.L, 3), s.quad, nf(s.dE, 3), nf(s.dN, 3)]))}</div>
+      <div style="margin-top:10px">${table(['الزاوية عند', 'القيمة'], r.angles.map(a => [a.at, a.dms]))}</div>
+      <div class="note">مجموع الزوايا الداخلية ${nf(r.sum_internal, 4)}° والنظري ${nf(r.theoretical, 0)}°
+        — الفرق ${nf(r.ang_error, 4)}° · ${r.note}</div>`;
+  },
+  toWizard: () => { if (!window.__area) return alert('احسب المساحة أولاً');
+    go('wizard'); setTimeout(() => { $('#w_area').value = Math.round(window.__area); PAGES.wizard.run(); }, 200); },
+  levels: async () => {
+    const obs = $$('#lv_rows .sp').map(r => { const o = {}; $$('input', r).forEach(i =>
+      o[i.dataset.k] = i.dataset.k === 'point' ? i.value : (i.value === '' ? null : parseFloat(i.value))); return o; });
+    const r = await post('levels', { bm: val('lv_bm'), obs });
+    $('#lv_out').innerHTML = table(['النقطة', 'BS', 'IS', 'FS', 'HI', 'المنسوب RL'],
+      r.rows.map(x => [x.point, x.bs ?? '—', x.is_ ?? '—', x.fs ?? '—',
+        x.hi ? nf(x.hi, 3) : '—', nf(x.rl, 3)])) +
+      `<div class="note">ΣBS − ΣFS = ${nf(r.check_a, 3)} · آخر − أول = ${nf(r.check_b, 3)} ·
+        ${r.ok ? '<b style="color:var(--ok)">التدقيق صحيح ✓</b>' : '<b style="color:var(--bad)">خطأ حسابي ✗</b>'}</div>`;
+  },
+  cf: async () => {
+    const grid = $('#cf_grid').value.trim().split('\n').map(l => l.trim().split(/\s+/).map(Number));
+    const r = await post('cutfill', { grid, cell: val('cf_cell'), design: val('cf_des') });
+    $('#cf_out').innerHTML = `<div class="grid g3">${kpi('قطع (حفر)', nf(r.cut, 1) + ' م³')}
+      ${kpi('ردم', nf(r.fill, 1) + ' م³')}${kpi('الصافي', nf(Math.abs(r.net), 1) + ' م³', r.net > 0 ? 'warn' : 'ok')}</div>
+      <div class="note">${r.balance} · المساحة ${nf(r.area, 0)} م² · ${r.note}</div>`;
+  },
+  init: () => { PAGES.survey.run(); PAGES.survey.levels(); PAGES.survey.cf(); }
+};
+
+/* ---------------------------- الحفريات والردم ---------------------------- */
+PAGES.earth = {
+  ic: '⛏️', name: 'الحفر والردم', grp: 'ما تحت الصفر', ttl: 'الحفريات والردم والمناسيب',
+  sub: 'الجلمود والسبيس وعدد الطبقات والكميات — قياساً على البنج مارك 0.00',
+  desc: 'مناسيب وطبقات وكميات',
+  html: () => `<div class="grid g2"><div class="card"><h3>المناسيب</h3><div class="f">
+      ${F('مساحة القطعة', 'e_plot', 250, 10, 'م²')}${F('مساحة البناء', 'e_fp', 200, 10, 'م²')}
+      ${F('منسوب الأرض الطبيعية', 'e_ground', -0.30, .05, 'م')}
+      ${F('عمق الهدم/الحفر القديم', 'e_old', 1.6, .1, 'م تحت الأرض')}
+      ${F('عمق التأسيس Df', 'e_df', 1.50, .05, 'م')}${F('سماكة الأساس', 'e_fh', 0.50, .05, 'م')}
+      ${F('مجموع مساحات الأسس', 'e_fa', 70, 5, 'م²')}
+      ${F('سماكة السبيس تحت الأرضية', 'e_sub', 0.25, .05, 'م')}</div>
+      <div class="row"><button class="btn" onclick="PAGES.earth.run()">احسب</button>
+        <button class="btn gh" onclick="window.print()">🖨️ طباعة</button></div></div>
+    <div class="card"><h3>مقطع الطبقات</h3><div id="e_sec"></div></div></div>
+    <div id="e_out" style="margin-top:16px"></div>`,
+  run: async () => {
+    const r = await post('earthwork', { plot: val('e_plot'), footprint: val('e_fp'), ground: val('e_ground'),
+      old_depth: val('e_old'), Df: val('e_df'), foot_h: val('e_fh'), foot_area: val('e_fa'),
+      subbase: val('e_sub'), dig_mode: 'trench' });
+    $('#e_sec').innerHTML = sectionSVG2(r);
+    $('#e_out').innerHTML = `<div class="grid g4">
+      ${kpi('عمق الحفر', nf(r.cut_depth, 2) + ' م')}${kpi('حجم الحفر', nf(r.cut_vol, 1) + ' م³')}
+      ${kpi('ردم تحت الأساس', nf(r.fill_to_found, 2) + ' م', r.fill_to_found > 0 ? 'warn' : 'ok')}
+      ${kpi('الأساس يأخذ', nf(val('e_fh') + 0.1, 2) + ' م')}
+      ${kpi('جلمود (شراء)', nf(r.boulder_buy, 1) + ' م³')}${kpi('طبقات الجلمود', r.boulder_layers + ' × 30 سم')}
+      ${kpi('سبيس (شراء)', nf(r.subbase_buy, 1) + ' م³')}${kpi('طبقات السبيس', r.subbase_layers + ' × 25 سم')}</div>
+      <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h3>خطوات العمل والمناسيب</h3>${table(['البند', 'القيمة'], r.steps)}</div>
+      <div class="card"><h3>جدول الطبقات</h3>${table(['الطبقة', 'من', 'إلى', 'السماكة', 'الطبقات', 'الحجم (م³)'],
+        r.stack.slice().sort((a, b) => a.bottom - b.bottom).map(s => [s.name, nf(s.bottom, 2), nf(s.top, 2),
+          nf(s.t, 2), s.layers || '—', nf(s.volume, 1)]))}</div>
+      <div class="card"><h3>ملاحظات التنفيذ</h3><ul style="padding-right:18px;font-size:12.5px;color:var(--mut)">
+        ${r.notes.map(n => `<li style="margin:6px 0">${n}</li>`).join('')}</ul></div></div>`;
+  },
+  init: () => PAGES.earth.run()
+};
+
+/* --------------------------- التربة والركائز ----------------------------- */
+PAGES.soil = {
+  ic: '🪨', name: 'التربة والركائز', grp: 'ما تحت الصفر', ttl: 'تحمّل التربة والركائز',
+  sub: 'قدرة التحمّل بمعادلة Terzaghi/Vesic · قدرة الركيزة بطريقة α و Meyerhof',
+  desc: 'تحمّل التربة وحساب الخوازيق',
+  html: () => `<div class="grid g2">
+    <div class="card"><h3>قدرة تحمّل التربة</h3><div class="f">
+      ${F('التماسك c (cu)', 'bc_c', 100, 5, 'kPa')}${F('زاوية الاحتكاك φ', 'bc_phi', 0, 1, 'درجة')}
+      ${F('كثافة التربة γ', 'bc_g', 18, .5, 'kN/m³')}${F('عرض الأساس B', 'bc_b', 2.0, .1, 'م')}
+      ${F('طول الأساس L', 'bc_l', 2.0, .1, 'م')}${F('عمق التأسيس Df', 'bc_df', 1.5, .1, 'م')}
+      ${F('معامل الأمان', 'bc_fs', 3, .5)}</div>
+      <div class="row"><button class="btn" onclick="PAGES.soil.bc()">احسب</button></div>
+      <div id="bc_out" style="margin-top:12px"></div></div>
+    <div class="card"><h3>تصميم الركائز (الخوازيق)</h3><div class="f">
+      ${S('نوع التربة', 'pl_soil', [['clay', 'طينية (طريقة α)'], ['sand', 'رملية (Meyerhof-SPT)']], 'clay')}
+      ${F('cu للطين', 'pl_cu', 60, 5, 'kPa')}${F('N للرمل (SPT)', 'pl_n', 20, 1)}
+      ${F('قطر الركيزة D', 'pl_d', 0.6, .1, 'م')}${F('طول الركيزة L', 'pl_l', 15, 1, 'م')}
+      ${F('حمل العمود', 'pl_p', 1200, 50, 'kN')}${F('معامل الأمان', 'pl_fs', 2.5, .1)}
+      ${S('نوع التنفيذ', 'pl_kind', [['bored', 'مصبوبة بالموقع'], ['driven', 'مدقوقة']], 'bored')}</div>
+      <div class="row"><button class="btn" onclick="PAGES.soil.pile()">احسب الركائز</button></div></div></div>
+    <div id="pl_out" style="margin-top:16px"></div>
+    <div class="card" style="margin-top:16px"><h3>جدول تحمّل التربة الاسترشادي</h3>
+      ${table(['نوع التربة', 'qa (kPa)', 'التصنيف'], (META.soils || []).map(s => [s.name, nf(s.qa, 0),
+        ({ clay: 'طينية', sand: 'رملية', rock: 'صخرية', fill: 'ردم' })[s.kind] || s.kind]))}
+      <div class="note">قيم استرشادية للاستئناس فقط — الاعتماد على التقرير الجيوتقني وفحص التربة للموقع.</div></div>`,
+  bc: async () => {
+    const r = await post('bearing', { c: val('bc_c'), phi: val('bc_phi'), gamma: val('bc_g'),
+      B: val('bc_b'), L: val('bc_l'), Df: val('bc_df'), FS: val('bc_fs') });
+    $('#bc_out').innerHTML = `<div class="grid g3">${kpi('qu النهائية', nf(r.qu, 0) + ' kPa')}
+      ${kpi('qa الصافية', nf(r.qa_net, 0) + ' kPa', 'ok')}${kpi('qa الإجمالية', nf(r.qa_gross, 0) + ' kPa')}</div>
+      <div style="margin-top:10px">${table(['المعامل', 'القيمة'], [['Nc', nf(r.Nc, 2)], ['Nq', nf(r.Nq, 2)],
+        ['Nγ', nf(r.Ng, 2)], ['sc · sq · sγ', nf(r.sc, 2) + ' · ' + nf(r.sq, 2) + ' · ' + nf(r.sg, 2)],
+        ['ضغط التربة فوق منسوب التأسيس', nf(r.q_overburden, 1) + ' kPa']])}</div>
+      <div class="note">${r.note}</div>`;
+  },
+  pile: async () => {
+    const r = await post('pile', { soil: txt('pl_soil'), cu: val('pl_cu'), N: val('pl_n'), D: val('pl_d'),
+      L: val('pl_l'), P: val('pl_p'), FS: val('pl_fs'), kind: txt('pl_kind') });
+    $('#pl_out').innerHTML = `<div class="grid g4">
+      ${kpi('Qs مقاومة الجانب', nf(r.Qs, 0) + ' kN')}${kpi('Qb مقاومة القاعدة', nf(r.Qb, 0) + ' kN')}
+      ${kpi('Qu القصوى', nf(r.Qu, 0) + ' kN')}${kpi('Qall المسموحة', nf(r.Qall, 0) + ' kN', 'ok')}
+      ${kpi('عدد الركائز', r.n, 'ok')}${kpi('كفاءة المجموعة', nf(r.eff, 2))}
+      ${kpi('قدرة المجموعة', nf(r.Qgroup, 0) + ' kN', r.ok ? 'ok' : 'bad')}
+      ${kpi('التباعد', nf(r.spacing, 2) + ' م')}</div>
+      <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h3>خطوات الحساب</h3>${table(['الخطوة', 'القيمة'], r.steps)}
+        ${table(['البند', 'القيمة'], [['هامة الركائز', nf(r.cap.B, 2) + ' × ' + nf(r.cap.L, 2) + ' × ' + nf(r.cap.h, 2) + ' م'],
+          ['خرسانة الهامة', nf(r.cap.conc, 1) + ' م³'],
+          ['خرسانة الركائز', nf(r.n * Math.PI * r.D * r.D / 4 * r.L, 1) + ' م³']])}</div>
+      <div class="card"><h3>أنواع الركائز</h3>${r.types.map(x => `<div style="margin-bottom:10px">
+        <b>${x.name}</b><div style="font-size:11.5px;color:var(--mut)">قطر ${x.D} · ${x.when}<br>
+        <span style="color:var(--ok)">+</span> ${x.pros}<br><span style="color:var(--bad)">−</span> ${x.cons}</div></div>`).join('')}</div></div>
+      <div class="note">${r.notes.join('<br>')}</div>`;
+  },
+  init: () => { PAGES.soil.bc(); PAGES.soil.pile(); }
+};
+
+/* ------------------------------- المشاريع -------------------------------- */
+PAGES.projects = {
+  ic: '💾', name: 'المشاريع', grp: 'المشروع', ttl: 'المشاريع المحفوظة',
+  sub: 'استرجاع مشروع محفوظ وإعادة تشغيل المعالج عليه',
+  desc: 'حفظ واسترجاع',
+  html: () => `<div class="card"><h3>القائمة</h3><div id="pr_out">…</div></div>`,
+  run: async () => {
+    const r = await post('project/list', {});
+    $('#pr_out').innerHTML = r.projects.length ? table(['المشروع', 'التاريخ', 'المساحة', 'الطوابق', 'التربة', ''],
+      r.projects.map(p => [p.name, p.saved, nf(p.input.area, 0) + ' م²', p.input.floors, p.input.soil,
+        `<button class="btn" onclick="PAGES.projects.open('${p.file}')">فتح</button>
+         <button class="btn gh" onclick="PAGES.projects.del('${p.file}')">حذف</button>`]))
+      : '<div class="hint">لا توجد مشاريع محفوظة — احفظ من صفحة المعالج.</div>';
+  },
+  open: async (file) => {
+    const d = await post('project/load', { file });
+    go('wizard');
+    setTimeout(() => {
+      const i = d.input;
+      const set = (id, v) => { const e = $('#' + id); if (e && v !== undefined && v !== null) e.value = v; };
+      set('w_area', i.area); set('w_floors', i.floors); set('w_cov', i.coverage); set('w_hs', i.story_h);
+      set('w_use', i.use); set('w_fc', i.fc); set('w_fy', i.fy); set('w_city', i.city);
+      set('w_soil', i.soil); set('w_qa', i.qa); set('w_ground', i.ground); set('w_old', i.old_depth);
+      set('w_df', i.Df);
+      PAGES.wizard.run();
+    }, 200);
+  },
+  del: async (file) => { if (!confirm('حذف المشروع؟')) return; await post('project/delete', { file }); PAGES.projects.run(); },
+  init: () => PAGES.projects.run()
+};
+
+/* ------------------------- الترتيب والمجموعات ---------------------------- */
+const ORDER = [
+  ['المشروع', ['wizard', 'projects']],
+  ['ما تحت الصفر', ['survey', 'earth', 'soil']],
+  ['أدوات المهندس (متقدم)', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing', 'slab', 'xray', 'boq']],
+  ['مرجع', ['ref', 'home']],
+];
+PAGES.home.name = 'عن المنصة';
+PAGES.home.ttl = 'عن المنصة';
+
 (async function boot() {
   try { META = await (await fetch('/api/meta')).json(); } catch (e) { console.error(e); }
-  $('#nav').innerHTML = Object.entries(PAGES).map(([k, p]) =>
-    `<button data-id="${k}" onclick="go('${k}')"><span class="ic">${p.ic}</span>${p.name}</button>`).join('');
-  go((location.hash || '#home').slice(1) in PAGES ? (location.hash || '#home').slice(1) : 'home');
+  $('#nav').innerHTML = ORDER.map(([g, ids]) => `<div class="grp">${g}</div>` + ids.filter(k => PAGES[k])
+    .map(k => `<button data-id="${k}" onclick="go('${k}')" title="${PAGES[k].desc || ''}">
+      <span class="ic">${PAGES[k].ic}</span>${PAGES[k].name}</button>`).join('')).join('');
+  const want = (location.hash || '#wizard').slice(1);
+  go(want in PAGES ? want : 'wizard');
 })();

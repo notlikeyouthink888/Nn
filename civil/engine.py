@@ -171,31 +171,57 @@ def phi_flex(et, fy=420.0):
 def as_min(fc, fy, b, d):
     return max(0.25 * math.sqrt(fc) / fy, 1.4 / fy) * b * d
 
-def pick_bars(As_req, dbs=(12, 16, 20, 25, 32), nmin=2, nmax=10, width=None):
-    """Choose bars; if width given, limit bars/layer to what fits (25 mm clear)."""
-    best = None
+def pick_bars(As_req, dbs=(12, 16, 20, 25), nmin=2, nmax=10, width=None):
+    """يختار عدد وقطر الأسياخ — أقل عدد أسياخ ضمن 15% من أقل مساحة كافية،
+    مع مراعاة ما يتسع بعرض المقطع (25 مم خلوص) إن أُعطي العرض."""
+    cands = []
     for db in dbs:
         n = max(nmin, math.ceil(As_req / ab(db)))
         if width:
             per = max(2, int((width - 2 * 40 - 2 * 10 + max(25.0, db)) // (db + max(25.0, db))))
-            if n > 2 * per: continue
-        if n > nmax: continue
-        prov = n * ab(db)
-        if best is None or (prov, n) < (best['As'] * 1.06, best['n']):
-            if best is None or prov < best['As'] * 1.06:
-                best = dict(n=n, db=db, As=prov)
-    if best is None:
-        db = 32; n = max(nmin, math.ceil(As_req / ab(db)))
-        best = dict(n=n, db=db, As=n * ab(db))
+            if n > 2 * per:
+                continue
+        if n > nmax:
+            continue
+        cands.append(dict(n=n, db=db, As=n * ab(db)))
+    if not cands:
+        db = dbs[-1]; n = max(nmin, math.ceil(As_req / ab(db)))
+        cands = [dict(n=n, db=db, As=n * ab(db))]
+    mn = min(c['As'] for c in cands)
+    ok = [c for c in cands if c['As'] <= mn * 1.15]
+    best = min(ok, key=lambda c: (c['n'], c['As']))
     best['label'] = "%dØ%d" % (best['n'], best['db'])
     return best
 
-def flexure(Mu, b, d, fc, fy, h=None):
-    """Mu kN.m ; b,d,h mm ; returns design of rectangular section."""
+def bar_spacing(As, dbs=(10, 12, 16, 20, 25, 32), smin=100.0, smax=300.0, target=200.0):
+    """يختار قطر السيخ وتباعده لشبكة (As بـ مم²/م) — أقرب تباعد عملي إلى 200 مم."""
+    best = None
+    for db in dbs:
+        s = math.floor(1000.0 * ab(db) / As / 25.0) * 25.0
+        if s < smin:
+            continue
+        s = min(s, smax)
+        cand = dict(db=db, s=s, As=1000.0 * ab(db) / s,
+                    label="Ø%d @ %d مم" % (db, int(s)))
+        if best is None or abs(s - target) < abs(best['s'] - target) - 1e-9:
+            best = cand
+    if best is None:
+        db = dbs[-1]
+        best = dict(db=db, s=smin, As=1000.0 * ab(db) / smin,
+                    label="Ø%d @ %d مم" % (db, int(smin)))
+    return best
+
+def flexure(Mu, b, d, fc, fy, h=None, min_rule='beam'):
+    """Mu kN.m ; b,d,h mm.  min_rule: 'beam' = ACI 9.6.1.2 ،
+    'slab' = حديد الانكماش 0.0018bh للبلاطات والأسس (ACI 7.6.1.1 / 13.3.2.1)."""
+    def _min(b_, d_):
+        if min_rule == 'slab':
+            return 0.0018 * b_ * (h if h else d_ / 0.9)
+        return as_min(fc, fy, b_, d_)
     Mu = abs(Mu)
     r = dict(Mu=Mu, b=b, d=d, fc=fc, fy=fy)
     if Mu < 1e-9:
-        As = as_min(fc, fy, b, d)
+        As = _min(b, d)
         r.update(As_req=As, As_min=As, doubly=False, phi=0.9, et=0.05,
                  ok=True, note="أقل حديد (عزم مهمل)")
         r['bars'] = pick_bars(As); r['phiMn'] = 0.0; r['ratio'] = 0.0
@@ -233,7 +259,7 @@ def flexure(Mu, b, d, fc, fy, h=None):
         r['bars_comp'] = pick_bars(Asp) if Asp > 0 else None
     else:
         r.update(doubly=False, phi=phi, et=et)
-    Asmin = as_min(fc, fy, b, d)
+    Asmin = _min(b, d)
     As = max(As, Asmin)
     r['As_req'] = As; r['As_min'] = Asmin
     r['bars'] = pick_bars(As)
@@ -657,18 +683,18 @@ def footing_module(p):
         h += 25.0
     armf = (Bm - cx) / 2000.0
     Mu_f = qu_max * B * armf ** 2 / 2.0
-    fl = flexure(Mu_f / B, 1000.0, d, fc, fy, h)
+    fl = flexure(Mu_f / B, 1000.0, d, fc, fy, h, min_rule='slab')
     As_min = 0.0018 * 1000.0 * h
     As = max(fl['As_req'], As_min)
-    bar = pick_bars(As, dbs=(12, 16, 20, 25), nmin=4, nmax=12)
-    s = math.floor(1000.0 / bar['n'] / 25.0) * 25.0
+    bar = bar_spacing(As, smax=min(3 * h, 300.0))
+    s = bar['s']
     nb_tot = int(B * 1000.0 / s) + 1
     Ab_col = cx * cy
     phi_br = 0.65 * 0.85 * fc * Ab_col / 1000.0 * min(2.0, math.sqrt(B * B * 1e6 / Ab_col))
     return dict(B=B, h=h, d=d, qu=qu, qu_max=qu_max, q_net=q_net, Ps=Ps, Pu=Pu,
                 Vu2=Vu2, phiVc2=phiVc2, Vu1=Vu1, phiVc1=phiVc1, Mu=Mu_f,
                 As=As, As_min=As_min, bar=bar, spacing=s, nbars=nb_tot,
-                bars_label="Ø%d @ %d مم بالاتجاهين" % (bar['db'], int(s)),
+                bars_label="%s بالاتجاهين" % bar['label'], bar_db=bar['db'],
                 punch_ratio=Vu2 / phiVc2 if phiVc2 else 9.9,
                 oneway_ratio=Vu1 / phiVc1 if phiVc1 else 9.9,
                 bearing=phi_br, dowels=0.005 * Ab_col, conc=B * B * h / 1000.0,
@@ -693,14 +719,13 @@ def slab_module(p):
         d = h - cov - 6.0
         res = []
         for nm, M, sgn in cases:
-            fl = flexure(M, 1000.0, d, fc, fy, h)
+            fl = flexure(M, 1000.0, d, fc, fy, h, min_rule='slab')
             As = max(fl['As_req'], 0.0018 * 1000.0 * h)
-            bar = pick_bars(As, dbs=(10, 12, 16), nmin=4, nmax=12)
-            s = min(math.floor(1000.0 * ab(bar['db']) / As / 25.0) * 25.0, min(3 * h, 450))
-            res.append(dict(name=nm, M=M, As=As, label="Ø%d @ %d مم" % (bar['db'], int(max(s, 75)))))
+            bar = bar_spacing(As, dbs=(10, 12, 16, 20), smax=min(3 * h, 450))
+            res.append(dict(name=nm, M=M, As=As, db=bar['db'], s=bar['s'], label=bar['label']))
         Ash = 0.0018 * 1000.0 * h
-        bs = pick_bars(Ash, dbs=(8, 10, 12), nmin=4)
-        ssh = min(math.floor(1000.0 * ab(bs['db']) / Ash / 25) * 25, min(5 * h, 450))
+        bsp = bar_spacing(Ash, dbs=(10, 12), smax=min(5 * h, 450))
+        bs = dict(db=bsp['db']); ssh = bsp['s']
         V = 1.15 * wu * ln / 2.0
         phiVc = 0.75 * 0.17 * math.sqrt(fc) * 1000.0 * d / 1000.0
         return dict(kind=kind, h=h, hmin=hmin, d=d, sw=sw, wu=wu, results=res,
@@ -724,12 +749,12 @@ def slab_module(p):
             for r_, M in rows:
                 Mcs = 0.75 * M if M < 0 else 0.60 * M     # column strip share
                 bstrip = min(0.25 * ln, 0.25 * l2) * 2 * 1000.0
-                fl = flexure(Mcs, bstrip, d, fc, fy, h)
+                fl = flexure(Mcs, bstrip, d, fc, fy, h, min_rule='slab')
                 As = max(fl['As_req'], 0.0018 * bstrip * h)
-                bar = pick_bars(As, dbs=(10, 12, 16), nmin=4, nmax=20)
-                s = min(math.floor(bstrip * ab(bar['db']) / As / 25) * 25, min(2 * h, 450))
-                det.append(dict(name=r_, M=M, Mcs=Mcs, As=As,
-                                label="Ø%d @ %d مم" % (bar['db'], int(max(s, 75)))))
+                Asm = As / (bstrip / 1000.0)                 # مم²/م
+                bar = bar_spacing(Asm, dbs=(10, 12, 16, 20), smax=min(2 * h, 450))
+                det.append(dict(name=r_, M=M, Mcs=Mcs, As=As, As_m=Asm,
+                                db=bar['db'], s=bar['s'], label=bar['label']))
             out.append(dict(dir=nm, Mo=Mo, rows=det))
         return dict(kind=kind, h=h, hmin=hmin, d=d, sw=sw, wu=wu, beta=beta,
                     L1=L1, L2=L2, dirs=out, fc=fc, fy=fy,

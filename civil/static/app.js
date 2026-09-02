@@ -696,14 +696,40 @@ function pickPanel(u) {
   p.innerHTML = `<h4>${u.title}</h4><table><tbody>${(u.rows || []).map(r =>
     `<tr><td style="color:var(--mut)">${r[0]}</td><td><b>${r[1]}</b></td></tr>`).join('')}</tbody></table>`;
 }
+let REBAR_ON = false, XRAY_ON = false;
 function mount3D() {
   const host = document.getElementById('v3d');
   if (!host || !WZ) return;
+  REBAR_ON = false; XRAY_ON = false;
   V3 = Viewer3D(host, WZ, pickPanel);
   pickPanel(null);
   const sl = document.getElementById('v3clip');
-  if (sl && V3) { sl.min = -V3.R * 1.2; sl.max = V3.R * 1.2; sl.value = V3.R * 1.2;
+  if (sl && V3) { sl.min = -V3.R * 1.5; sl.max = V3.R * 1.5; sl.value = V3.R * 1.5;
     sl.oninput = () => V3.clip(+sl.value); }
+  $$('#v3groups input').forEach(c => { if (V3) V3.group(c.dataset.g, c.checked); });
+}
+function toggleRebar() {
+  if (!V3) return;
+  REBAR_ON = !REBAR_ON;
+  const t0 = performance.now();
+  const st = V3.rebar(REBAR_ON);
+  const b = $('#btnRebar');
+  b.classList.toggle('hot', REBAR_ON);
+  b.textContent = REBAR_ON ? '🧵 إخفاء التسليح' : '🧵 إظهار التسليح';
+  if (REBAR_ON && !XRAY_ON) toggleXray();
+  if (REBAR_ON) $('#v3stats').innerHTML =
+    `${int(st.bars)} سيخ معروض · ${nf(st.weight / 1000, 1)} طن حديد · ${nf(performance.now() - t0, 0)} مللي ثانية`;
+  else $('#v3stats').textContent = '';
+}
+function refreshStats() {
+  if (!V3 || !REBAR_ON) return;
+  const st = V3.stats();
+  $('#v3stats').innerHTML = `${int(st.bars)} سيخ معروض · ${nf(st.weight / 1000, 1)} طن حديد`;
+}
+function toggleXray() {
+  if (!V3) return;
+  XRAY_ON = !XRAY_ON; V3.xray(XRAY_ON);
+  $('#btnXray').classList.toggle('hot', XRAY_ON);
 }
 function sectionSVG2(ew) {
   const st = ew.stack.slice().sort((a, b) => a.bottom - b.bottom);
@@ -822,19 +848,39 @@ PAGES.wizard = {
       ${kpi('مقطع العمود', r.col.b + '×' + r.col.h + ' مم')}${kpi('سماكة السقف المقترحة', int(r.floor.slab) + ' مم')}
       ${kpi('الحمل الكلي على التربة', int(r.total) + ' kN')}${kpi('أثقل عمود', int(r.Pmax) + ' kN')}</div>
 
-    <div class="card" style="margin-top:16px"><h3>🧊 المجسم ثلاثي الأبعاد — طبقات الردم والأسس</h3>
-      <div class="v3d"><div id="v3d" style="min-height:430px"></div>
+    <div class="card" style="margin-top:16px"><h3>🩻 X-Ray ثلاثي الأبعاد — المبنى كامل مع التسليح</h3>
+      <div class="v3d"><div id="v3d" style="min-height:470px"></div>
         <div class="tools">
           <button onclick="V3&&V3.reset()">إعادة الزاوية</button>
           <button onclick="V3&&V3.top()">مسقط علوي</button>
-          <button onclick="window.__x=!window.__x;V3&&V3.xray(window.__x)">🩻 وضع الأشعة</button>
+          <button id="btnRebar" onclick="toggleRebar()">🧵 إظهار التسليح</button>
+          <button id="btnXray" onclick="toggleXray()">🩻 وضع الأشعة</button>
+          <select id="v3floor" onchange="V3&&V3.floor(this.value==='all'?'all':+this.value)"
+            style="width:auto;padding:5px 9px;font-size:11.5px">
+            <option value="all">كل الطوابق</option>
+            ${Array.from({ length: r.model.floors }, (_, i) => `<option value="${i + 1}">طابق ${i + 1}</option>`).join('')}
+          </select>
+        </div>
+        <div class="chips" id="v3groups">
+          ${[['layers', 'طبقات الردم', 1], ['raft', 'حصيرة', 1], ['isolated', 'أسس منفردة', 1],
+             ['piles', 'ركائز', r.recommended === 'piles' ? 1 : 0], ['columns', 'أعمدة', 1],
+             ['beams', 'جسور', 1], ['slabs', 'سقوف', 1]].map(([k, t, on]) =>
+            `<label><input type="checkbox" data-g="${k}" ${on ? 'checked' : ''}
+              onchange="V3&&V3.group('${k}',this.checked);refreshStats()"> ${t}</label>`).join('')}
         </div>
         <div class="info" id="v3info"></div>
         <div class="slider"><span style="font-size:11px;color:var(--mut)">قص المقطع</span>
-          <input type="range" id="v3clip" min="-20" max="30" step="0.2"></div>
+          <input type="range" id="v3clip" min="-30" max="40" step="0.2">
+          <span id="v3stats" style="font-size:11px;color:var(--acc2)"></span></div>
       </div>
-      <div class="hint">اسحب للتدوير · عجلة الماوس للتكبير · اضغط على أي طبقة أو أساس أو ركيزة لعرض تفاصيلها ·
-        استعمل شريط «قص المقطع» لرؤية ما تحت الأرض.</div></div>
+      <div class="legend"><span><i style="background:#e8443a"></i>أسياخ التسليح</span>
+        <span><i style="background:#ff9f1c"></i>أتاري وأساور</span>
+        <span><i style="background:#a8bcd4"></i>سقوف</span><span><i style="background:#7f97b8"></i>جسور</span>
+        <span><i style="background:#8ea6c4"></i>أعمدة</span><span><i style="background:#3f6fa5"></i>أساس</span></div>
+      <div class="hint">اسحب للتدوير · العجلة للتكبير · اضغط على أي عنصر ليقرّب عليه ويعرض تفاصيله ·
+        زر «إظهار التسليح» يبني حديد كل العناصر بأقطاره وتباعده الحقيقي · «قص المقطع» يقطع المبنى لترى الداخل.
+        <br>وزن الحديد المعروض يُحسب من الأسياخ المرسومة فعلاً للمجموعات المفعّلة — وإذا فعّلت أكثر من بديل
+        أساس (حصيرة + منفردة) فسيُحسب حديدهما معاً.</div></div>
 
     <div class="rec" style="margin-top:16px"><h3>🏗️ التوصية: ${a.name}</h3>
       <ul>${a.reasons.map(x => `<li>${x}</li>`).join('')}</ul>
@@ -843,7 +889,44 @@ PAGES.wizard = {
       <div style="margin-top:8px;font-size:12px;color:var(--mut)">تحمّل التربة الصافي ${nf(a.q_net, 0)} kPa ·
         مجموع مساحات الأسس ${nf(a.sum_area, 1)} م² (${nf(a.ratio * 100, 0)}% من مساحة البناء)</div></div>
 
-    <div class="card" style="margin-top:16px"><h3>تصميم الأساس</h3>${des}</div>
+    <div class="card" style="margin-top:16px"><h3>مقارنة بدائل الأساس</h3>
+      ${table(['البديل', 'الوصف', 'الخرسانة (م³)', 'الحديد (طن)', 'الحالة', ''],
+        Object.entries(r.alts).map(([k, v]) => [
+          v.name + (k === r.recommended ? ' <span class="tag t-ok">موصى به ✓</span>' : ''),
+          k === 'isolated' ? (v.sizes.length + ' أساس · أكبرها ' + nf(Math.max(...v.sizes.map(s => s.B)), 2) + ' م')
+            : k === 'raft' ? (nf(v.raft.Lx, 1) + '×' + nf(v.raft.Ly, 1) + ' م · سماكة ' + int(v.raft.h) + ' مم')
+            : (v.total_piles + ' ركيزة Ø' + int(v.pile.D * 1000) + ' طول ' + int(v.pile.L) + ' م'),
+          nf(v.conc, 1), nf(v.steel, 2),
+          v.ok ? '<span class="tag t-ok">صالح</span>' : '<span class="tag t-warn">غير مناسب هنا</span>',
+          k === 'isolated' ? nf(v.area / r.footprint * 100, 0) + '% من المساحة' : ''
+        ]))}</div>
+    <div class="card" style="margin-top:16px"><h3>تصميم الأساس الموصى به</h3>${des}</div>
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h3>السقف — ${r.slab.kind_name}</h3>
+        ${table(['البند', 'القيمة'], [['السماكة', int(r.slab.h) + ' مم (الدنيا ' + nf(r.slab.hmin, 0) + ')'],
+          ['سبب الاختيار', r.slab.why], ['wu', nf(r.slab.wu, 2) + ' kN/m²'],
+          ['التسليح السفلي', r.model.slab.mesh.bottom.label + ' بالاتجاهين'],
+          ['التسليح العلوي', r.model.slab.mesh.top.label + ' بالاتجاهين'],
+          ['خرسانة السقف الواحد', nf(r.footprint * r.slab.h / 1000, 1) + ' م³']])}</div>
+      <div class="card"><h3>الأعمدة</h3>
+        ${table(['البند', 'القيمة'], [['المقطع', r.col.b + ' × ' + r.col.h + ' مم'],
+          ['التسليح الطولي', r.col.rebar.label + ' (ρ = ' + nf(r.col.rebar.rho * 100, 2) + '%)'],
+          ['الأتاري بالوسط', r.col.rebar.tie_label],
+          ['التطويق عند الأطراف', r.col.rebar.conf_label],
+          ['Pu المصمم', nf(r.Pumax, 0) + ' kN'], ['Mu التقديري', nf(r.col.Mu, 1) + ' kN·m'],
+          ['φMn عند Pu', nf(r.col.rebar.phiMn, 1) + ' kN·m'],
+          ['نسبة الاستغلال', nf(r.col.rebar.ratio, 2) + (r.col.rebar.ok ? ' ✓' : ' ✗')]])}</div>
+      ${['x', 'y'].map(d => { const bm = r.beams[d], sc2 = bm.section; return `
+      <div class="card"><h3>جسور الاتجاه ${d.toUpperCase()} — ${nf(sc2.span, 2)} م × ${sc2.nspan} فضاء</h3>
+        ${table(['البند', 'القيمة'], [['المقطع', int(sc2.b) + ' × ' + int(sc2.h) + ' مم'],
+          ['العرض المؤثر', nf(sc2.trib, 2) + ' م'],
+          ['أقصى عزم موجب', nf(Math.max(...bm.design.map(x => x.Mpos)), 1) + ' kN·m'],
+          ['أقصى عزم سالب', nf(Math.min(...bm.supports.map(x => x.M)), 1) + ' kN·m'],
+          ['التسليح السفلي', bm.rebar.bottom.label], ['التسليح العلوي', bm.rebar.top.label],
+          ['الأساور', bm.rebar.stirrup.label],
+          ['الهطول', nf(Math.abs(Math.min(...bm.design.map(x => x.d_long))), 1) + ' مم / الحد ' +
+            nf(bm.design[0].d_limit, 1) + ' مم']])}</div>`; }).join('')}
+    </div>
     <div class="card" style="margin-top:16px"><h3>مقطع الطبقات والمناسيب</h3>${sectionSVG2(ew)}</div>
 
     <div class="grid g2" style="margin-top:16px">

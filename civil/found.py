@@ -152,14 +152,13 @@ def raft(p):
     d = h - cov - 20.0
     sw = h / 1000.0 * 24.0
     Mu = q_u * span ** 2 / 10.0                    # عزم تقريبي للشريط (kN·m/م)
-    top = E.flexure(Mu, 1000.0, d, fc, fy, h)
-    bot = E.flexure(q_u * span ** 2 / 12.0, 1000.0, d, fc, fy, h)
+    top = E.flexure(Mu, 1000.0, d, fc, fy, h, min_rule='slab')
+    bot = E.flexure(q_u * span ** 2 / 12.0, 1000.0, d, fc, fy, h, min_rule='slab')
     As_min = 0.0018 * 1000.0 * h
     def bars(As):
         As = max(As, As_min)
-        b = E.pick_bars(As, dbs=(12, 16, 20, 25), nmin=4, nmax=14)
-        s = max(100.0, min(math.floor(1000.0 * E.ab(b['db']) / As / 25) * 25, min(2 * h, 300)))
-        return dict(As=As, db=b['db'], s=s, label="Ø%d @ %d مم" % (b['db'], int(s)))
+        b = E.bar_spacing(As, smax=min(2 * h, 300.0))
+        return dict(As=As, db=b['db'], s=b['s'], label=b['label'])
     return dict(h=h, d=d, A=A, Lx=Lx, Ly=Ly, q_serv=q_serv, q_u=q_u, qa=qa,
                 ok_press=q_serv <= qa, punch_ok=phiVc >= Vu, phiVc=phiVc, Vu=Vu,
                 Mu_top=Mu, top=bars(top['As_req']), bottom=bars(bot['As_req']),
@@ -255,11 +254,37 @@ def pile(p):
     cap_B = (m - 1) * s + D + 0.6
     cap_L = (rows - 1) * s + D + 0.6
     cap_h = max(0.6, 0.9 * D + 0.3)
+
     rec = 'bored'
     if soil == 'sand' and p.get('urban', False) is False: rec = 'driven'
     if p.get('water_table', False): rec = 'cfa'
     if p.get('restricted', False): rec = 'micro'
+    # ----- تسليح الركيزة والهامة -----
+    fc = float(p.get('fc', 28.0)); fy = float(p.get('fy', 420.0))
+    Ast = 0.005 * Ab * 1e6                              # 0.5% من مقطع الركيزة (مم²)
+    lb = E.pick_bars(Ast, dbs=(16, 20, 25, 32), nmin=6, nmax=20)
+    spiral_s = 150.0 if D <= 0.8 else 200.0
+    # انحناء الهامة عند وجه العمود: الركائز خارج المقطع الحرج × ذراعها
+    cx = float(p.get('cx', 500)) / 1000.0
+    arm = max(0.10, (m - 1) / 2.0 * s - cx / 2.0)     # مسافة الصف الخارجي عن وجه العمود
+    piles_side = rows if m > 1 else 0                  # عدد الركائز خارج المقطع
+    Pu_pile = 1.45 * P / max(n, 1)
+    Mu_cap = Pu_pile * piles_side * arm                # kN·m لكامل عرض الهامة
+    d_cap = cap_h * 1000 - 75 - 20
+    Mu_m = Mu_cap / max(cap_B, 0.1)                    # kN·m لكل متر عرض
+    fx = E.flexure(Mu_m, 1000.0, d_cap, fc, fy, cap_h * 1000, min_rule='slab')
+    As_cap = max(fx['As_req'], 0.0018 * 1000.0 * cap_h * 1000)      # مم²/م
+    cb_ = E.bar_spacing(As_cap, dbs=(12, 16, 20, 25, 32), smax=250.0)
+    s_cap = cb_['s']
+    rebar = dict(n=lb['n'], db=lb['db'], As=lb['As'], rho=lb['As'] / (Ab * 1e6),
+                 label="%dØ%d" % (lb['n'], lb['db']),
+                 spiral_db=10, spiral_s=spiral_s,
+                 spiral_label="حلزون Ø10 @ %d مم" % int(spiral_s), cover=75.0)
+    cap_rebar = dict(db=cb_['db'], s=s_cap, As=As_cap, Mu=Mu_cap,
+                     label="Ø%d @ %d مم بالاتجاهين (سفلي)" % (cb_['db'], int(s_cap)),
+                     top_db=16, top_s=200.0, top_label="Ø16 @ 200 مم بالاتجاهين (علوي)")
     return dict(soil=soil, kind=kind, D=D, L=L, Ab=Ab, As=As, Qs=Qs, Qb=Qb, Qu=Qu,
+                rebar=rebar, cap_rebar=cap_rebar,
                 W=W, FS=FS, Qall=Qall, n=n, spacing=s, eff=eff, Qgroup=Qgroup,
                 ok=Qgroup >= P, P=P, steps=steps, rows=rows, cols=m,
                 cap=dict(B=cap_B, L=cap_L, h=cap_h, conc=cap_B * cap_L * cap_h),

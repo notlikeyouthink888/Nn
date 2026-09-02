@@ -427,53 +427,6 @@ PAGES.footing = {
 };
 
 /* ------------------------------- البلاطات ------------------------------- */
-PAGES.slab = {
-  ic: '⬜', name: 'تصميم البلاطات', ttl: 'البلاطات الخرسانية',
-  sub: 'أحادية الاتجاه بمعاملات ACI 6.5.2 · ثنائية الاتجاه بطريقة التصميم المباشر DDM',
-  desc: 'سماكة وتسليح أحادية/ثنائية الاتجاه',
-  html: () => `<div class="card"><h3>المعطيات</h3><div class="f">
-      ${S('نوع البلاطة', 'sl_k', [['one', 'أحادية الاتجاه'], ['two', 'ثنائية الاتجاه (DDM)']], 'one')}
-      ${F('الفضاء Lx', 'sl_lx', 4.0, .1, 'م')}${F('الفضاء Ly (للثنائية)', 'sl_ly', 5.0, .1, 'م')}
-      ${F('عدد الفضاءات', 'sl_n', 3, 1)}${F('حمل ميت إضافي', 'sl_wd', 3.0, .1, 'kN/m²')}
-      ${F('حمل حي', 'sl_wl', 2.0, .1, 'kN/m²')}${F('السماكة (0=تلقائي)', 'sl_h', 0, 10, 'مم')}
-      ${F("f'c", 'sl_fc', 25, 1, 'MPa')}${F('fy', 'sl_fy', 420, 10, 'MPa')}</div>
-      <div class="row"><button class="btn" onclick="PAGES.slab.run()">تصميم البلاطة</button></div></div>
-    <div id="sl_out" style="margin-top:16px"></div>`,
-  run: async () => {
-    const r = await post('slab', { kind: txt('sl_k'), Lx: val('sl_lx'), Ly: val('sl_ly'), nspans: val('sl_n'),
-      wD: val('sl_wd'), wL: val('sl_wl'), h: val('sl_h'), fc: val('sl_fc'), fy: val('sl_fy') });
-    let body;
-    if (r.kind === 'one') {
-      body = `<div class="grid g2"><div class="card"><h3>تسليح البلاطة (لكل متر عرض)</h3>
-        ${table(['الموقع', 'Mu (kN·m/م)', 'As (مم²/م)', 'التسليح'],
-          r.results.map(x => [x.name, nf(x.M, 1), int(x.As), x.label]))}
-        <div class="note">حديد الانكماش والحرارة: ${r.shrink.label} (${int(r.shrink.As)} مم²/م) — ACI 24.4</div></div>
-      <div class="card"><h3>القص والسماكة</h3>${table(['البند', 'القيمة'], [
-        ['السماكة المستخدمة', int(r.h) + ' مم'], ['السماكة الدنيا (ACI 7.3.1.1)', nf(r.hmin, 0) + ' مم'],
-        ['العمق الفعّال d', nf(r.d, 0) + ' مم'], ['الوزن الذاتي', nf(r.sw, 2) + ' kN/m²'],
-        ['wu المعامل', nf(r.wu, 2) + ' kN/m²'], ['Vu عند وجه المسند', nf(r.V, 1) + ' kN/م'],
-        ['φVc', nf(r.phiVc, 1) + ' kN/م'], ['فحص القص', tag(r.shear_ok)]])}</div></div>`;
-    } else {
-      body = `<div class="grid g2">${r.dirs.map(d => `<div class="card"><h3>${d.dir}</h3>
-        <div class="hint">العزم الساكن الكلي Mo = ${nf(d.Mo, 1)} kN·m</div>
-        ${table(['الموقع', 'M (kN·m)', 'حصة الشريط العمودي', 'التسليح'],
-          d.rows.map(x => [x.name, nf(x.M, 1), nf(x.Mcs, 1), x.label]))}</div>`).join('')}
-        <div class="card"><h3>البيانات</h3>${table(['البند', 'القيمة'], [
-          ['L1 / L2', nf(r.L1, 2) + ' / ' + nf(r.L2, 2) + ' م'], ['β = L1/L2', nf(r.beta, 2)],
-          ['التصنيف', r.two_way ? 'ثنائية الاتجاه ✓' : 'β>2 — تُصمم كأحادية الاتجاه'],
-          ['السماكة', int(r.h) + ' مم (الدنيا ' + nf(r.hmin, 0) + ')'],
-          ['wu', nf(r.wu, 2) + ' kN/m²']])}
-          <div class="note">طريقة التصميم المباشر تتطلب: 3 فضاءات فأكثر بكل اتجاه، نسبة الفضاءات ≤ 2،
-          والحمل الحي ≤ 2× الحمل الميت (ACI 8.10.2).</div></div></div>`;
-    }
-    $('#sl_out').innerHTML = `<div class="grid g4">${kpi('السماكة', int(r.h) + ' مم', 'ok')}
-      ${kpi('السماكة الدنيا', nf(r.hmin, 0) + ' مم')}${kpi('wu', nf(r.wu, 2) + ' kN/m²')}
-      ${kpi('الوزن الذاتي', nf(r.sw, 2) + ' kN/m²')}</div>
-      <div style="margin-top:16px">${body}</div>`;
-  },
-  init: () => PAGES.slab.run()
-};
-
 /* ------------------------------- X-RAY ---------------------------------- */
 function xraySVG(r) {
   const W = 880, mgL = 70, mgR = 60, mgT = 34, mgB = 54;
@@ -508,123 +461,7 @@ function xraySVG(r) {
     <polygon points="0,0 7,3.5 0,7" fill="#fbbf24"/></marker></defs>`;
   return `<svg viewBox="0 0 ${W} ${H}">${g}</svg>`;
 }
-PAGES.xray = {
-  ic: '🩻', name: 'X-Ray الإنشائي', ttl: 'الفحص الشعاعي للمنشأ (X-Ray)',
-  sub: 'تحليل الإطار الكامل تحت كل تراكيب الأحمال + تصميم كل عنصر + خريطة نسب الاستغلال',
-  desc: 'خريطة حرارية لنسبة استغلال كل عنصر',
-  html: () => `<div class="grid g2"><div class="card"><h3>هندسة المنشأ</h3><div class="f">
-      ${F('عدد البحور', 'x_nb', 3, 1)}${F('طول البحر', 'x_sp', 6.0, .5, 'م')}
-      ${F('عدد الطوابق', 'x_ns', 4, 1)}${F('ارتفاع الطابق', 'x_hs', 3.2, .1, 'م')}
-      ${F('عرض الجسر', 'x_bb', 300, 10, 'مم')}${F('عمق الجسر', 'x_bh', 600, 10, 'مم')}
-      ${F('عرض العمود', 'x_cb', 400, 10, 'مم')}${F('عمق العمود', 'x_ch', 500, 10, 'مم')}
-      ${S('قطر حديد العمود', 'x_dbc', [16, 20, 25, 32], 20)}
-      ${F('أسياخ الوجه العلوي/السفلي', 'x_nbb', 3, 1)}${F('أسياخ الوجه الجانبي', 'x_nhh', 3, 1)}</div></div>
-    <div class="card"><h3>الأحمال والمواد</h3><div class="f">
-      ${F('حمل ميت للطابق', 'x_wd', 7.0, .1, 'kN/m²')}${F('حمل حي للطابق', 'x_wl', 2.0, .1, 'kN/m²')}
-      ${F('العرض المؤثر (Tributary)', 'x_tr', 4.0, .1, 'م')}
-      ${F("f'c", 'x_fc', 28, 1, 'MPa')}${F('fy', 'x_fy', 420, 10, 'MPa')}
-      ${S('المحافظة', 'x_city', META.cities.map(c => c.name), 'بغداد')}
-      ${S('صنف الموقع', 'x_site', ['A', 'B', 'C', 'D', 'E'], 'D')}
-      ${S('النظام الإنشائي', 'x_sys', META.systems.map(s => s.name), META.systems[1] && META.systems[1].name)}
-      ${C('تضمين الأحمال الزلزالية', 'x_seis', 1)}</div>
-      <div class="row"><button class="btn" onclick="PAGES.xray.run()">🩻 تشغيل الفحص الشعاعي</button></div></div></div>
-    <div id="x_out" style="margin-top:16px"></div>`,
-  run: async () => {
-    const nb = Math.max(1, Math.round(val('x_nb'))), ns = Math.max(1, Math.round(val('x_ns')));
-    const r = await post('xray', {
-      bays: Array(nb).fill(val('x_sp')), heights: Array(ns).fill(val('x_hs')),
-      beam_b: val('x_bb'), beam_h: val('x_bh'), col_b: val('x_cb'), col_h: val('x_ch'),
-      db_col: parseFloat(txt('x_dbc')), nb_bars: val('x_nbb'), nh_bars: val('x_nhh'),
-      fc: val('x_fc'), fy: val('x_fy'), wD: val('x_wd'), wL: val('x_wl'), trib: val('x_tr'),
-      seismic: chk('x_seis'), city: txt('x_city'), site: txt('x_site'), system: txt('x_sys') });
-    const bad = r.members.filter(m => m.ratio > 1), warn = r.members.filter(m => m.ratio > .9 && m.ratio <= 1);
-    const dOK = r.drift.every((d, i) => d <= r.drift_lim[i]);
-    const beams = r.members.filter(m => m.kind === 'beam'), cols = r.members.filter(m => m.kind === 'col');
-    $('#x_out').innerHTML = `<div class="grid g4">
-      ${kpi('عدد العناصر', r.members.length)}${kpi('أعلى نسبة استغلال', nf(r.worst, 2), r.worst <= 1 ? 'ok' : 'bad')}
-      ${kpi('عناصر غير كافية', bad.length, bad.length ? 'bad' : 'ok')}
-      ${kpi('عناصر حرجة (0.9–1.0)', warn.length, warn.length ? 'warn' : 'ok')}
-      ${kpi('قص القاعدة الزلزالي', r.seismic ? nf(r.seismic.V, 1) + ' kN' : '—')}
-      ${kpi('أقصى انزياح طابقي', nf(Math.max(...r.drift), 1) + ' مم', dOK ? 'ok' : 'bad')}
-      ${kpi('حجم الخرسانة للإطار', nf(r.conc, 2) + ' م³')}
-      ${kpi('التشخيص العام', r.worst <= 1 && dOK ? 'سليم ✓' : 'يحتاج معالجة', r.worst <= 1 && dOK ? 'ok' : 'bad')}</div>
-    <div class="card" style="margin-top:16px"><h3>خريطة الفحص الشعاعي — نسبة الاستغلال لكل عنصر</h3>
-      ${xraySVG(r)}
-      <div class="legend"><span><i style="background:#34d399"></i>آمن ≤ 0.70</span>
-        <span><i style="background:#a3e635"></i>0.70–0.90</span><span><i style="background:#fbbf24"></i>حرج 0.90–1.00</span>
-        <span><i style="background:#f87171"></i>غير كافٍ > 1.00</span>
-        <span>تراكيب الأحمال: ${r.combos.join(' · ')}</span></div>
-      <div class="note">${r.worst <= 1 && dOK ? 'جميع العناصر ضمن الحدود المسموحة، والانزياح الطابقي مقبول.'
-        : 'يوجد عناصر تتجاوز مقاومتها التصميمية أو انزياح زائد — زد المقاطع أو نسبة التسليح.'}</div></div>
-    <div class="grid g2" style="margin-top:16px">
-      <div class="card"><h3>الجسور — القوى والتسليح</h3><div style="max-height:420px;overflow:auto">
-        ${table(['الطابق', 'البحر', 'M+ ', 'M−', 'V', 'سفلي', 'علوي', 'أساور', 'النسبة'],
-          beams.map(m => [m.story, m.pos, nf(m.det.Mpos, 1), nf(m.det.Mneg, 1), nf(m.det.V, 1),
-            m.det.bot, m.det.top, m.det.stirrups,
-            `<b style="color:${rcol(m.ratio)}">${nf(m.ratio, 2)}</b>`]))}</div></div>
-      <div class="card"><h3>الأعمدة — القوى والتحقق</h3><div style="max-height:420px;overflow:auto">
-        ${table(['الطابق', 'المحور', 'Pu (kN)', 'Mu (kN·m)', 'φMn', 'التسليح', 'النسبة'],
-          cols.map(m => [m.story, m.pos, nf(m.det.P, 1), nf(m.det.M, 1), nf(m.det.phiMn, 1), m.det.bars,
-            `<b style="color:${rcol(m.ratio)}">${nf(m.ratio, 2)}</b>`]))}</div></div>
-      <div class="card"><h3>الانزياح الطابقي (Drift)</h3>
-        ${table(['الطابق', 'الانزياح المكبّر (مم)', 'الحد 2%h (مم)', 'الحالة'],
-          r.drift.map((d, i) => [i + 1, nf(d, 2), nf(r.drift_lim[i], 1), tag(d <= r.drift_lim[i])]))}
-        <div class="hint">الانزياح مكبّر بمعامل Cd وفق ASCE 7 / الكود العراقي.</div></div>
-      <div class="card"><h3>ملخص النموذج</h3>${table(['البند', 'القيمة'], [
-        ['عدد العقد', r.nodes.length], ['عدد البحور × الطوابق', r.nb + ' × ' + r.ns],
-        ['مقطع الجسر', `${r.beam.b}×${r.beam.h} مم (d=${nf(r.beam.d, 0)})`],
-        ['مقطع العمود', `${r.col.b}×${r.col.h} مم`],
-        ['حمل الجسر الميت', nf(r.gD, 2) + ' kN/م'], ['حمل الجسر الحي', nf(r.gL, 2) + ' kN/م'],
-        ['وزن الإطار الزلزالي W', int(r.W) + ' kN'],
-        ['صلابة مشقّقة', 'جسور 0.35Ig · أعمدة 0.70Ig (ACI 6.6.3.1.1)']])}</div></div>`;
-  },
-  init: () => PAGES.xray.run()
-};
-
 /* ------------------------------- الكميات -------------------------------- */
-PAGES.boq = {
-  ic: '📋', name: 'جدول الكميات', ttl: 'حساب الكميات والكلفة التقديرية',
-  sub: 'الخرسانة والحديد والقوالب والأعمال المكمّلة — بالدينار العراقي',
-  desc: 'كميات وكلفة تقديرية بالدينار',
-  html: () => `<div class="grid g2"><div class="card"><h3>العناصر الإنشائية</h3><div class="f">
-      ${F('عدد الجسور', 'q_nb', 24, 1)}${F('عرض×عمق الجسر (مم)', 'q_bb', 300, 10)}
-      ${F('عمق الجسر', 'q_bh', 600, 10, 'مم')}${F('طول الجسر', 'q_bl', 6, .5, 'م')}
-      ${F('عدد الأعمدة', 'q_nc', 16, 1)}${F('عرض العمود', 'q_cb', 400, 10, 'مم')}
-      ${F('عمق العمود', 'q_ch', 500, 10, 'مم')}${F('طول العمود', 'q_cl', 3.2, .1, 'م')}
-      ${F('عدد الطوابق (بلاطات)', 'q_nsl', 4, 1)}${F('مساحة البلاطة', 'q_sa', 324, 1, 'م²')}
-      ${F('سماكة البلاطة', 'q_sh', 150, 10, 'مم')}</div></div>
-    <div class="card"><h3>أعمال مكمّلة وأسعار الوحدة (دينار)</h3><div class="f">
-      ${F('حفريات', 'q_ex', 200, 10, 'م³')}${F('بناء طابوق', 'q_bl2', 800, 10, 'م²')}
-      ${F('لبخ وإكساء', 'q_pl', 1600, 10, 'م²')}
-      ${F('سعر م³ خرسانة', 'q_rc', 150000, 1000)}${F('سعر طن حديد', 'q_rs', 1200000, 10000)}
-      ${F('سعر م² قوالب', 'q_rf', 25000, 1000)}${F('سعر م³ حفر', 'q_re', 15000, 1000)}
-      ${F('سعر م² بناء', 'q_rb', 20000, 1000)}${F('سعر م² لبخ', 'q_rp', 12000, 1000)}</div>
-      <div class="row"><button class="btn" onclick="PAGES.boq.run()">احسب الكميات</button></div></div></div>
-    <div id="q_out" style="margin-top:16px"></div>`,
-  run: async () => {
-    const r = await post('boq', { items: [
-      { name: 'جسور', type: 'beam', n: val('q_nb'), b: val('q_bb'), h: val('q_bh'), L: val('q_bl') },
-      { name: 'أعمدة', type: 'col', n: val('q_nc'), b: val('q_cb'), h: val('q_ch'), L: val('q_cl') },
-      { name: 'بلاطات', type: 'slab', n: val('q_nsl'), h: val('q_sh'), area: val('q_sa') }],
-      excav: val('q_ex'), block: val('q_bl2'), plaster: val('q_pl'),
-      rates: { concrete: val('q_rc'), steel: val('q_rs'), form: val('q_rf'), excav: val('q_re'),
-        block: val('q_rb'), plaster: val('q_rp') } });
-    const M = x => int(x) + ' د.ع';
-    $('#q_out').innerHTML = `<div class="grid g4">
-      ${kpi('إجمالي الخرسانة', nf(r.conc, 1) + ' م³', 'ok')}${kpi('إجمالي الحديد', nf(r.steel, 2) + ' طن')}
-      ${kpi('مساحة القوالب', nf(r.form, 1) + ' م²')}${kpi('الكلفة التقديرية', M(r.total), 'ok')}
-      ${kpi('الإسمنت التقريبي', int(r.cement) + ' كيس')}${kpi('الرمل', nf(r.sand, 1) + ' م³')}
-      ${kpi('الحصى (سبيس)', nf(r.gravel, 1) + ' م³')}${kpi('معدل الحديد', nf(r.steel * 1000 / (r.conc || 1), 0) + ' كغم/م³')}</div>
-    <div class="grid g2" style="margin-top:16px">
-      <div class="card"><h3>الأعمال الإنشائية</h3>${table(['العنصر', 'العدد', 'خرسانة (م³)', 'حديد (طن)', 'قوالب (م²)', 'الكلفة'],
-        r.rows.map(x => [x.name, x.n, nf(x.conc, 2), nf(x.steel, 3), nf(x.form, 1), M(x.cost)]))}</div>
-      <div class="card"><h3>الأعمال المكمّلة</h3>${table(['البند', 'الكمية', 'الوحدة', 'السعر', 'الكلفة'],
-        r.extra.map(x => [x.name, nf(x.q, 1), x.unit, int(x.rate), M(x.cost)]))}
-        <div class="note">الكلفة تقديرية أولية لأغراض الدراسة ولا تُعتمد للمناقصات دون تدقيق الأسعار المحلية.</div></div></div>`;
-  },
-  init: () => PAGES.boq.run()
-};
-
 /* ------------------------------- المرجع --------------------------------- */
 PAGES.ref = {
   ic: '📚', name: 'مرجع الكود', ttl: 'المرجع الفني والمعادلات المعتمدة',
@@ -690,6 +527,7 @@ let WZ = null, V3 = null;      // آخر نتيجة معالج + العارض
 
 function pickPanel(u) {
   const p = document.getElementById('v3info');
+  if (u && u.gk) labSelect(u);              // الضغط على عمود/جسر يختاره للتجربة
   if (!p) return;
   if (!u || !u.title) { p.innerHTML = '<h4>اضغط على أي عنصر</h4><div style="color:var(--mut)">لعرض تفاصيله'
     + ' — الطبقات والأسس والركائز والأعمدة</div>'; return; }
@@ -701,7 +539,7 @@ function mount3D(data, hostId) {
   const host = document.getElementById(hostId || 'v3d');
   const D = data || WZ;
   if (!host || !D) return;
-  REBAR_ON = XRAY_ON = MOM_ON = PUN_ON = DEF_ON = false;
+  REBAR_ON = XRAY_ON = MOM_ON = PUN_ON = DEF_ON = HUM_ON = false;
   V3 = Viewer3D(host, D, pickPanel);
   pickPanel(null);
   const sl = document.getElementById('v3clip');
@@ -709,7 +547,42 @@ function mount3D(data, hostId) {
     sl.oninput = () => V3.clip(+sl.value); }
   $$('#v3groups input').forEach(c => { if (V3) V3.group(c.dataset.g, c.checked); });
 }
+/* ------- شريط أدوات المجسم: تعريف واحد يُستعمل بكل المساحات ------- */
+function v3bar(o) {
+  o = o || {};
+  const fl = o.floors || 1;
+  return `<div class="v3bar">
+    <button onclick="V3&&V3.reset()">↻ إعادة الزاوية</button>
+    <button onclick="V3&&V3.top()">⬓ مسقط علوي</button>
+    <button onclick="V3&&V3.soffit()">⬒ بطن السقف</button>
+    ${o.rebar === false ? '' : '<button id="btnRebar" onclick="toggleRebar()">🧵 إظهار التسليح</button>'}
+    <button id="btnXray" onclick="toggleXray()">🩻 وضع الأشعة</button>
+    ${o.analysis ? `<button id="btnMom" onclick="toggleMoments()">📈 العزوم</button>
+      <button id="btnPun" onclick="togglePunch()">🎯 قص الثقب</button>
+      <button id="btnDef" onclick="toggleDefl()">〰️ الهطول</button>` : ''}
+    <button id="btnHum" onclick="toggleHuman()">🧍 إنسان 1.85 م</button>
+    <button onclick="V3&&V3.zoomSel()">🔍 تقريب المحدد</button>
+    <select id="v3floor" onchange="V3&&V3.floor(this.value==='all'?'all':+this.value)"
+      style="width:auto;padding:5px 9px;font-size:11.5px">
+      <option value="all">كل الطوابق</option>
+      ${Array.from({ length: fl }, (_, i) => `<option value="${i + 1}">طابق ${i + 1}</option>`).join('')}
+    </select></div>`;
+}
+const v3chips = list => list.map(([k, t, on]) =>
+  `<label><input type="checkbox" data-g="${k}" ${on ? 'checked' : ''}
+    onchange="V3&&V3.group('${k}',this.checked);refreshStats()"> ${t}</label>`).join('');
+const v3legend = () => `<div class="legend"><span><i style="background:#e8443a"></i>أسياخ التسليح</span>
+  <span><i style="background:#ff9f1c"></i>أتاري وأساور</span>
+  <span><i style="background:#22d3ee"></i>تسليح إضافي</span>
+  <span><i style="background:#86efac"></i>كراسي</span>
+  <span><i style="background:#c084fc"></i>دولات</span>
+  <span><i style="background:#d9c08a"></i>بلوك الهوردي</span>
+  <span><i style="background:#a8bcd4"></i>سقوف</span><span><i style="background:#7f97b8"></i>جسور</span>
+  <span><i style="background:#8ea6c4"></i>أعمدة</span><span><i style="background:#3f6fa5"></i>أساس</span></div>`;
+
 function tgl(id, st) { const b = $('#' + id); if (b) b.classList.toggle('hot', st); }
+let HUM_ON = false;
+function toggleHuman() { if (!V3 || !V3.human) return; HUM_ON = !HUM_ON; V3.human(HUM_ON); tgl('btnHum', HUM_ON); }
 function toggleMoments() { if (!V3) return; MOM_ON = !MOM_ON; V3.moments(MOM_ON); tgl('btnMom', MOM_ON);
   if (MOM_ON && !XRAY_ON) toggleXray(); }
 function togglePunch() { if (!V3) return; PUN_ON = !PUN_ON; V3.punch(PUN_ON); tgl('btnPun', PUN_ON); }
@@ -758,6 +631,340 @@ function sectionSVG2(ew) {
   if (Math.abs(ew.levels.existing - ew.levels.ground) > 0.01) g += mark(ew.levels.existing, 'قعر الهدم القديم', '#f87171');
   g += mark(ew.levels.found_bot, 'قاعدة الأساس', '#38bdf8');
   return `<svg viewBox="0 0 ${W} ${H}" class="sect">${g}</svg>`;
+}
+
+/* ---------- لوحة «التسليح والتفاصيل» داخل مساحة العمل ---------- */
+function detailPanel(r) {
+  return `
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h3>قص الثقب (Punching Shear) عند الأعمدة</h3>
+        ${table(['العمود', 'الموقع', 'b0 (مم)', 'd (مم)', 'Vu (kN)', 'φVc (kN)', 'النسبة', 'الحالة'],
+          r.punching.slice(0, 12).map((q, i) => ['C' + (i + 1), q.kind, int(q.found.b0), int(q.found.d),
+            nf(q.found.Vu, 0), nf(q.found.phiVc, 0),
+            `<b style="color:${rcol(q.found.ratio)}">${nf(q.found.ratio, 2)}</b>`,
+            q.found.ok ? '<span class="tag t-ok">مقبول</span>' : '<span class="tag t-bad">راجع</span>']))}
+        <div class="note">الفحص عند ${r.punching[0].found.where} وفق ACI 22.6 — المقطع الحرج على d/2 من وجه العمود.
+          ${r.punching.every(q => q.found.ok) ? 'كل الأعمدة مقبولة.' : r.punching.find(q => !q.found.ok).found.rec}
+          <br>عند السقف: النظام جسور-بلاطة فالحمل ينتقل عبر الجسور، والقيمة المعروضة للاستئناس فقط.</div></div>
+      <div class="card"><h3>الكراسي والوصلات والبسكويت</h3>
+        ${table(['البند', 'التفصيل'], [
+          ['كراسي السقف', r.chairs.slab.label + ' — عدد ' + int(r.chairs.slab.n * r.model.floors)],
+          ['وزن كراسي السقوف', nf(r.chairs.slab.weight * r.model.floors, 2) + ' طن'],
+          ['كراسي الأساس', r.chairs.found.label + ' — عدد ' + int(r.chairs.found.n)],
+          ['بسكويت الغطاء السفلي', int(r.chairs.slab.spacers * r.model.floors) + ' قطعة'],
+          ['طول السيخ بالسوق', nf(r.model.stock, 0) + ' م — كل ما زاد يُقطّع ويُوصل']].concat(
+          Object.entries(r.laps).map(([db, v]) => ['وصلة Ø' + db,
+            '<b>' + nf(v.bottom, 2) + ' م</b> — كودية ' + nf(v.code, 2) + ' م · 60·db = ' + nf(v.site, 2) + ' م'])))}
+        <div class="note">القاعدة المعتمدة: <b>${r.detail.lap.label}</b> ·
+          الكودية = صنف B (1.3·ld) وفق ACI 25.5.2.1 · وصلات الأعمدة فوق كل سقف ومتبادلة 50%.</div></div>
+    </div>
+
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h3>📏 الغطاء الخرساني (Concrete Cover)</h3>
+        ${table(['العنصر', 'الغطاء (مم)'], [
+          ['السقف — الوجهان', int(r.detail.covers.slab)],
+          ['الجسور (للأساور)', int(r.detail.covers.beam)],
+          ['الأعمدة (للأتاري)', int(r.detail.covers.column)],
+          ['الأساس — الوجه السفلي على التربة', int(r.detail.covers.footing_bottom)],
+          ['الأساس — الوجه العلوي', int(r.detail.covers.footing_top)]])}
+        ${table(['جدول ACI 318-19 (20.5.1.3)', 'مم', 'المرجع'],
+          r.detail.covers.table.map(c => [c.name, int(c.v), c.ref]))}
+        <div class="note">القاعدة العملية بالموقع: البوتوم 5–7.5 سم (على التربة) والتوب 3–5 سم —
+          وهي مطابقة لجدول الكود أعلاه.</div></div>
+
+      <div class="card"><h3>✂️ نقاط قطع وثني الحديد بالجسور</h3>
+        ${['x', 'y'].map(d => { const t = r.detail.curtail[d]; return `
+        <h4 style="margin:10px 0 4px">جسور الاتجاه ${d.toUpperCase()} — البحر ${nf(t.span, 2)} م
+          (Ln = ${nf(t.ln, 2)} م)</h4>
+        ${table(['البند', 'القيمة'], [
+          ['علوي — الطبقة الأولى', 'L/3 = ' + nf(t.top1, 2) + ' م لكل جهة · طول السيخ ' + nf(t.top1_len, 2) + ' م'],
+          ['علوي — الطبقة الثانية', 'L/5 = ' + nf(t.top2, 2) + ' م · طول السيخ ' + nf(t.top2_len, 2) + ' م'],
+          ['نقطة الثني', 'L/7 = ' + nf(t.bend_at, 2) + ' م من وجه المسند'],
+          ['الأسياخ المثنية', t.bent ? t.n_bent + ' سيخ بزاوية 45° — ' + t.bar.label : 'بدون ثني'],
+          ['عكفة الأساور', t.hook_stirrup.label + ' (نصف قطر ثنية ' + int(t.hook_stirrup.bend_r) + ' مم)'],
+          ['الوصلات', 'سفلي ' + nf(t.lap_bottom, 2) + ' م · علوي ' + nf(t.lap_top, 2) + ' م'],
+          ['الغطاء', int(t.cover) + ' مم']])}`; }).join('')}
+        <div class="note">${r.detail.curtail.x.rows.map(x => x[0] + ': ' + x[1]).join(' · ')}</div></div>
+
+      <div class="card"><h3>🧱 ترتيب نشر حديد السقف (فرش ثم غطاء)</h3>
+        ${table(['الطبقة', 'التسليح', 'العمق الفعّال d', 'العدد', 'طول السيخ', 'التقطيع'],
+          r.model.slab.layout.map(l => [l.name, 'Ø' + l.db + ' @ ' + int(l.s) + ' مم',
+            l.d ? int(l.d) + ' مم' : '—', '<b>' + int(l.n) + '</b> سيخ', nf(l.length, 2) + ' م',
+            l.pieces > 1 ? l.pieces + ' قطعة' : 'قطعة واحدة']))}
+        <div class="note">العدد = ⌈العرض ÷ التباعد⌉ + 1 — نفس طريقة التنفيذ بالموقع.
+          الفرش هو الاتجاه القصير ويوضع أولاً (أكبر عمق فعّال)، والغطاء فوقه بالاتجاه الطويل.
+          <br>التسليح العلوي فوق الأعمدة والمساند فقط ويمتد L/4 لكل جهة —
+          طول السيخ ${nf(r.model.slab.top_len.x, 2)} م بالاتجاه X و ${nf(r.model.slab.top_len.y, 2)} م بالاتجاه Y.</div></div>
+
+      <div class="card"><h3>🔩 الدولات (Dowel Bars) — ربط العمود بالأساس</h3>
+        ${table(['البند', 'القيمة'], r.detail.dowels.rows.map(x => [x[0], x[1]]))}
+        ${r.detail.dowels.warn ? `<div class="note" style="border-color:#f87171;color:#fca5a5">
+          ⚠️ ${r.detail.dowels.warn} — قاعدة 16·db أقصر من الحد الكودي؛ إما تزاد لـ
+          ${int(r.detail.dowels.ldc)} مم أو تُستعمل عكفة 90° بقاع الأساس.</div>`
+          : '<div class="note">الدفن مطابق للحد الكودي ✓</div>'}</div>
+    </div>
+
+    <div class="grid g2" style="margin-top:16px">
+      <div class="card"><h3>🏛️ تصنيف الأعمدة واستمراريتها</h3>
+        <div style="max-height:320px;overflow:auto">${table(
+          ['العمود', 'المحور', 'الموقع', 'استمرارية X', 'استمرارية Y', 'Pu (kN)'],
+          r.detail.cols.map((c, i) => ['C' + (i + 1), '(' + c.i + ', ' + c.j + ')',
+            `<span class="tag ${c.kind === 'داخلي' ? 't-ok' : 't-warn'}">${c.kind}</span>`,
+            c.cont_x ? 'مستمر' : 'طرفي', c.cont_y ? 'مستمر' : 'طرفي', int(c.Pu)]))}</div>
+        <div class="note">العمود الركني والجار (الحافة) يتلقّى عزماً غير متوازن من جهة واحدة، فيحتاج
+          تسليحاً علوياً أطول بالجسر الطرفي وتطويقاً أشد — بينما العمود الداخلي عزومه متوازنة.
+          <br>نقاط قطع الحديد L/3 و L/5 والثني L/7 مطبّقة على كل الجسور أعلاه.</div></div>
+
+      <div class="card"><h3>🏗️ نوع السقف — المختار والبدائل</h3>
+        ${table(['النوع', 'المدى المناسب', 'الملاحظة', ''], r.slab.types.map(t =>
+          [t.name, t.span, t.note, t.chosen ? '<span class="tag t-ok">المختار ✓</span>' : '']))}
+        <div class="note"><b>التوصية:</b> ${r.slab.recommend.options.map(o => o.name + ' — ' + o.why).join(' · ')}
+          <br>المختار: <b>${r.model.slab.name}</b> بسماكة ${int(r.model.slab.h)} مم ووزن ذاتي
+          ${nf(r.floor.slab_sw, 2)} kN/m².
+          <button class="btn gh" style="margin-top:8px" onclick="wtab('slabs')">قارن كل الأنواع بالتفصيل</button></div></div>
+    </div>
+`;
+}
+
+/* ============ تبويبات مساحة العمل: تفاصيل · أشعة · سقوف · تجربة · كميات ============ */
+const WT = { xr: 0, slabs: 0, boq: 0, lab: 0 };
+function wtab(id) {
+  $$('#wtabs button').forEach(b => b.classList.toggle('on', b.dataset.t === id));
+  $$('.wpanel').forEach(p => { p.hidden = p.dataset.t !== id; });
+  if (!WT[id] && TABS[id]) { WT[id] = 1; TABS[id](); }
+}
+const TABS = {
+  /* ---------- الأشعة الإنشائية على هندسة المشروع نفسه ---------- */
+  xr: async () => {
+    const r = WZ, g = r.grid, m = r.model;
+    const x = await post('xray', {
+      bays: Array(g.nx).fill(g.sx), heights: Array(m.floors).fill(m.story_h),
+      beam_b: m.beams.x.b, beam_h: m.beams.x.h, col_b: m.col.b, col_h: m.col.h,
+      db_col: m.col.rebar.db, nb_bars: m.col.rebar.nb, nh_bars: m.col.rebar.nb,
+      fc: r.input.fc, fy: r.input.fy, wD: r.floor.D, wL: r.floor.L, trib: g.sy,
+      seismic: true, city: r.input.city, site: 'D' });
+    const bad = x.members.filter(m2 => m2.ratio > 1), warn = x.members.filter(m2 => m2.ratio > .9 && m2.ratio <= 1);
+    const dOK = x.drift.every((d, i) => d <= x.drift_lim[i]);
+    const beams = x.members.filter(m2 => m2.kind === 'beam'), cols = x.members.filter(m2 => m2.kind === 'col');
+    $('#wp_xr').outerHTML = `<div id="wp_xr"><div class="grid g4">
+      ${kpi('عدد العناصر', x.members.length)}
+      ${kpi('أعلى نسبة استغلال', nf(x.worst, 2), x.worst <= 1 ? 'ok' : 'bad')}
+      ${kpi('عناصر غير كافية', bad.length, bad.length ? 'bad' : 'ok')}
+      ${kpi('عناصر حرجة (0.9–1.0)', warn.length, warn.length ? 'warn' : 'ok')}
+      ${kpi('قص القاعدة الزلزالي', x.seismic ? nf(x.seismic.V, 1) + ' kN' : '—')}
+      ${kpi('أقصى انزياح طابقي', nf(Math.max(...x.drift), 1) + ' مم', dOK ? 'ok' : 'bad')}
+      ${kpi('خرسانة الإطار', nf(x.conc, 2) + ' م³')}
+      ${kpi('التشخيص', x.worst <= 1 && dOK ? 'سليم ✓' : 'يحتاج معالجة', x.worst <= 1 && dOK ? 'ok' : 'bad')}</div>
+    <div class="card" style="margin-top:14px"><h3>خريطة نسبة الاستغلال لكل عنصر</h3>${xraySVG(x)}
+      <div class="legend"><span><i style="background:#34d399"></i>آمن ≤ 0.70</span>
+        <span><i style="background:#a3e635"></i>0.70–0.90</span><span><i style="background:#fbbf24"></i>حرج 0.90–1.00</span>
+        <span><i style="background:#f87171"></i>غير كافٍ > 1.00</span>
+        <span>تراكيب الأحمال: ${x.combos.join(' · ')}</span></div>
+      <div class="note">التحليل على إطار المشروع نفسه (${g.nx} بحر × ${m.floors} طابق ·
+        جسر ${m.beams.x.b}×${m.beams.x.h} · عمود ${m.col.b}×${m.col.h}) — لا حاجة لإدخال الأرقام يدوياً.</div></div>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card"><h3>الجسور</h3><div style="max-height:380px;overflow:auto">
+        ${table(['طابق', 'البحر', 'M+', 'M−', 'V', 'سفلي', 'علوي', 'أساور', 'النسبة'],
+          beams.map(m2 => [m2.story, m2.pos, nf(m2.det.Mpos, 1), nf(m2.det.Mneg, 1), nf(m2.det.V, 1),
+            m2.det.bot, m2.det.top, m2.det.stirrups,
+            `<b style="color:${rcol(m2.ratio)}">${nf(m2.ratio, 2)}</b>`]))}</div></div>
+      <div class="card"><h3>الأعمدة</h3><div style="max-height:380px;overflow:auto">
+        ${table(['طابق', 'المحور', 'Pu', 'Mu', 'φMn', 'التسليح', 'النسبة'],
+          cols.map(m2 => [m2.story, m2.pos, nf(m2.det.P, 1), nf(m2.det.M, 1), nf(m2.det.phiMn, 1),
+            m2.det.bars, `<b style="color:${rcol(m2.ratio)}">${nf(m2.ratio, 2)}</b>`]))}</div></div>
+      <div class="card"><h3>الانزياح الطابقي (Drift)</h3>
+        ${table(['الطابق', 'المكبّر (مم)', 'الحد (مم)', 'الحالة'],
+          x.drift.map((d, i) => [i + 1, nf(d, 2), nf(x.drift_lim[i], 1), tag(d <= x.drift_lim[i])]))}</div>
+      <div class="card"><h3>ملخص النموذج</h3>${table(['البند', 'القيمة'], [
+        ['عدد العقد', x.nodes.length], ['البحور × الطوابق', x.nb + ' × ' + x.ns],
+        ['حمل الجسر الميت', nf(x.gD, 2) + ' kN/م'], ['حمل الجسر الحي', nf(x.gL, 2) + ' kN/م'],
+        ['وزن الإطار W', int(x.W) + ' kN'],
+        ['صلابة مشقّقة', 'جسور 0.35Ig · أعمدة 0.70Ig (ACI 6.6.3.1.1)']])}</div></div></div>`;
+  },
+  /* ---------- أنواع السقوف مع تبديل حي يعيد بناء المجسم ---------- */
+  slabs: async () => {
+    const r = WZ, g = r.grid;
+    const s = await post('slabtypes', { span: Math.max(g.sx, g.sy), span2: Math.min(g.sx, g.sy),
+      live: r.floor.L, wD: r.floor.D - r.floor.slab_sw, fc: r.input.fc,
+      nspans: Math.max(g.nx, g.ny), hordi: r.input.hordi });
+    const lo = Math.min(...s.types.filter(t => t.ok).map(t => t.sw));
+    $('#wp_slabs').outerHTML = `<div id="wp_slabs">
+      <div class="selbox">النوع الحالي: <b>${r.model.slab.name}</b> · سماكة ${int(r.model.slab.h)} مم ·
+        وزن ذاتي ${nf(r.floor.slab_sw, 2)} kN/m² — اضغط أي نوع ليُعاد تصميم المشروع والمجسم عليه فوراً.</div>
+      <div class="v3bar">${s.types.map(t => `<button class="${t.kind === r.model.slab.type ? 'hot' : ''}"
+        onclick="TABS.pick('${t.kind}')">${t.name}${t.recommended ? ' ✓' : ''}</button>`).join('')}</div>
+      <div class="card"><h3>المقارنة على بحر ${nf(s.span, 2)} م</h3>
+        ${table(['النوع', 'المدى المناسب', 'السماكة (مم)', 'الوزن الذاتي (kN/m²)', 'مقابل المصمتة', 'الملاحظة'],
+          s.types.map(t => [t.name + (t.recommended ? ' <span class="tag t-ok">موصى به</span>' : '')
+              + (t.kind === r.model.slab.type ? ' <span class="tag t-warn">المختار</span>' : ''),
+            t.span_range, t.ok ? int(t.h) : '—',
+            t.ok ? `<b style="color:${t.sw <= lo * 1.05 ? '#34d399' : '#e6edf7'}">${nf(t.sw, 2)}</b>` : '—',
+            t.ok ? nf((t.sw - s.types[0].sw) / s.types[0].sw * 100, 0) + '%' : '—', t.note]))}
+        <div class="note">${s.note}</div></div>
+      <div class="grid g2" style="margin-top:14px">${s.types.filter(t => t.ok && t.rows).map(t =>
+        `<div class="card"><h3>${t.name}${t.kind === r.model.slab.type ? ' — المختار ✓' : ''}</h3>
+          ${table(['البند', 'القيمة'], t.rows.map(x => [x[0], x[1]]))}
+          ${t.detail && t.detail.note ? `<div class="note">${t.detail.note}</div>` : ''}</div>`).join('')}
+      </div></div>`;
+  },
+  pick: async (kind) => {
+    $('#w_slab').value = kind;
+    const box = $('#w_hordi'); if (box) box.style.display = ['auto', 'hordi'].includes(kind) ? '' : 'none';
+    await PAGES.wizard.run();
+    setTimeout(() => wtab('slabs'), 400);
+  },
+  /* ---------- الكميات وجدول الحديد ---------- */
+  boq: async () => {
+    const r = WZ, b = await post('bbs', r);
+    $('#wp_boq').outerHTML = `<div id="wp_boq"><div class="grid g4">
+      ${kpi('وزن الحديد الكلي', nf(b.total_ton, 1) + ' طن', 'ok')}
+      ${kpi('عدد القطع', int(b.bars) + ' سيخ')}
+      ${kpi('هدر الوصلات', nf(b.lap_pct, 1) + '%')}
+      ${kpi('طول السيخ بالسوق', int(b.stock) + ' م')}
+      ${kpi('الكلفة التقديرية', int(r.boq.total) + ' د.ع', 'ok')}
+      ${kpi('خرسانة الأساس', nf(r.design.conc, 1) + ' م³')}
+      ${kpi('قاعدة الوصلات', b.lap_mode)}
+      ${kpi('حفريات', nf(r.earth.cut_vol, 0) + ' م³')}</div>
+      <div class="grid g2" style="margin-top:14px">
+      <div class="card"><h3>الكلفة التقديرية</h3>
+        ${table(['البند', 'الكمية', 'الوحدة', 'السعر', 'الكلفة (د.ع)'],
+          r.boq.rows.map(x => [x.name, nf(x.q, 1), x.unit, int(x.rate), int(x.cost)]))}</div>
+      <div class="card"><h3>الحديد حسب القطر</h3>
+        ${table(['القطر', 'العدد', 'الطول (م)', 'الوزن (كغم)', 'الوصلات'],
+          b.by_db.map(x => ['Ø' + x.db, int(x.count), nf(x.length, 0), nf(x.weight, 0), int(x.laps)]))}
+        <div class="row" style="margin-top:10px"><button class="btn gh" onclick="go('bbs')">📊 جدول التقطيع الكامل</button>
+          <button class="btn gh" onclick="PAGES.wizard.dxf('rebar')">📐 تفاصيل التسليح DXF</button></div></div>
+      </div>
+      <div class="card" style="margin-top:14px"><h3>جدول تقطيع الحديد (BBS)</h3>
+        <div style="max-height:420px;overflow:auto">${table(
+          ['الرمز', 'العنصر', 'Ø', 'الشكل', 'طول السيخ', 'قطع', 'العدد', 'الوصلات', 'الوزن (كغم)'],
+          b.rows.map(x => [x.mark, x.elem, x.db ? 'Ø' + x.db : '—', x.shape, nf(x.run, 2),
+            x.pieces, int(x.count), int(x.laps), nf(x.weight, 1)]))}</div>
+        <div class="note">${b.note}</div></div></div>`;
+  },
+  /* ---------- الإنشائيات والتجربة: اختيار بالضغط على المجسم ---------- */
+  lab: () => { LAB_SEL = null; renderLab(null); },
+};
+
+/* ---------------- مختبر التجربة داخل نفس المجسم ---------------- */
+let LAB_SEL = null, LAB_RES = null;
+const MODE_IC = { bending: '🌀 انحناء', shear: '✂️ قص', torsion: '🔃 التواء',
+  buckling: '⬇️ ضغط وانبعاج', tension: '↔️ شد' };
+const KIND_AR = { col: 'عمود', bx: 'جسر باتجاه X', by: 'جسر باتجاه Y' };
+
+function labSelect(u) {                     // يُستدعى عند الضغط على عنصر بالمجسم
+  if (!u || !u.gk) return false;
+  LAB_SEL = u.gk.split('|');
+  const box = $('#lb_sel');
+  if (box) box.innerHTML = `العنصر المختار: <b>${KIND_AR[LAB_SEL[0]] || LAB_SEL[0]}</b>
+    عند المحور (${LAB_SEL[1]}, ${LAB_SEL[2]}) بالطابق ${LAB_SEL[3]} —
+    <button class="btn" style="padding:5px 12px" onclick="runLab()">🧪 احذفه وحلّل</button>
+    <button class="btn gh" style="padding:5px 12px" onclick="V3&&V3.zoomSel()">🔍 قرّبه</button>`;
+  return true;
+}
+function renderLab(r) {
+  const nfl = (WZ && WZ.model.floors) || 1;
+  const head = `<div class="selbox" id="lb_sel">
+      اضغط على أي <b>عمود</b> أو <b>جسر</b> بالمجسم أعلاه لاختياره — أو اختره من القوائم:</div>
+    <div class="v3bar">
+      <select id="lb_tag" style="width:auto;padding:6px 10px">
+        <option value="col">عمود</option><option value="bx">جسر باتجاه X</option>
+        <option value="by">جسر باتجاه Y</option></select>
+      <select id="lb_i" style="width:auto;padding:6px 10px">${
+        Array.from({ length: (WZ ? WZ.grid.nx : 1) + 1 }, (_, i) => `<option>${i}</option>`).join('')}</select>
+      <select id="lb_j" style="width:auto;padding:6px 10px">${
+        Array.from({ length: (WZ ? WZ.grid.ny : 1) + 1 }, (_, i) => `<option>${i}</option>`).join('')}</select>
+      <select id="lb_k" style="width:auto;padding:6px 10px">${
+        Array.from({ length: nfl }, (_, i) => `<option>${i + 1}</option>`).join('')}</select>
+      <button class="btn" style="padding:6px 14px" onclick="runLab(1)">🧪 احذف وحلّل</button>
+      <button class="btn gh" style="padding:6px 14px" onclick="runLab(0,1)">↩️ رجّع العنصر</button>
+      <button class="btn gh" style="padding:6px 14px" onclick="runSweep()">🗺️ مسح شامل — أي عمود هو الأحرج؟</button>
+      <button class="btn gh" style="padding:6px 14px" onclick="runSweep(1)">🗺️ مسح كل الأعمدة (أبطأ)</button>
+    </div>
+    <div id="lb_sweep"></div>
+    <div class="hint">المحاور i بالاتجاه X و j بالاتجاه Y وتبدأ من 0 — العمود الركني (0,0).
+      بعد التحليل تتلوّن كل العناصر بالمجسم حسب نسبة استغلالها، ويختفي العنصر المحذوف،
+      واضغط أي عنصر لترى نسبه الخمس قبل الحذف وبعده.</div>`;
+  if (!r) { $('#wp_lab').innerHTML = head +
+    `<div class="note">لم تُجرَ تجربة بعد — اختر عنصراً واضغط «احذف وحلّل».
+      المنهجية: حذف عنصر رئيسي وإعادة التحليل الفراغي لدراسة المسار البديل للأحمال
+      (Alternate Load Path — GSA / UFC 4-023-03).</div>`; return; }
+  const rows = r.rows || [], byMode = {};
+  rows.filter(x => x.fail).forEach(x => { byMode[x.mode] = (byMode[x.mode] || 0) + 1; });
+  const worst = rows[0];
+  $('#wp_lab').innerHTML = head + `
+    <div class="rec" style="margin-top:12px"><h3>${r.removed ? '🧪 نتيجة الحذف' : '↩️ الحالة الأصلية'}</h3>
+      <ul>${r.summary.map(x => `<li>${x}</li>`).join('')}</ul></div>
+    <div class="grid g4" style="margin-top:14px">
+      ${Object.keys(MODE_IC).map(m => kpi(MODE_IC[m], (byMode[m] || 0) + ' عنصر',
+        byMode[m] ? 'bad' : 'ok')).join('')}
+      ${kpi('عناصر تجاوزت مقاومتها', r.fails || 0, r.fails ? 'bad' : 'ok')}
+      ${kpi('أقصى انزياح بعد الحذف', nf(Math.max(...(r.drift || [0]).map(Math.abs)), 1) + ' مم')}
+      ${kpi('قبل الحذف', nf(Math.max(...(r.drift_before || [0]).map(Math.abs)), 1) + ' مم')}
+      ${kpi('أشد عنصر متأثر', worst ? (KIND_AR[worst.tag] || worst.tag) + ' ' + nf(worst.after, 2) : '—',
+        worst && worst.after > 1 ? 'bad' : 'ok')}</div>
+    <div class="note" style="margin-top:12px">${r.base_note || ''}</div>
+    <div class="card" style="margin-top:14px"><h3>العناصر الأكثر تأثراً (${rows.length})</h3>
+      <div style="max-height:430px;overflow:auto">${table(
+        ['العنصر', 'المحور', 'طابق', 'قبل', 'بعد', 'الفرق', 'النمط الحاكم',
+         'انحناء', 'قص', 'التواء', 'انبعاج', 'شد', ''],
+        rows.map(x => [KIND_AR[x.tag] || x.tag, '(' + x.key[1] + ', ' + x.key[2] + ')', x.story,
+          nf(x.before, 2), `<b style="color:${rcol(x.after)}">${nf(x.after, 2)}</b>`,
+          (x.delta >= 0 ? '+' : '') + nf(x.delta, 2), x.mode_ar,
+          ...['bending', 'shear', 'torsion', 'buckling', 'tension'].map(m =>
+            `<span style="color:${rcol(x.modes[m])}">${nf(x.modes[m], 2)}</span>`),
+          `<button class="btn gh" style="padding:3px 9px;font-size:11px"
+            onclick="labFocus('${x.key.join('|')}')">اعرضه</button>`]))}</div>
+      <div class="note">${r.note}</div></div>`;
+}
+function labFocus(gk) {
+  if (!V3 || !V3.focus) return;
+  V3.focus(gk);
+}
+/* مسح شامل: يحذف كل عمود على حدة ويرتّب المبنى حسب هشاشته */
+async function runSweep(full) {
+  const box = $('#lb_sweep');
+  box.innerHTML = '<div class="note">جارٍ حذف كل عمود على حدة وإعادة التحليل الفراغي… قد يستغرق ثوانٍ.</div>';
+  const r = await post('lab/sweep', Object.assign({}, WZ.input, { full: !!full, story: 1 }));
+  const mx = Math.max(...r.rows.map(x => x.worst), 1);
+  box.innerHTML = `<div class="rec" style="margin-top:12px"><h3>🗺️ خريطة الهشاشة — أي عمود هو الأحرج؟</h3>
+      <ul>${r.summary.filter(Boolean).map(x => `<li>${x}</li>`).join('')}</ul></div>
+    <div class="card" style="margin-top:12px"><h3>ترتيب الأعمدة حسب أثر حذفها</h3>
+      ${table(['#', 'العمود', 'المحور', 'Pu (kN)', 'عناصر تنهار', 'أعلى نسبة بعد الحذف',
+               'الانزياح (مم)', 'أنماط الفشل', 'الحكم', ''],
+        r.rows.map((x, i) => [i + 1,
+          `<span class="tag ${x.kind === 'داخلي' ? 't-ok' : 't-warn'}">${x.kind}</span>`,
+          '(' + x.i + ', ' + x.j + ')', int(x.Pu),
+          `<b style="color:${x.fails ? '#f87171' : '#34d399'}">${x.fails}</b>`,
+          `<div style="display:flex;align-items:center;gap:6px">
+             <div style="flex:1;height:7px;background:#1b2942;border-radius:4px;overflow:hidden">
+               <div style="width:${Math.min(100, x.worst / mx * 100)}%;height:100%;background:${rcol(x.worst)}"></div>
+             </div><b style="color:${rcol(x.worst)}">${nf(x.worst, 2)}</b></div>`,
+          nf(x.drift, 1),
+          x.modes.length ? x.modes.map(m => m.name + ' ×' + m.n).join(' · ') : '—',
+          x.ok ? '<span class="tag t-ok">ينجو</span>' : '<span class="tag t-bad">' + x.verdict + '</span>',
+          `<button class="btn gh" style="padding:3px 9px;font-size:11px"
+            onclick="labRemoveAt('${x.i}','${x.j}')">افحصه بالتفصيل</button>`]))}
+      <div class="note">${r.note}<br>أعلى نسبة استغلال قبل أي حذف = ${nf(r.base_max, 2)} ·
+        الانزياح الجانبي قبل الحذف = ${nf(r.drift_before, 1)} مم.</div></div>`;
+}
+function labRemoveAt(i, j) {
+  $('#lb_tag').value = 'col'; $('#lb_i').value = i; $('#lb_j').value = j; $('#lb_k').value = '1';
+  runLab(1);
+}
+async function runLab(fromForm, restore) {
+  if (restore) {
+    LAB_RES = null; if (V3 && V3.lab) V3.lab(null);
+    return renderLab(null);
+  }
+  let sel = LAB_SEL;
+  if (fromForm || !sel) sel = [txt('lb_tag'), txt('lb_i'), txt('lb_j'), txt('lb_k')];
+  const p = Object.assign({}, WZ.input, { remove: sel });
+  const r = await post('lab', p);
+  LAB_RES = r; LAB_SEL = sel;
+  renderLab(r);
+  if (V3 && V3.lab) V3.lab(r.rows, r.removed);
+  labSelect({ gk: sel.join('|') });
 }
 
 /* -------------------------------- المعالج -------------------------------- */
@@ -877,50 +1084,37 @@ PAGES.wizard = {
       ${kpi('مقطع العمود', r.col.b + '×' + r.col.h + ' مم')}${kpi('سماكة السقف المقترحة', int(r.floor.slab) + ' مم')}
       ${kpi('الحمل الكلي على التربة', int(r.total) + ' kN')}${kpi('أثقل عمود', int(r.Pmax) + ' kN')}</div>
 
-    <div class="card" style="margin-top:16px"><h3>🩻 X-Ray ثلاثي الأبعاد — المبنى كامل مع التسليح</h3>
-      <div class="v3bar">
-          <button onclick="V3&&V3.reset()">إعادة الزاوية</button>
-          <button onclick="V3&&V3.top()">مسقط علوي</button>
-          <button id="btnRebar" onclick="toggleRebar()">🧵 إظهار التسليح</button>
-          <button id="btnXray" onclick="toggleXray()">🩻 وضع الأشعة</button>
-          <button id="btnMom" onclick="toggleMoments()">📈 العزوم</button>
-          <button id="btnPun" onclick="togglePunch()">🎯 قص الثقب</button>
-          <button id="btnDef" onclick="toggleDefl()">〰️ الهطول</button>
-          <button onclick="V3&&V3.zoomSel()">🔍 تقريب المحدد</button>
-          <select id="v3floor" onchange="V3&&V3.floor(this.value==='all'?'all':+this.value)"
-            style="width:auto;padding:5px 9px;font-size:11.5px">
-            <option value="all">كل الطوابق</option>
-            ${Array.from({ length: r.model.floors }, (_, i) => `<option value="${i + 1}">طابق ${i + 1}</option>`).join('')}
-          </select>
-      </div>
-      <div class="v3d"><div id="v3d" style="min-height:470px"></div>
+    <div class="card" style="margin-top:16px"><h3>🩻 مساحة العمل ثلاثية الأبعاد — X-Ray · التسليح · التحليل · التجربة</h3>
+      ${v3bar({ floors: r.model.floors, analysis: true })}
+      <div class="v3d"><div id="v3d" style="min-height:500px"></div>
         <div class="chips" id="v3groups">
-          ${[['layers', 'طبقات الردم', 1], ['raft', 'حصيرة', 1], ['isolated', 'أسس منفردة', 1],
+          ${v3chips([['layers', 'طبقات الردم', 1], ['raft', 'حصيرة', 1], ['isolated', 'أسس منفردة', 1],
              ['piles', 'ركائز', r.recommended === 'piles' ? 1 : 0], ['columns', 'أعمدة', 1],
              ['beams', 'جسور', 1], ['slabs', 'سقوف', 1], ['extra', 'تسليح إضافي', 1],
-             ['chairs', 'كراسي', 1]].map(([k, t, on]) =>
-            `<label><input type="checkbox" data-g="${k}" ${on ? 'checked' : ''}
-              onchange="V3&&V3.group('${k}',this.checked);refreshStats()"> ${t}</label>`).join('')}
+             ['chairs', 'كراسي', 1]])}
         </div>
         <div class="info" id="v3info"></div>
         <div class="slider"><span style="font-size:11px;color:var(--mut)">قص المقطع</span>
           <input type="range" id="v3clip" min="-30" max="40" step="0.2">
           <span id="v3stats" style="font-size:11px;color:var(--acc2)"></span></div>
       </div>
-      <div class="legend"><span><i style="background:#e8443a"></i>أسياخ التسليح</span>
-        <span><i style="background:#ff9f1c"></i>أتاري وأساور</span>
-        <span><i style="background:#22d3ee"></i>تسليح إضافي</span>
-        <span><i style="background:#86efac"></i>كراسي</span>
-        <span><i style="background:#c084fc"></i>دولات</span>
-        <span><i style="background:#a8bcd4"></i>سقوف</span><span><i style="background:#7f97b8"></i>جسور</span>
-        <span><i style="background:#8ea6c4"></i>أعمدة</span><span><i style="background:#3f6fa5"></i>أساس</span></div>
-      <div class="hint">اسحب للتدوير · العجلة للتكبير · اضغط على أي عنصر ليقرّب عليه ويعرض تفاصيله ·
-        <b>ضغطة واحدة = اختيار وعرض التفاصيل (بدون تحريك الكاميرا) · ضغطتان أو زر «تقريب المحدد» = تقريب متحرك عليه.</b>
-        <br>«إظهار التسليح» يبني حديد كل العناصر بأقطاره وتباعده الحقيقي، مقطّعاً على أسياخ سوق 12 م
-        مع وصلات (Lap) ظاهرة ومحسوبة · «العزوم» شريط مغلّف العزوم على الجسور · «قص الثقب» يلوّن المقطع
-        الحرج حول كل عمود · «الهطول» يعرض شكل التشوه مكبّراً.
-        <br>وزن الحديد المعروض من الأسياخ المرسومة فعلاً للمجموعات المفعّلة — وإذا فعّلت أكثر من بديل
-        أساس فسيُحسب حديدهما معاً.</div></div>
+      ${v3legend()}
+      <div class="hint">اسحب للتدوير · العجلة للتكبير · <b>ضغطة واحدة = اختيار وعرض التفاصيل (بلا تحريك الكاميرا)
+        · ضغطتان أو «تقريب المحدد» = تقريب متحرك.</b> زر «🧍 إنسان 1.85 م» يضع شخصاً بالحجم الطبيعي للمقارنة،
+        ويتنقل معك بين الطوابق من قائمة الطوابق.</div>
+
+      <div class="wtabs" id="wtabs">
+        ${[['detail', '🧵 التسليح والتفاصيل'], ['xr', '🩻 الأشعة الإنشائية'],
+           ['slabs', '🧱 نوع السقف'], ['lab', '🧪 الإنشائيات والتجربة'],
+           ['boq', '📋 الكميات والحديد']].map(([k, t], i) =>
+          `<button data-t="${k}" class="${i ? '' : 'on'}" onclick="wtab('${k}')">${t}</button>`).join('')}
+      </div>
+      <div class="wpanel" data-t="detail">${detailPanel(r)}</div>
+      <div class="wpanel" data-t="xr" hidden><div id="wp_xr" class="note">جارٍ التحليل…</div></div>
+      <div class="wpanel" data-t="slabs" hidden><div id="wp_slabs" class="note">جارٍ التحميل…</div></div>
+      <div class="wpanel" data-t="lab" hidden><div id="wp_lab"></div></div>
+      <div class="wpanel" data-t="boq" hidden><div id="wp_boq" class="note">جارٍ التحميل…</div></div>
+    </div>
 
     <div class="rec" style="margin-top:16px"><h3>🏗️ التوصية: ${a.name}</h3>
       <ul>${a.reasons.map(x => `<li>${x}</li>`).join('')}</ul>
@@ -970,93 +1164,6 @@ PAGES.wizard = {
           ['الأساور', bm.rebar.stirrup.label],
           ['الهطول', nf(Math.abs(Math.min(...bm.design.map(x => x.d_long))), 1) + ' مم / الحد ' +
             nf(bm.design[0].d_limit, 1) + ' مم']])}</div>`; }).join('')}
-    </div>
-    <div class="grid g2" style="margin-top:16px">
-      <div class="card"><h3>قص الثقب (Punching Shear) عند الأعمدة</h3>
-        ${table(['العمود', 'الموقع', 'b0 (مم)', 'd (مم)', 'Vu (kN)', 'φVc (kN)', 'النسبة', 'الحالة'],
-          r.punching.slice(0, 12).map((q, i) => ['C' + (i + 1), q.kind, int(q.found.b0), int(q.found.d),
-            nf(q.found.Vu, 0), nf(q.found.phiVc, 0),
-            `<b style="color:${rcol(q.found.ratio)}">${nf(q.found.ratio, 2)}</b>`,
-            q.found.ok ? '<span class="tag t-ok">مقبول</span>' : '<span class="tag t-bad">راجع</span>']))}
-        <div class="note">الفحص عند ${r.punching[0].found.where} وفق ACI 22.6 — المقطع الحرج على d/2 من وجه العمود.
-          ${r.punching.every(q => q.found.ok) ? 'كل الأعمدة مقبولة.' : r.punching.find(q => !q.found.ok).found.rec}
-          <br>عند السقف: النظام جسور-بلاطة فالحمل ينتقل عبر الجسور، والقيمة المعروضة للاستئناس فقط.</div></div>
-      <div class="card"><h3>الكراسي والوصلات والبسكويت</h3>
-        ${table(['البند', 'التفصيل'], [
-          ['كراسي السقف', r.chairs.slab.label + ' — عدد ' + int(r.chairs.slab.n * r.model.floors)],
-          ['وزن كراسي السقوف', nf(r.chairs.slab.weight * r.model.floors, 2) + ' طن'],
-          ['كراسي الأساس', r.chairs.found.label + ' — عدد ' + int(r.chairs.found.n)],
-          ['بسكويت الغطاء السفلي', int(r.chairs.slab.spacers * r.model.floors) + ' قطعة'],
-          ['طول السيخ بالسوق', nf(r.model.stock, 0) + ' م — كل ما زاد يُقطّع ويُوصل']].concat(
-          Object.entries(r.laps).map(([db, v]) => ['وصلة Ø' + db,
-            '<b>' + nf(v.bottom, 2) + ' م</b> — كودية ' + nf(v.code, 2) + ' م · 60·db = ' + nf(v.site, 2) + ' م'])))}
-        <div class="note">القاعدة المعتمدة: <b>${r.detail.lap.label}</b> ·
-          الكودية = صنف B (1.3·ld) وفق ACI 25.5.2.1 · وصلات الأعمدة فوق كل سقف ومتبادلة 50%.</div></div>
-    </div>
-
-    <div class="grid g2" style="margin-top:16px">
-      <div class="card"><h3>📏 الغطاء الخرساني (Concrete Cover)</h3>
-        ${table(['العنصر', 'الغطاء (مم)'], [
-          ['السقف — الوجهان', int(r.detail.covers.slab)],
-          ['الجسور (للأساور)', int(r.detail.covers.beam)],
-          ['الأعمدة (للأتاري)', int(r.detail.covers.column)],
-          ['الأساس — الوجه السفلي على التربة', int(r.detail.covers.footing_bottom)],
-          ['الأساس — الوجه العلوي', int(r.detail.covers.footing_top)]])}
-        ${table(['جدول ACI 318-19 (20.5.1.3)', 'مم', 'المرجع'],
-          r.detail.covers.table.map(c => [c.name, int(c.v), c.ref]))}
-        <div class="note">القاعدة العملية بالموقع: البوتوم 5–7.5 سم (على التربة) والتوب 3–5 سم —
-          وهي مطابقة لجدول الكود أعلاه.</div></div>
-
-      <div class="card"><h3>✂️ نقاط قطع وثني الحديد بالجسور</h3>
-        ${['x', 'y'].map(d => { const t = r.detail.curtail[d]; return `
-        <h4 style="margin:10px 0 4px">جسور الاتجاه ${d.toUpperCase()} — البحر ${nf(t.span, 2)} م
-          (Ln = ${nf(t.ln, 2)} م)</h4>
-        ${table(['البند', 'القيمة'], [
-          ['علوي — الطبقة الأولى', 'L/3 = ' + nf(t.top1, 2) + ' م لكل جهة · طول السيخ ' + nf(t.top1_len, 2) + ' م'],
-          ['علوي — الطبقة الثانية', 'L/5 = ' + nf(t.top2, 2) + ' م · طول السيخ ' + nf(t.top2_len, 2) + ' م'],
-          ['نقطة الثني', 'L/7 = ' + nf(t.bend_at, 2) + ' م من وجه المسند'],
-          ['الأسياخ المثنية', t.bent ? t.n_bent + ' سيخ بزاوية 45° — ' + t.bar.label : 'بدون ثني'],
-          ['عكفة الأساور', t.hook_stirrup.label + ' (نصف قطر ثنية ' + int(t.hook_stirrup.bend_r) + ' مم)'],
-          ['الوصلات', 'سفلي ' + nf(t.lap_bottom, 2) + ' م · علوي ' + nf(t.lap_top, 2) + ' م'],
-          ['الغطاء', int(t.cover) + ' مم']])}`; }).join('')}
-        <div class="note">${r.detail.curtail.x.rows.map(x => x[0] + ': ' + x[1]).join(' · ')}</div></div>
-
-      <div class="card"><h3>🧱 ترتيب نشر حديد السقف (فرش ثم غطاء)</h3>
-        ${table(['الطبقة', 'التسليح', 'العمق الفعّال d', 'العدد', 'طول السيخ', 'التقطيع'],
-          r.model.slab.layout.map(l => [l.name, 'Ø' + l.db + ' @ ' + int(l.s) + ' مم',
-            l.d ? int(l.d) + ' مم' : '—', '<b>' + int(l.n) + '</b> سيخ', nf(l.length, 2) + ' م',
-            l.pieces > 1 ? l.pieces + ' قطعة' : 'قطعة واحدة']))}
-        <div class="note">العدد = ⌈العرض ÷ التباعد⌉ + 1 — نفس طريقة التنفيذ بالموقع.
-          الفرش هو الاتجاه القصير ويوضع أولاً (أكبر عمق فعّال)، والغطاء فوقه بالاتجاه الطويل.
-          <br>التسليح العلوي فوق الأعمدة والمساند فقط ويمتد L/4 لكل جهة —
-          طول السيخ ${nf(r.model.slab.top_len.x, 2)} م بالاتجاه X و ${nf(r.model.slab.top_len.y, 2)} م بالاتجاه Y.</div></div>
-
-      <div class="card"><h3>🔩 الدولات (Dowel Bars) — ربط العمود بالأساس</h3>
-        ${table(['البند', 'القيمة'], r.detail.dowels.rows.map(x => [x[0], x[1]]))}
-        ${r.detail.dowels.warn ? `<div class="note" style="border-color:#f87171;color:#fca5a5">
-          ⚠️ ${r.detail.dowels.warn} — قاعدة 16·db أقصر من الحد الكودي؛ إما تزاد لـ
-          ${int(r.detail.dowels.ldc)} مم أو تُستعمل عكفة 90° بقاع الأساس.</div>`
-          : '<div class="note">الدفن مطابق للحد الكودي ✓</div>'}</div>
-    </div>
-
-    <div class="grid g2" style="margin-top:16px">
-      <div class="card"><h3>🏛️ تصنيف الأعمدة واستمراريتها</h3>
-        <div style="max-height:320px;overflow:auto">${table(
-          ['العمود', 'المحور', 'الموقع', 'استمرارية X', 'استمرارية Y', 'Pu (kN)'],
-          r.detail.cols.map((c, i) => ['C' + (i + 1), '(' + c.i + ', ' + c.j + ')',
-            `<span class="tag ${c.kind === 'داخلي' ? 't-ok' : 't-warn'}">${c.kind}</span>`,
-            c.cont_x ? 'مستمر' : 'طرفي', c.cont_y ? 'مستمر' : 'طرفي', int(c.Pu)]))}</div>
-        <div class="note">العمود الركني والجار (الحافة) يتلقّى عزماً غير متوازن من جهة واحدة، فيحتاج
-          تسليحاً علوياً أطول بالجسر الطرفي وتطويقاً أشد — بينما العمود الداخلي عزومه متوازنة.
-          <br>نقاط قطع الحديد L/3 و L/5 والثني L/7 مطبّقة على كل الجسور أعلاه.</div></div>
-
-      <div class="card"><h3>🏗️ نوع السقف — المختار والبدائل</h3>
-        ${table(['النوع', 'المدى المناسب', 'الملاحظة', ''], r.slab.types.map(t =>
-          [t.name, t.span, t.note, t.chosen ? '<span class="tag t-ok">المختار ✓</span>' : '']))}
-        <div class="note"><b>التوصية:</b> ${r.slab.recommend.options.map(o => o.name + ' — ' + o.why).join(' · ')}
-          <br>المختار: <b>${r.model.slab.name}</b> بسماكة ${int(r.model.slab.h)} مم ووزن ذاتي
-          ${nf(r.floor.slab_sw, 2)} kN/m².
-          <button class="btn gh" style="margin-top:8px" onclick="go('slabs')">قارن كل الأنواع بالتفصيل</button></div></div>
     </div>
     <div class="card" style="margin-top:16px"><h3>مقطع الطبقات والمناسيب</h3>${sectionSVG2(ew)}</div>
 
@@ -1318,153 +1425,10 @@ PAGES.projects = {
 };
 
 /* ------------------------- الترتيب والمجموعات ---------------------------- */
-/* ==================== الإنشائيات والتجربة (حذف عنصر) ==================== */
-let LABD = null;
-const MODE_IC = { bending: '🌀 انحناء', shear: '✂️ قص', torsion: '🔃 التواء',
-  buckling: '⬇️ ضغط/انبعاج', tension: '↔️ شد' };
-PAGES.lab = {
-  ic: '🧪', name: 'الإنشائيات والتجربة', grp: 'المشروع',
-  ttl: 'الإنشائيات والتجربة — احذف عموداً أو جسراً وشوف شنو يصير',
-  sub: 'تحليل فراغي كامل قبل الحذف وبعده: وين يصير انحناء · قص · التواء · انبعاج · شد',
-  desc: 'المسار البديل للأحمال ومنع الانهيار التدريجي',
-  html: () => `<div class="grid g2">
-    <div class="card"><h3>المبنى</h3><div class="f">
-      ${F('مساحة البناء', 'lb_area', 300, 10, 'م²')}${F('عدد الطوابق', 'lb_floors', 3, 1)}
-      ${F('ارتفاع الطابق', 'lb_hs', 3.2, .1, 'م')}
-      ${S('الاستعمال', 'lb_use', META.live.map(x => x.name), 'سكني / غرف نوم')}
-      ${F("f'c", 'lb_fc', 25, 1, 'MPa')}
-      ${S('المحافظة (للحمل الزلزالي)', 'lb_city', META.cities.map(c => c.name), 'بغداد')}</div>
-      <div class="hint">النموذج فراغي (Frame3D) بـ 6 درجات حرية لكل عقدة وديافرام صلب لكل طابق.</div></div>
-    <div class="card"><h3>العنصر المراد حذفه</h3><div class="f">
-      ${S('نوع العنصر', 'lb_tag', [['col', 'عمود'], ['bx', 'جسر باتجاه X'], ['by', 'جسر باتجاه Y']], 'col')}
-      ${F('المحور i (بالاتجاه X)', 'lb_i', 0, 1)}${F('المحور j (بالاتجاه Y)', 'lb_j', 0, 1)}
-      ${F('الطابق', 'lb_k', 1, 1)}</div>
-      <div class="row"><button class="btn" onclick="PAGES.lab.run()">🧪 احذف وحلّل</button>
-        <button class="btn gh" onclick="PAGES.lab.run(true)">↩️ الحالة الأصلية</button>
-        <button class="btn gh" onclick="window.print()">🖨️ تقرير</button></div>
-      <div class="hint">المحاور تبدأ من 0. العمود الركني = (0,0) · الداخلي = محاور وسطية.
-        بعد التحليل اضغط على أي عنصر بالمجسم لترى نسبه الخمس.</div></div></div>
-    <div id="lb_out" style="margin-top:16px"></div>`,
-  payload: () => ({ area: val('lb_area'), floors: val('lb_floors'), story_h: val('lb_hs'),
-    use: txt('lb_use'), fc: val('lb_fc'), city: txt('lb_city'), slab_type: 'solid' }),
-  run: async (base) => {
-    const p = PAGES.lab.payload();
-    if (!base) p.remove = [txt('lb_tag'), val('lb_i'), val('lb_j'), val('lb_k')];
-    const r = await post('lab', p);
-    LABD = r;
-    const rows = r.rows || [];
-    const byMode = {};
-    rows.filter(x => x.fail).forEach(x => { byMode[x.mode] = (byMode[x.mode] || 0) + 1; });
-    $('#lb_out').innerHTML = `
-    <div class="rec"><h3>${r.removed ? '🧪 نتيجة الحذف' : '↩️ الحالة الأصلية'}</h3>
-      <ul>${r.summary.map(x => `<li>${x}</li>`).join('')}</ul></div>
-    <div class="grid g4" style="margin-top:16px">
-      ${Object.keys(MODE_IC).map(m => kpi(MODE_IC[m], (byMode[m] || 0) + ' عنصر',
-        byMode[m] ? 'bad' : 'ok')).join('')}
-      ${kpi('عناصر تجاوزت مقاومتها', r.fails || 0, r.fails ? 'bad' : 'ok')}
-      ${kpi('أقصى انزياح جانبي', nf(Math.max(...(r.drift || [0]).map(Math.abs)), 1) + ' مم')}
-      ${kpi('معادلات النموذج', int(r.neq))}
-    </div>
-    <div class="card" style="margin-top:16px"><h3>🩻 المجسم — العناصر ملوّنة حسب نسبة الاستغلال</h3>
-      <div class="v3bar">
-        <button onclick="V3&&V3.reset()">إعادة الزاوية</button>
-        <button onclick="V3&&V3.top()">مسقط علوي</button>
-        <button id="btnXray" onclick="toggleXray()">🩻 وضع الأشعة</button>
-        <button onclick="V3&&V3.zoomSel()">🔍 تقريب المحدد</button>
-        <select id="v3floor" onchange="V3&&V3.floor(this.value==='all'?'all':+this.value)"
-          style="width:auto;padding:5px 9px;font-size:11.5px">
-          <option value="all">كل الطوابق</option>
-          ${Array.from({ length: r.spec.floors }, (_, i) => `<option value="${i + 1}">طابق ${i + 1}</option>`).join('')}
-        </select>
-      </div>
-      <div class="v3d"><div id="lb3d" style="min-height:470px"></div>
-        <div class="chips" id="v3groups">
-          ${[['columns', 'أعمدة', 1], ['beams', 'جسور', 1], ['slabs', 'سقوف', 0],
-             ['raft', 'حصيرة', 0], ['isolated', 'أسس', 0], ['layers', 'ردم', 0]].map(([k, t, on]) =>
-            `<label><input type="checkbox" data-g="${k}" ${on ? 'checked' : ''}
-              onchange="V3&&V3.group('${k}',this.checked)"> ${t}</label>`).join('')}
-        </div>
-        <div class="info" id="v3info"></div>
-      </div>
-      <div class="legend"><span><i style="background:#34d399"></i>آمن (≤ 0.7)</span>
-        <span><i style="background:#fbbf24"></i>قريب من الحد (0.7 – 1.0)</span>
-        <span><i style="background:#f87171"></i>تجاوز المقاومة (> 1.0)</span>
-        <span><i style="background:#2e4258"></i>لم يتأثر</span></div>
-      <div class="hint">العنصر المحذوف يختفي من المجسم · اضغط على أي عمود أو جسر لترى نسبه الخمس
-        (انحناء · قص · التواء · انبعاج · شد) قبل الحذف وبعده.</div></div>
-    <div class="note" style="margin-top:12px">${r.base_note || ''}</div>
-    <div class="card" style="margin-top:16px"><h3>العناصر الأكثر تأثراً (${rows.length})</h3>
-      <div style="max-height:460px;overflow:auto">${table(
-        ['العنصر', 'المحور', 'طابق', 'النسبة قبل', 'بعد', 'الفرق', 'النمط الحاكم',
-         'انحناء', 'قص', 'التواء', 'انبعاج', 'شد'],
-        rows.map(x => [
-          { col: 'عمود', bx: 'جسر X', by: 'جسر Y' }[x.tag] || x.tag,
-          '(' + x.key[1] + ', ' + x.key[2] + ')', x.story,
-          nf(x.before, 2), `<b style="color:${rcol(x.after)}">${nf(x.after, 2)}</b>`,
-          (x.delta >= 0 ? '+' : '') + nf(x.delta, 2), x.mode_ar,
-          ...['bending', 'shear', 'torsion', 'buckling', 'tension'].map(m =>
-            `<span style="color:${rcol(x.modes[m])}">${nf(x.modes[m], 2)}</span>`)]))}</div>
-      <div class="note">${r.note}</div></div>`;
-    setTimeout(() => {
-      mount3D({ model: r.model, grid: r.grid, loads: r.loads, recommended: 'none' }, 'lb3d');
-      if (V3) V3.lab(rows, r.removed);
-    }, 60);
-  },
-  init: () => PAGES.lab.run()
-};
-
-/* ======================== مقارنة أنواع السقوف ======================== */
-PAGES.slabs = {
-  ic: '🧱', name: 'أنواع السقوف', grp: 'المشروع',
-  ttl: 'أنواع السقوف — مصمتة · هوردي · فلات · وافل · ببل ديك',
-  sub: 'مقارنة كاملة بالسماكة والوزن الذاتي والملحقات (الأعصاب والشبكات والبلوك)',
-  desc: 'اختر نوع السقف المناسب لبحرك',
-  html: () => `<div class="grid g2">
-    <div class="card"><h3>البحر والحمل</h3><div class="f">
-      ${F('البحر الأكبر', 'sl_span', 6, .1, 'م')}${F('البحر الآخر', 'sl_span2', 5, .1, 'م')}
-      ${S('الاستعمال', 'sl_use', META.live.map(x => x.name), 'سكني / غرف نوم')}
-      ${F('حمل ميت إضافي', 'sl_wd', 2.5, .1, 'kN/m²')}
-      ${F("f'c", 'sl_fc', 25, 1, 'MPa')}${F('عدد الفضاءات', 'sl_ns', 3, 1)}</div>
-      <div class="row"><button class="btn" onclick="PAGES.slabs.run()">قارن الأنواع</button></div></div>
-    <div class="card"><h3>مقاسات بلوك الهوردي</h3><div class="f">
-      ${F('عرض البلوك ⊥ العصب', 'sl_bw', (META.hordi || {}).block_W || 400, 10, 'مم')}
-      ${F('طول البلوك', 'sl_bl', (META.hordi || {}).block_L || 200, 10, 'مم')}
-      ${F('ارتفاع البلوك', 'sl_bh', (META.hordi || {}).block_H || 240, 10, 'مم')}
-      ${F('عرض العصب', 'sl_rw', (META.hordi || {}).rib_w || 120, 10, 'مم')}
-      ${F('طبقة التغطية', 'sl_tp', (META.hordi || {}).topping || 70, 5, 'مم')}
-      ${F('وزن البلوكة', 'sl_bk', (META.hordi || {}).block_kg || 12, .5, 'كغم')}</div>
-      <div class="hint">تباعد الأعصاب = عرض البلوك + عرض العصب.</div></div></div>
-    <div id="sl_out" style="margin-top:16px"></div>`,
-  run: async () => {
-    const live = (META.live.find(x => x.name === txt('sl_use')) || { v: 2 }).v;
-    const r = await post('slabtypes', { span: val('sl_span'), span2: val('sl_span2'),
-      live: live, wD: val('sl_wd'), fc: val('sl_fc'), nspans: val('sl_ns'),
-      hordi: { block_W: val('sl_bw'), block_L: val('sl_bl'), block_H: val('sl_bh'),
-        rib_w: val('sl_rw'), topping: val('sl_tp'), block_kg: val('sl_bk') } });
-    const lo = Math.min(...r.types.filter(t => t.ok).map(t => t.sw));
-    $('#sl_out').innerHTML = `
-    <div class="card"><h3>المقارنة على بحر ${nf(r.span, 2)} م</h3>
-      ${table(['النوع', 'المدى المناسب', 'السماكة (مم)', 'الوزن الذاتي (kN/m²)', 'مقابل المصمتة', 'الملاحظة'],
-        r.types.map(t => [
-          t.name + (t.recommended ? ' <span class="tag t-ok">موصى به ✓</span>' : ''),
-          t.span_range, t.ok ? int(t.h) : '—',
-          t.ok ? `<b style="color:${t.sw <= lo * 1.05 ? '#34d399' : '#e6edf7'}">${nf(t.sw, 2)}</b>` : '—',
-          t.ok ? nf((t.sw - r.types[0].sw) / r.types[0].sw * 100, 0) + '%' : '—', t.note]))}
-      <div class="note">${r.note}</div></div>
-    <div class="grid g2" style="margin-top:16px">
-      ${r.types.filter(t => t.ok).map(t => `<div class="card">
-        <h3>${t.name}${t.recommended ? ' ✓' : ''}</h3>
-        ${table(['البند', 'القيمة'], (t.rows || []).map(x => [x[0], x[1]]))}
-        ${t.detail && t.detail.note ? `<div class="note">${t.detail.note}</div>` : ''}</div>`).join('')}
-    </div>`;
-  },
-  init: () => PAGES.slabs.run()
-};
-
 const ORDER = [
-  ['المشروع', ['wizard', 'room', 'lab', 'slabs', 'bbs', 'projects']],
+  ['المشروع', ['wizard', 'room', 'bbs', 'projects']],
   ['ما تحت الصفر', ['survey', 'earth', 'soil']],
-  ['أدوات المهندس (متقدم)', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing', 'slab', 'xray', 'boq']],
+  ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],
   ['مرجع', ['ref', 'home']],
 ];
 PAGES.home.name = 'عن المنصة';
@@ -1479,7 +1443,8 @@ PAGES.home.ttl = 'عن المنصة';
   go(want in PAGES ? want : 'wizard');
   window.addEventListener('hashchange', () => {          // دعم زر الرجوع وتغيير العنوان
     const id = (location.hash || '#wizard').slice(1);
-    if (id in PAGES && !$('#nav button[data-id="' + id + '"]').classList.contains('on')) go(id);
+    const btn = $('#nav button[data-id="' + id + '"]');
+    if (id in PAGES && (!btn || !btn.classList.contains('on'))) go(id);
   });
 })();
 

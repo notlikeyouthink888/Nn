@@ -68,6 +68,7 @@ ROUTES = {
     'bbs': lambda p: BBS.schedule(p if 'model' in p else PJ.wizard(p)),
     # --- التفاصيل والتجربة وأنواع السقوف ---
     'lab': PJ.lab,
+    'lab/sweep': PJ.lab_sweep,
     'slabtypes': PJ.slabtypes,
     'slabtype': lambda p: SL.design(p.get('kind', 'hordi'), p),
     'detail/cover': lambda p: dict(

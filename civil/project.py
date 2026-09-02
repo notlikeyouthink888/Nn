@@ -145,8 +145,12 @@ def design_special(kind, g, t_slab, wD_super, live, fc, fy, cb, chh, Pu, opts):
         mesh = dict(short=_layer(bot, ml['d_short'], 'الاتجاه القصير', 'فرش — الطبقة الأولى'),
                     long=_layer(bot, ml['d_long'], 'الاتجاه الطويل', 'غطاء — الطبقة الثانية'),
                     top=_layer(top, ml['d_short'], 'شريط الأعمدة', 'علوي فوق الأعمدة'))
+        # الفلات سلاب بلا جسور داخلية — الحمل ينتقل مباشرة للأعمدة (جسور محيطية فقط)
         geom = dict(kind='flat', drop=r['drop'], top_ext=r['top_ext'],
-                    top_len_x=r['top_len_x'], top_len_y=r['top_len_y'])
+                    top_len_x=r['top_len_x'], top_len_y=r['top_len_y'],
+                    edge_beams_only=True,
+                    capital=round(max(r['Lx'], r['Ly']) / 6.0, 2),
+                    note='بلا جسور داخلية — شرائح الأعمدة تعمل كجسور مخفية داخل سماكة البلاطة')
     elif kind in ('hordi', 'waffle'):
         ml = DT.mesh_layers(h, cov, cov, 10.0, 10.0)
         m = r.get('mesh') or E.bar_spacing(0.0018 * 1000.0 * r['topping'], dbs=(6, 8, 10), smax=300.0)
@@ -241,6 +245,22 @@ def chairs(Lx, Ly, h_mm, cov, db_top, db_bot, spacing=1.0, kind='s135', cov_bot=
     """كراسي دعم الشبكة العلوية — النوع والزاوية والعدد والوزن (detail.chair_layout)."""
     return DT.chair_layout(Lx, Ly, h_mm, cov, cov_bot if cov_bot is not None else cov,
                           db_top, db_bot, kind=kind, spacing=spacing)
+
+def chair_zones(g, top_len, spacing=1.0):
+    """الكراسي تُوضع حيث يوجد حديد علوي فقط — شرائط فوق محاور المساند،
+    عرض الشريط = طول السيخ العلوي (2×L/4 + عرض المسند). لا كراسي بوسط البحر."""
+    zones, n = [], 0
+    rows = lambda w: max(1, DT.n_bars(w, spacing) - 1)
+    for j in range(g['ny'] + 1):
+        w = top_len['y']; nz = DT.n_bars(g['L'], spacing) * rows(w)
+        zones.append(dict(dir='x', at=j * g['sy'], w=w, length=g['L'], n=nz)); n += nz
+    for i in range(g['nx'] + 1):
+        w = top_len['x']; nz = DT.n_bars(g['B'], spacing) * rows(w)
+        zones.append(dict(dir='y', at=i * g['sx'], w=w, length=g['B'], n=nz)); n += nz
+    inter = (g['nx'] + 1) * (g['ny'] + 1) * rows(top_len['x']) * rows(top_len['y'])
+    return dict(zones=zones, n=max(1, n - inter), spacing=spacing, overlap=inter,
+                note='الكراسي تحت شرائط الحديد العلوي فوق المساند فقط — لا حاجة لها بوسط البحر '
+                     'حيث لا يوجد حديد علوي (التسليح العلوي يمتد L/4 لكل جهة من المسند)')
 
 def envelope(bm, npts=13):
     """مغلّف العزوم والهطول لكل فضاء — مبسّط للرسم."""
@@ -431,8 +451,12 @@ def wizard(p):
     # ------------------------- الكميات -------------------------
     conc = design.get('conc', 0.0)
     steel = design.get('steel', conc * 90.0 / 1000.0)
-    beam_conc = (bx['section']['b'] * bx['section']['h'] / 1e6 * g['L'] * (g['ny'] + 1)
-                 + by['section']['b'] * by['section']['h'] / 1e6 * g['B'] * (g['nx'] + 1)) * floors
+    # الفلات سلاب: جسور محيطية فقط (محوران بكل اتجاه) بدل كل المحاور
+    edge_only = bool((slab.get('geom') or {}).get('edge_beams_only'))
+    nlx = 2 if edge_only else g['ny'] + 1
+    nly = 2 if edge_only else g['nx'] + 1
+    beam_conc = (bx['section']['b'] * bx['section']['h'] / 1e6 * g['L'] * nlx
+                 + by['section']['b'] * by['section']['h'] / 1e6 * g['B'] * nly) * floors
     slab_conc = fp * slab['h'] / 1000.0 * floors
     col_conc = cb * ch / 1e6 * hs * floors * len(loads)
     rates = p.get('rates') or {}
@@ -460,8 +484,15 @@ def wizard(p):
 
     # ------------------------- الكراسي والوصلات -------------------------
     cov_s = slab['cover']
+    top_len = dict(x=2 * (g['sx'] / 4.0) + cb / 1000.0, y=2 * (g['sy'] / 4.0) + ch / 1000.0,
+                   ext=0.25)
     ch_slab = chairs(g['L'], g['B'], slab['h'], cov_s,
-                     slab['mesh']['top']['db'], slab['mesh']['short']['db'], kind=chair_kind)
+                     slab['mesh']['top']['db'],
+                     slab['mesh']['short']['db'] + slab['mesh']['long']['db'], kind=chair_kind)
+    cz = chair_zones(g, top_len)
+    ch_slab.update(n=cz['n'], nx=None, ny=None, zones=cz['zones'], overlap=cz['overlap'],
+                   note=cz['note'],
+                   weight=cz['n'] * ch_slab['len_each'] * E.ab(ch_slab['db']) / 1e6 * 7850.0 / 1000.0)
     cov_ft = DT.cover('footing', 'weather'); cov_fb = DT.cover('footing', 'ground')
     ch_found = (chairs(rf['Lx'], rf['Ly'], rf['h'], cov_ft, rf['top']['db'], rf['bottom']['db'],
                        kind=chair_kind, cov_bot=cov_fb)
@@ -503,8 +534,7 @@ def wizard(p):
         slab=dict(h=slab['h'], kind=slab['kind'], mesh=slab['mesh'], name=slab['kind_name'],
                   chairs=ch_slab, top_strip=0.5, type=slab_kind,
                   geom=slab.get('geom'), layout=layout, cover=slab['cover'],
-                  top_len=dict(x=2 * (g['sx'] / 4.0) + cb / 1000.0,
-                               y=2 * (g['sy'] / 4.0) + ch / 1000.0, ext=0.25),
+                  top_len=top_len,
                   extra=dict(corner=dict(db=slab['mesh']['top']['db'],
                                          s=slab['mesh']['top']['s'], size=0.2),
                              integrity=dict(n=2, db=slab['mesh']['short']['db']))),
@@ -595,6 +625,57 @@ def lab(p):
     out['grid'] = R['grid']; out['model'] = R['model']; out['loads'] = R['loads']
     out['recommended'] = 'none'
     return out
+
+def lab_sweep(p):
+    """مسح شامل: يحذف كل عمود بالطابق الأول واحداً واحداً ويرتّب المبنى حسب الهشاشة.
+    يعطي خريطة الأعمدة الحرجة (Vulnerability Map) وفق منهج المسار البديل."""
+    import lab as LAB
+    R = p if 'model' in p else wizard(p)
+    sp = lab_spec(R)
+    story = int(p.get('story', 1))
+    base = LAB.analyze(sp, None)
+    base_max = max((v['ratio'] for v in base['res'].values()), default=0.0)
+    out = []
+    seen = set()
+    for l in R['loads']:
+        key = (l['kind'],)                       # عمود نموذجي واحد لكل صنف يكفي للمقارنة السريعة
+        full = p.get('full')
+        if not full and key in seen:
+            continue
+        seen.add(key)
+        aft = LAB.analyze(sp, ('col', l['i'], l['j'], story))
+        fails, worst, modes = 0, 0.0, {}
+        for k, a in aft['res'].items():
+            b = base['res'].get(k)
+            if not b:
+                continue
+            if a['ratio'] > 1.0 and b['ratio'] <= 1.0:
+                fails += 1
+                modes[a['mode_ar']] = modes.get(a['mode_ar'], 0) + 1
+            worst = max(worst, a['ratio'])
+        dmax = max([abs(x) for x in aft['drift']] or [0])
+        out.append(dict(i=l['i'], j=l['j'], kind=l['kind'], story=story,
+                        Pu=l['Pu'], fails=fails, worst=worst, drift=dmax,
+                        modes=[dict(name=a, n=b2) for a, b2 in modes.items()],
+                        verdict=('انهيار تدريجي محتمل' if fails else
+                                 ('حرج' if worst > 0.95 else 'المنشأ ينجو')),
+                        ok=(fails == 0)))
+    out.sort(key=lambda x: (-x['fails'], -x['worst']))
+    crit = [x for x in out if not x['ok']]
+    return dict(rows=out, base_max=base_max, story=story,
+                drift_before=max([abs(x) for x in base['drift']] or [0]),
+                critical=len(crit),
+                summary=[
+                    'فُحص %d صنف عمود بالطابق %d — حذف كل واحد على حدة وإعادة التحليل الفراغي كاملاً'
+                    % (len(out), story),
+                    ('✗ %d حالة تؤدي لانهيار تدريجي: %s' % (
+                        len(crit), ' · '.join('%s (%d, %d)' % (x['kind'], x['i'], x['j']) for x in crit))
+                     if crit else '✓ المنشأ ينجو من حذف أي عمود — يوجد مسار بديل كافٍ للأحمال'),
+                    'أشد حالة: حذف عمود %s ترفع أعلى نسبة استغلال إلى %.2f (كانت %.2f)'
+                    % (out[0]['kind'], out[0]['worst'], base_max) if out else ''],
+                note='المسح يحذف عموداً واحداً في كل مرة ويعيد حل النموذج الفراغي بالكامل — '
+                     'وهو جوهر تدقيق الانهيار التدريجي (GSA / UFC 4-023-03). '
+                     'العمود الذي يسبب أكبر عدد من التجاوزات هو الأحرج ويستحق تقوية أو مسار حمل بديل.')
 
 def slabtypes(p):
     """يقارن أنواع السقوف على نفس البحر والحمل."""

@@ -35,10 +35,10 @@ function Viewer3D(el, M, onPick) {
 
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
   const GN = ['layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
-              'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl'];
+              'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl', 'human'];
   const G = {}; GN.forEach(k => { G[k] = new T.Group(); G[k].name = k; sc.add(G[k]); });
   G.moments.visible = G.punch.visible = G.defl.visible = G.rebar.visible = G.extra.visible =
-    G.chairs.visible = false;
+    G.chairs.visible = G.human.visible = false;
   const on = {}; GN.forEach(k => on[k] = 1);
   const picks = [];
   const px = v => v - L / 2, pz = v => -(v - B / 2);
@@ -174,45 +174,75 @@ function Viewer3D(el, M, onPick) {
       const yb = z - th, name = md.slab.name;
       const inf = (t, rows) => ({ title: t + ' — طابق ' + s, kind: 'slab', grp: 'slabs',
         floor: s, rows: rows });
-      if (gm.kind === 'hordi' || gm.kind === 'waffle') {
+      if (gm.kind === 'hordi') {
+        // أعصاب باتجاه واحد + بلوك بينها + مناطق مصمتة عند المساند
         const sp = gm.spacing / 1000, rw = gm.rib_w / 1000, rh = gm.rib_h / 1000;
-        const bw2 = sp - rw, bl = gm.block ? gm.block.L / 1000 : sp - rw;
-        const pos = [], solid = gm.solid_head || 0;
-        for (let zz = -B / 2 + sp / 2; zz < B / 2; zz += sp)
-          for (let xx = -L / 2 + bl / 2 + solid; xx < L / 2 - solid; xx += bl)
-            pos.push([xx, yb + rh / 2, zz]);
-        if (gm.kind === 'hordi' && pos.length && pos.length < 12000) {
-          const im = new T.InstancedMesh(new T.BoxGeometry(bl * .96, rh * .95, bw2 * .96),
-            mat(0xd9c9a3, .95), pos.length);
+        const bw2 = sp - rw, bl = gm.block ? gm.block.L / 1000 : .2;
+        const solid = gm.solid_head || 0, pos = [];
+        const ribInfo = inf('أعصاب ' + name,
+          [['عرض العصب', Math.round(gm.rib_w) + ' مم'], ['ارتفاع العصب', Math.round(gm.rib_h) + ' مم'],
+           ['التباعد', Math.round(gm.spacing) + ' مم (بلوك ' + Math.round(bw2 * 1000) + ' + عصب ' + Math.round(rw * 1000) + ')'],
+           ['عدد الأعصاب/م', (gm.ribs_per_m || 0).toFixed(2)],
+           ['التسليح السفلي', (gm.rib_rebar || {}).label || '—'],
+           ['طبقة التغطية', Math.round(gm.topping) + ' مم'],
+           ['المنطقة المصمتة', solid ? solid.toFixed(2) + ' م عند كل مسند' : 'غير مطلوبة']]);
+        let first = true;
+        for (let z0 = -B / 2; z0 + sp <= B / 2 + 1e-6; z0 += sp) {
+          box(G.slabs, L, rh, rw, 0, yb + rh / 2, z0 + rw / 2, 0x9fb4cc, 1,
+            first ? ribInfo : null);
+          for (let xx = -L / 2 + solid; xx + bl <= L / 2 - solid + 1e-6; xx += bl)
+            pos.push([xx + bl / 2, yb + rh / 2, z0 + rw + bw2 / 2]);
+          first = false;
+        }
+        if (pos.length && pos.length < 20000) {
+          const im = new T.InstancedMesh(new T.BoxGeometry(bl * .98, rh * .98, bw2 * .98),
+            mat(0xd9c08a, 1), pos.length);
           const mx2 = new T.Matrix4();
           pos.forEach((p, i) => { mx2.makeTranslation(p[0], p[1], p[2]); im.setMatrixAt(i, mx2); });
           im.instanceMatrix.needsUpdate = true; im.frustumCulled = false;
-          im.userData = inf('بلوك الهوردي', [['المقاس', gm.block.W + '×' + gm.block.L + '×' + gm.block.H + ' مم'],
+          im.userData = inf('بلوك الهوردي', [
+            ['المقاس', Math.round(gm.block.W) + '×' + Math.round(gm.block.L) + '×' + Math.round(gm.block.H) + ' مم'],
             ['العدد بالمتر المربع', (gm.blocks_per_m2 || 0).toFixed(1) + ' قطعة'],
-            ['العدد بالسقف', pos.length + ' قطعة'], ['وزن القطعة', (gm.block.kg || 12) + ' كغم'],
-            ['المنطقة المصمتة', solid ? solid.toFixed(2) + ' م عند المساند' : 'لا حاجة']]);
+            ['العدد بالسقف الواحد', pos.length + ' قطعة'], ['وزن القطعة', (gm.block.kg || 12) + ' كغم'],
+            ['المنطقة المصمتة', solid ? solid.toFixed(2) + ' م عند المساند (بلا بلوك)' : 'لا يوجد']]);
           picks.push(im); G.slabs.add(im);
         }
-        // الأعصاب الخرسانية
-        const rp = [];
-        for (let zz = -B / 2 + sp / 2; zz < B / 2; zz += sp) rp.push(zz);
-        rp.forEach((zz, i2) => box(G.slabs, L, rh, rw, 0, yb + rh / 2, zz + bw2 / 2 + rw / 2,
-          0x9fb4cc, .9, i2 ? null : inf('أعصاب ' + name,
-            [['عرض العصب', gm.rib_w + ' مم'], ['ارتفاع العصب', gm.rib_h + ' مم'],
-             ['التباعد', gm.spacing + ' مم'], ['عدد الأعصاب/م', (gm.ribs_per_m || 0).toFixed(2)],
-             ['التسليح السفلي', (gm.rib_rebar || {}).label || '—'],
-             ['طبقة التغطية', gm.topping + ' مم']])));
-        if (gm.kind === 'waffle') {
-          for (let xx = -L / 2 + sp / 2; xx < L / 2; xx += sp)
-            box(G.slabs, rw, rh, B, xx, yb + rh / 2, 0, 0x9fb4cc, .9, null);
+        // المناطق المصمتة عند المساند (بلا بلوك)
+        if (solid > 0) for (const xx of [-L / 2, L / 2 - solid])
+          box(G.slabs, solid, rh, B, xx + solid / 2, yb + rh / 2, 0, 0x9fb4cc, .85, null);
+      } else if (gm.kind === 'waffle') {
+        // شبكة أعصاب متعامدة — تُرسم الفراغات (الكوفرات) بدل الكتلة
+        const sp = gm.spacing / 1000, rw = gm.rib_w / 1000, rh = gm.rib_h / 1000;
+        const cf = sp - rw, solid = gm.solid_head || 0, pos = [];
+        const info2 = inf('أعصاب الوافل', [
+          ['الشبكة', 'أعصاب ' + Math.round(gm.rib_w) + ' مم @ ' + Math.round(gm.spacing) + ' مم بالاتجاهين'],
+          ['ارتفاع العصب', Math.round(gm.rib_h) + ' مم'], ['طبقة التغطية', Math.round(gm.topping) + ' مم'],
+          ['التسليح', (gm.rib_rebar || {}).label || '—'],
+          ['المصمت حول الأعمدة', solid.toFixed(2) + ' م لكل جهة']]);
+        let first = true;
+        for (let z0 = -B / 2; z0 + sp <= B / 2 + 1e-6; z0 += sp) {
+          box(G.slabs, L, rh, rw, 0, yb + rh / 2, z0 + rw / 2, 0x9fb4cc, 1, first ? info2 : null);
+          first = false;
         }
-      } else if (gm.kind === 'flat' && gm.drop) {
-        const dh = (gm.drop.h - md.slab.h) / 1000, sz = gm.drop.size;
-        COLS.forEach((l, k2) => box(G.slabs, sz, Math.max(dh, .05), sz, px(l.x),
-          yb - Math.max(dh, .05) / 2, pz(l.y), 0x8fa8c6, 1, k2 ? null :
-          inf('رأس عمود (Drop Panel)', [['السماكة الكلية', Math.round(gm.drop.h) + ' مم'],
-            ['المقاس', sz.toFixed(2) + ' × ' + sz.toFixed(2) + ' م'],
-            ['السبب', 'رفع مقاومة قص الثقب'], ['المرجع', 'ACI 8.2.4']])));
+        for (let x0 = -L / 2; x0 + sp <= L / 2 + 1e-6; x0 += sp)
+          box(G.slabs, rw, rh, B, x0 + rw / 2, yb + rh / 2, 0, 0x9fb4cc, 1, null);
+        // المصمت حول الأعمدة
+        COLS.forEach(l => box(G.slabs, 2 * solid, rh, 2 * solid, px(l.x), yb + rh / 2, pz(l.y),
+          0x8fa8c6, .9, null));
+      } else if (gm.kind === 'flat') {
+        // رأس عمود (Drop Panel) إن لزم قص الثقب، وإلا تاج عمود يوضّح انتقال الحمل مباشرةً
+        const need = !!gm.drop;
+        const dh = need ? (gm.drop.h - md.slab.h) / 1000 : Math.max(.08, th * .45);
+        const sz = need ? gm.drop.size : (gm.capital || 1.2);
+        COLS.forEach((l, k2) => box(G.slabs, sz, dh, sz, px(l.x), yb - dh / 2, pz(l.y),
+          need ? 0x8fa8c6 : 0x7f97b8, 1, k2 ? null :
+          inf(need ? 'رأس عمود (Drop Panel)' : 'تاج عمود (Column Capital)',
+            [['السماكة المضافة', Math.round(dh * 1000) + ' مم'],
+             ['المقاس', sz.toFixed(2) + ' × ' + sz.toFixed(2) + ' م'],
+             ['السبب', need ? 'قص الثقب تجاوز المقاومة — رأس عمود مطلوب (ACI 8.2.4)'
+               : 'قص الثقب مقبول بلا رأس عمود — التاج لتوضيح انتقال الحمل'],
+             ['النظام', 'فلات سلاب: لا جسور داخلية — الحمل ينتقل من البلاطة للعمود مباشرة'],
+             ['شريحة الأعمدة', 'تعمل كجسر مخفي داخل سماكة البلاطة']])));
       } else if (gm.kind === 'bubble') {
         const dia = gm.ball / 1000, sp = gm.spacing / 1000, pos = [], sd = gm.solid_head || 0;
         for (let xx = -L / 2 + sp; xx < L / 2 - sp; xx += sp)
@@ -236,9 +266,11 @@ function Viewer3D(el, M, onPick) {
       }
     }
     const bxs = md.beams.x, bys = md.beams.y;
+    const edgeOnly = !!((md.slab.geom || {}).edge_beams_only);
     for (let s = 1; s <= nf; s++) {
       const z = s * hs;
-      for (let j = 0; j <= g.ny; j++) for (let i = 0; i < g.nx; i++)
+      for (let j = 0; j <= g.ny; j++) for (let i = 0; i < g.nx; i++) {
+        if (edgeOnly && j !== 0 && j !== g.ny) continue;   // فلات سلاب: جسور محيطية فقط
         box(G.beams, g.sx - cb, bxs.h / 1000, bxs.b / 1000, px((xs[i] + xs[i + 1]) / 2),
           z - bxs.h / 2000, pz(ys[j]), 0x7f97b8, 1,
           { title: 'جسر X — طابق ' + s, kind: 'beam', grp: 'beams', floor: s,
@@ -246,17 +278,27 @@ function Viewer3D(el, M, onPick) {
             rows: [['المقطع', bxs.b + ' × ' + bxs.h + ' مم'], ['البحر', g.sx.toFixed(2) + ' م'],
               ['سفلي', bxs.rebar.bottom.label], ['علوي', bxs.rebar.top.label],
               ['الأساور', bxs.rebar.stirrup.label],
-              ['الهطول', Math.abs(bxs.d_long).toFixed(1) + ' / ' + bxs.d_limit.toFixed(1) + ' مم']] });
-      for (let i = 0; i <= g.nx; i++) for (let j = 0; j < g.ny; j++)
+              ['الهطول', Math.abs(bxs.d_long).toFixed(1) + ' / ' + bxs.d_limit.toFixed(1) + ' مم'],
+              ['النظام', edgeOnly ? 'جسر محيطي — لا جسور داخلية بالفلات سلاب' : 'إطار جسور كامل']] });
+      }
+      for (let i = 0; i <= g.nx; i++) for (let j = 0; j < g.ny; j++) {
+        if (edgeOnly && i !== 0 && i !== g.nx) continue;
         box(G.beams, bys.b / 1000, bys.h / 1000, g.sy - ch, px(xs[i]), z - bys.h / 2000,
           pz((ys[j] + ys[j + 1]) / 2), 0x7f97b8, 1,
           { title: 'جسر Y — طابق ' + s, kind: 'beam', grp: 'beams', floor: s,
             gk: 'by|' + i + '|' + j + '|' + s,
             rows: [['المقطع', bys.b + ' × ' + bys.h + ' مم'], ['البحر', g.sy.toFixed(2) + ' م'],
               ['سفلي', bys.rebar.bottom.label], ['علوي', bys.rebar.top.label],
-              ['الأساور', bys.rebar.stirrup.label]] });
+              ['الأساور', bys.rebar.stirrup.label],
+              ['النظام', edgeOnly ? 'جسر محيطي — لا جسور داخلية بالفلات سلاب' : 'إطار جسور كامل']] });
+      }
       slabGeom(z, s);
-      box(G.slabs, L, th, B, 0, z - th / 2, 0, 0xa8bcd4, 1,
+      // السقف العصبي (هوردي/وافل) = طبقة تغطية فقط فوق الأعصاب — لا كتلة مصمتة تخفيها
+      const gmS = md.slab.geom || {};
+      const ribbed = gmS.kind === 'hordi' || gmS.kind === 'waffle';
+      const tSlab = ribbed ? gmS.topping / 1000 : th;
+      box(G.slabs, L, tSlab, B, 0, z - tSlab / 2, 0, 0xa8bcd4,
+        gmS.kind === 'bubble' ? .55 : 1,
         { title: md.slab.name + ' — سقف طابق ' + s, kind: 'slab', grp: 'slabs', floor: s,
           rows: [['السماكة', md.slab.h + ' مم'], ['المساحة', (L * B).toFixed(1) + ' م²'],
             ['النوع', md.slab.name],
@@ -345,32 +387,42 @@ function Viewer3D(el, M, onPick) {
       { grp: (info && info.grp) || CURG, floor: info && info.floor });
     return im;
   }
-  /* الكرسي حسب نوعه وزاويته — z90 أرجل عمودية · s135 ميل 45° · sb مستمر · ihc منفرد */
+  /* الكرسي حسب نوعه وزاويته — z90 أرجل عمودية · s135 ميل 45° · sb مستمر · ihc منفرد.
+     القدمان تمتدان أفقياً بطول تباعد الشبكة فتستندان فعلياً على أسياخ الطبقة السفلى،
+     والعرضة العلوية تلامس أسفل الشبكة العلوية وتُربط بها بالسلك. */
   function chairGeo(kind, ht, db, tr, foot) {
-    tr = (tr || 250) / 1000; foot = (foot || 80) / 1000;
+    tr = (tr || 250) / 1000; foot = Math.max((foot || 80) / 1000, .12);
     const t2 = tr / 2, run = (kind === 's135') ? ht : 0;   // الإزاحة الأفقية للرجل
+    if (kind === 'sb') {
+      // Slab Bolster: سلك واحد مستمر زكزاك بطول متر — كل قمة تحمل الشبكة العلوية
+      const zz = [new T.Vector3(-t2 - foot, 0, -.5)];
+      for (let o = -.5; o <= .5001; o += .25)
+        zz.push(new T.Vector3(0, 0, o), new T.Vector3(0, ht, o + .125));
+      zz.push(new T.Vector3(0, 0, .5), new T.Vector3(t2 + foot, 0, .5));
+      return new T.TubeGeometry(new T.CatmullRomCurve3(zz, false, 'catmullrom', 0),
+        zz.length * 3, db / 2000, 5, false);
+    }
     const pts = [
       new T.Vector3(-t2 - run - foot, 0, 0), new T.Vector3(-t2 - run, 0, 0),
       new T.Vector3(-t2, ht, 0), new T.Vector3(t2, ht, 0),
       new T.Vector3(t2 + run, 0, 0), new T.Vector3(t2 + run + foot, 0, 0)];
-    if (kind !== 'sb')
-      return new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'catmullrom', 0),
-        kind === 's135' ? 24 : 12, db / 2000, 5, false);
-    // Slab Bolster: سلك واحد مستمر بشكل زكزاك — قدم/قمة كل 200 مم على طول متر
-    const zz = [new T.Vector3(0, 0, -.05)];
-    for (let o = 0; o <= 1.0001; o += .2) {
-      zz.push(new T.Vector3(0, 0, o), new T.Vector3(0, ht, o + .1));
-    }
-    zz.push(new T.Vector3(0, 0, 1.05));
-    return new T.TubeGeometry(new T.CatmullRomCurve3(zz, false, 'catmullrom', 0),
-      zz.length * 2, db / 2000, 5, false);
+    return new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'catmullrom', 0),
+      kind === 's135' ? 28 : 14, db / 2000, 5, false);
   }
-  function addChairs(x0, z0, lx, lz, sp, ht, db, y, info, ch) {
+  /* mesh = {sx,sz,x0,z0} خطوط الشبكة السفلى — تُثبّت عليها أقدام الكراسي */
+  function addChairs(x0, z0, lx, lz, sp, ht, db, y, info, ch, snap) {
     const pos = [], kind = (ch && ch.kind) || 'z90';
-    for (let a = sp / 2; a < lx; a += sp) for (let b2 = sp / 2; b2 < lz; b2 += sp)
-      pos.push([x0 + a, y, z0 + b2]);
+    // القدم بطول نصف تباعد الشبكة على الأقل حتى تعبر سيخاً سفلياً وتستند عليه
+    const foot = snap ? Math.max((ch && ch.foot) || 80, snap.sx / 2) : ((ch && ch.foot) || 80);
+    const at = (v, v0, st) => st ? v0 + Math.round((v - v0) / st) * st : v;   // تثبيت على خط سيخ
+    for (let a = sp / 2; a < lx; a += sp) for (let b2 = sp / 2; b2 < lz; b2 += sp) {
+      const X = snap ? at(x0 + a, snap.x0, snap.sx) : x0 + a;
+      const Z = snap ? at(z0 + b2, snap.z0, snap.sz) : z0 + b2;
+      if (X < x0 || X > x0 + lx || Z < z0 || Z > z0 + lz) continue;
+      pos.push([X, y, Z]);
+    }
     const each = (ch && ch.len_each) || (2 * ht + .3);
-    return inst(chairGeo(kind, ht, db, ch && ch.top_run, ch && ch.foot), CHAIR, pos, info,
+    return inst(chairGeo(kind, ht, db, ch && ch.top_run, foot), CHAIR, pos, info,
       G.chairs, pos.length * each * Math.PI * Math.pow(db / 2000, 2) * 7850);
   }
   /* سيخ سفلي مثني 45° عند ln/7 من كل مسند */
@@ -404,9 +456,17 @@ function Viewer3D(el, M, onPick) {
       meshGrid(-rf.Lx / 2, -rf.Ly / 2, rf.Lx, rf.Ly, rf.top.s, rf.top.db, fb + t - .075,
         { title: 'تسليح الحصيرة العلوي', kind: 'rebar', rows: [['التفصيل', rf.top.label]] });
       const fc2 = md.found && md.found.chairs;
-      if (fc2) addChairs(-rf.Lx / 2, -rf.Ly / 2, rf.Lx, rf.Ly, fc2.spacing, fc2.height / 1000,
-        fc2.db, fb + .075, { title: 'كراسي الحصيرة', kind: 'rebar', grp: 'raft',
-          rows: [['التفصيل', fc2.label], ['العدد', fc2.n], ['الوزن', fc2.weight.toFixed(2) + ' طن']] });
+      if (fc2) {
+        const yb2 = fb + .075 + rf.bottom.db / 1000;          // ظهر الشبكة السفلى للحصيرة
+        const ht2 = Math.max(.06, (fb + t - .075 - rf.top.db / 1000) - yb2);
+        addChairs(-rf.Lx / 2, -rf.Ly / 2, rf.Lx, rf.Ly, fc2.spacing, ht2, fc2.db, yb2,
+          { title: 'كراسي الحصيرة', kind: 'rebar', grp: 'raft',
+            rows: [['النوع', fc2.name || fc2.label], ['الزاوية', (fc2.angle || 90) + '°'],
+              ['الارتفاع الصافي', Math.round(ht2 * 1000) + ' مم'],
+              ['الاستناد', 'القدمان على الشبكة السفلى · العرضة تحمل الشبكة العلوية'],
+              ['العدد', fc2.n], ['الوزن', fc2.weight.toFixed(2) + ' طن']] }, fc2,
+          { x0: -rf.Lx / 2, z0: -rf.Ly / 2, sx: rf.bottom.s / 1000, sz: rf.bottom.s / 1000 });
+      }
     }
     CURG = 'isolated';
     if (ROOM && M.foot) {
@@ -622,11 +682,36 @@ function Viewer3D(el, M, onPick) {
       lay(shortIsX ? B : L, shortIsX ? L : B, shortIsX ? 'z' : 'x', mLg.s, mLg.db, yG,
         'غطاء السقف (الاتجاه الطويل)', 'الطبقة الثانية فوق الفرش', mLg);
       const sch = md.slab.chairs;
-      if (sch) addChairs(-L / 2, -B / 2, L, B, sch.spacing, sch.height / 1000, sch.db, yG,
-        { title: 'كراسي السقف — طابق ' + s, kind: 'rebar', grp: 'slabs', floor: s,
-          rows: [['النوع', sch.name || sch.label], ['الزاوية', (sch.angle || 90) + '°'],
-            ['الارتفاع', Math.round(sch.height) + ' مم'], ['طول القطعة', (sch.len_each || 0).toFixed(2) + ' م'],
-            ['العدد', sch.n], ['بسكويت الغطاء السفلي', sch.spacers]] }, sch);
+      if (sch) {
+        // القاعدة على ظهر الشبكة السفلى · القمة تلامس أسفل الشبكة العلوية
+        const yBase = yG + mLg.db / 2000;
+        const yTopM = z - cvS - mt.db / 1000;
+        const htC = Math.max(.06, yTopM - yBase);
+        const snap = { x0: -L / 2, z0: -B / 2,
+          sx: (shortIsX ? mLg.s : mS.s) / 1000, sz: (shortIsX ? mS.s : mLg.s) / 1000 };
+        const cinf = (n) => ({ title: 'كراسي السقف — طابق ' + s, kind: 'rebar', grp: 'slabs',
+          floor: s, rows: [['النوع', sch.name || sch.label], ['الزاوية', (sch.angle || 90) + '°'],
+            ['الارتفاع الصافي', Math.round(htC * 1000) + ' مم (بين ظهر الفرش وأسفل العلوي)'],
+            ['الاستناد', 'القدمان على أسياخ الشبكة السفلى · العرضة تحمل الشبكة العلوية'],
+            ['الموضع', 'تحت شرائط الحديد العلوي فوق المساند فقط'],
+            ['طول القطعة', (sch.len_each || 0).toFixed(2) + ' م'],
+            ['العدد الكلي', n], ['بسكويت الغطاء السفلي', sch.spacers]] });
+        // شرائط فوق محاور المساند فقط — حيث يوجد حديد علوي يحتاج حملاً
+        const zs = sch.zones;
+        if (zs && zs.length) {
+          zs.forEach((zn, zi) => {
+            const w = Math.min(zn.w, zn.dir === 'x' ? B : L);
+            if (zn.dir === 'x')
+              addChairs(-L / 2, pz(zn.at) - w / 2, L, w, sch.spacing, htC, sch.db, yBase,
+                zi ? null : cinf(sch.n), sch, snap);
+            else
+              addChairs(px(zn.at) - w / 2, -B / 2, w, B, sch.spacing, htC, sch.db, yBase,
+                null, sch, snap);
+          });
+        } else {
+          addChairs(-L / 2, -B / 2, L, B, sch.spacing, htC, sch.db, yBase, cinf(sch.n), sch, snap);
+        }
+      }
       // ---- التسليح العلوي: أسياخ محدودة فوق المساند تمتد L/4 لكل جهة ----
       CURG = 'slabs';
       if (ROOM) {
@@ -789,6 +874,47 @@ function Viewer3D(el, M, onPick) {
     });
   }
 
+  /* ==================== إنسان بطول 1.85 م للمقياس ==================== */
+  let humanBuilt = false;
+  function buildHuman() {
+    if (humanBuilt) return; humanBuilt = true;
+    const H = 1.85, sk = 0xffd9a0, cl = 0x2f6fb8;
+    const mk = (geo, col, x, y, z, rz) => {
+      const m = new T.Mesh(geo, new T.MeshLambertMaterial({ color: col, clippingPlanes: [clip] }));
+      m.position.set(x, y, z); if (rz) m.rotation.z = rz;
+      G.human.add(m); return m;
+    };
+    const body = new T.Group();
+    const part = (geo, col, x, y, z, rz) => {
+      const m = mk(geo, col, x, y, z, rz); G.human.remove(m); body.add(m); return m;
+    };
+    part(new T.SphereGeometry(H * .062, 14, 12), sk, 0, H * .935, 0);           // الرأس
+    part(new T.CylinderGeometry(H * .028, H * .034, H * .10, 10), sk, 0, H * .855, 0); // الرقبة
+    part(new T.CylinderGeometry(H * .105, H * .092, H * .30, 12), cl, 0, H * .655, 0); // الجذع
+    [-1, 1].forEach(sd => {
+      part(new T.CylinderGeometry(H * .028, H * .024, H * .30, 8), cl,
+        sd * H * .125, H * .655, 0, sd * .13);                                  // الذراعان
+      part(new T.CylinderGeometry(H * .046, H * .036, H * .48, 10), 0x243b57,
+        sd * H * .052, H * .255, 0);                                            // الساقان
+      part(new T.BoxGeometry(H * .055, H * .022, H * .13), 0x11203a,
+        sd * H * .052, H * .012, H * .022);                                     // القدمان
+    });
+    body.position.set(px(0) - L / 2 - 1.2, ROOM ? fb : (M.earth ? lv.existing : fb), pz(0) + B / 2 + 1.2);
+    body.userData = { title: 'إنسان للمقياس — طول 1.85 م', kind: 'human', grp: 'human',
+      rows: [['الطول', '1.85 م'], ['الفائدة', 'مقارنة أبعاد المبنى والعناصر بالحجم الطبيعي'],
+        ['ارتفاع الطابق', hs.toFixed(2) + ' م = ' + (hs / 1.85).toFixed(2) + ' × طول الإنسان'],
+        ['ارتفاع المبنى', (nf * hs).toFixed(2) + ' م = ' + (nf * hs / 1.85).toFixed(1) + ' × طوله']] };
+    body.children.forEach(c => { c.userData = body.userData; picks.push(c); });
+    G.human.add(body);
+    G.human.userData.body = body;
+  }
+  /* ينقل الإنسان إلى منسوب طابق معيّن ليقارن ارتفاعه به */
+  function humanTo(level) {
+    buildHuman();
+    const b = G.human.userData.body; if (!b) return;
+    b.position.y = level;
+  }
+
   /* ===================== وضع المختبر: الإنشائيات والتجربة ===================== */
   let labOn = false;
   function labApply(res, removed) {
@@ -896,7 +1022,26 @@ function Viewer3D(el, M, onPick) {
           o.material.depthWrite = !v;
         }));
     },
-    floor: v => { floorSel = v; applyVis(); },
+    floor: v => {
+      floorSel = v; applyVis();
+      if (G.human.visible && v !== 'all') humanTo((v - 1) * hs);
+      else if (G.human.visible) humanTo(ROOM ? fb : (M.earth ? lv.existing : fb));
+    },
+    human: v => { if (v) buildHuman(); G.human.visible = !!v; return !!v; },
+    /* يحدّد عنصراً بمفتاحه (col|i|j|k) ويقرّب عليه ويعرض تفاصيله */
+    focus: gk => {
+      let hit = null;
+      [G.columns, G.beams].forEach(grp => grp.children.forEach(o => {
+        if (!hit && o.userData && o.userData.gk === gk && o.material) hit = o;
+      }));
+      if (!hit) return null;
+      last = hit;
+      const u = hit.userData;
+      if (onPick) onPick(labOn && u.labRows
+        ? Object.assign({}, u, { rows: u.labRows.concat(u.rows || []) }) : u);
+      zoomTo(hit);
+      return u.title;
+    },
     lab: (rows, removed) => {
       if (!rows) return labApply(null, null);
       const res = {};
@@ -909,6 +1054,18 @@ function Viewer3D(el, M, onPick) {
       p1: home.clone(), t1: mid.clone() }; },
     top: () => { anim = { t: 0, p0: cam.position.clone(), t0: ctl.target.clone(),
       p1: new T.Vector3(.01, R * 2.4, .01), t1: new T.Vector3(0, 0, 0) }; },
+    /* تقريب على نقطة داخل السقف بنصف قطر معيّن (للفحص والاختبار) */
+    look: (dist, y) => {
+      const c = new T.Vector3(0, (y === undefined ? nf * hs : y), 0);
+      anim = { t: 0, p0: cam.position.clone(), t0: ctl.target.clone(),
+        p1: c.clone().add(new T.Vector3(dist * .8, dist * .5, dist * .8)), t1: c };
+    },
+    /* منظر من الأسفل — لرؤية بطن السقف: الأعصاب والبلوك ورؤوس الأعمدة */
+    soffit: () => {
+      const y = nf * hs;
+      anim = { t: 0, p0: cam.position.clone(), t0: ctl.target.clone(),
+        p1: new T.Vector3(R * .55, y - R * 1.15, R * .55), t1: new T.Vector3(0, y - hs * .35, 0) };
+    },
     /* فحص: يرجع أسماء المجموعات التي تخرج أسياخها خارج حدود المبنى */
     outside: (mx, mz) => {
       const bad = [], bb = new T.Box3(), gb = new T.Box3(), m4 = new T.Matrix4();

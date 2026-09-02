@@ -99,7 +99,8 @@ def schedule(R):
     for d_, lab in (('x', 'X'), ('y', 'Y')):
         bm = m['beams'][d_]
         det = bm.get('detail') or {}
-        nlines = (g['ny'] + 1) if d_ == 'x' else (g['nx'] + 1)
+        edge_only = bool(((m['slab'].get('geom') or {}).get('edge_beams_only')))
+        nlines = 2 if edge_only else ((g['ny'] + 1) if d_ == 'x' else (g['nx'] + 1))
         nspan = bm['n']
         run = bm['span'] * nspan + 0.3
         nb = bm['rebar']['bottom']['n']

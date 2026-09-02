@@ -110,6 +110,31 @@ def design_column(b, h, Pu, Mu, fc, fy):
                 conf_label="تطويق Ø%d @ %d مم على مسافة %d مم من كل طرف" % (dbt, int(sc), int(lo)))
     return best
 
+def chairs(Lx, Ly, h_mm, cov, db_top, db_bot, spacing=1.0):
+    """كراسي دعم الشبكة العلوية — عدد ووزن وارتفاع."""
+    nx = int(Lx / spacing) + 1; ny = int(Ly / spacing) + 1
+    n = nx * ny
+    ht = max(60.0, h_mm - 2 * cov - db_top - db_bot)
+    db = 10.0 if ht <= 300 else 12.0
+    per = (2 * ht / 1000.0) + 0.30                      # رجلان + عرضة
+    wt = n * per * E.ab(db) / 1e6 * 7850.0 / 1000.0     # طن
+    return dict(n=n, nx=nx, ny=ny, height=ht, db=db, spacing=spacing,
+                len_each=per, weight=wt,
+                label="كرسي Ø%d ارتفاع %d مم @ %.1f م بالاتجاهين" % (db, int(ht), spacing),
+                spacers=int(Lx * Ly * 4))               # بسكويت الغطاء السفلي
+
+def envelope(bm, npts=13):
+    """مغلّف العزوم والهطول لكل فضاء — مبسّط للرسم."""
+    out = []
+    for k, sp in enumerate(bm['env']):
+        step = max(1, len(sp) // npts)
+        pts = sp[::step]
+        x0 = pts[0]['x']
+        d = bm['defl'][k][::step]
+        out.append([[round(p['x'] - x0, 3), round(p['Mmax'], 1), round(p['Mmin'], 1),
+                     round(d[i]['d'], 2) if i < len(d) else 0.0] for i, p in enumerate(pts)])
+    return out
+
 # -------------------------------- المعالج ---------------------------------
 def wizard(p):
     area = float(p.get('area', 200.0))
@@ -208,6 +233,28 @@ def wizard(p):
     design = alts[rec]
     sum_foot_area = design['area']
 
+    # ------------------------- قص الثقب عند كل عمود -------------------------
+    pos_of = lambda k: ('interior' if k == 'داخلي' else ('corner' if k == 'ركني' else 'edge'))
+    punch = []
+    for idx, l in enumerate(loads):
+        if rec == 'raft':
+            hf, where = rf['h'], 'الحصيرة'; qu_f = rf['q_u']
+        elif rec == 'piles':
+            hf, where = pl['cap']['h'] * 1000.0, 'هامة الركائز'; qu_f = 0.0
+        else:
+            hf, where = des_i['h'], 'الأساس المنفرد'
+            qu_f = l['Pu'] / max(iso['sizes'][idx]['B'] ** 2, 0.01)
+        df = hf - 75.0 - 20.0
+        Vu = max(0.0, l['Pu'] - qu_f * (cb + df) * (ch + df) / 1e6)
+        r1 = E.punching(Vu, cb, ch, df, fc, pos_of(l['kind']))
+        ds = t_slab - 20.0 - 10.0
+        wu_f = 1.2 * D + 1.6 * live
+        Vs = max(0.0, wu_f * l['area'] - wu_f * (cb + ds) * (ch + ds) / 1e6)
+        r2 = E.punching(Vs, cb, ch, ds, fc, pos_of(l['kind']))
+        punch.append(dict(i=l['i'], j=l['j'], x=l['x'], y=l['y'], kind=l['kind'],
+                          found=dict(where=where, **r1),
+                          slab=dict(where='السقف', governing=False, **r2)))
+
     # ------------------------- الحفريات والردم -------------------------
     foot_h = (rf['h'] if rec == 'raft' else
               (pl['cap']['h'] * 1000 if rec == 'piles' else des_i['h'])) / 1000.0
@@ -245,13 +292,45 @@ def wizard(p):
                           W=total, stories=[dict(name='طابق %d' % k, w=total / floors, h=hs * k)
                                             for k in range(1, floors + 1)]))
 
+    # ------------------------- الكراسي والوصلات -------------------------
+    ch_slab = chairs(g['L'], g['B'], slab['h'], 20.0,
+                     slab['mesh']['top']['db'], slab['mesh']['bottom']['db'])
+    ch_found = (chairs(rf['Lx'], rf['Ly'], rf['h'], 75.0, rf['top']['db'], rf['bottom']['db'])
+                if rec == 'raft' else
+                chairs(math.sqrt(sum_foot_area), math.sqrt(sum_foot_area), des_i['h'], 75.0,
+                       des_i['bar_db'], des_i['bar_db']))
+    dbs_used = set([col_rebar['db'], bx['rebar']['bottom']['db'], bx['rebar']['top']['db'],
+                    by['rebar']['bottom']['db'], by['rebar']['top']['db'],
+                    slab['mesh']['bottom']['db'], slab['mesh']['top']['db'],
+                    rf['top']['db'], rf['bottom']['db'], des_i['bar_db']])
+    laps = {int(d): dict(bottom=round(E.lap_length(d, fc, fy) / 1000.0, 3),
+                         top=round(E.lap_length(d, fc, fy, top=True) / 1000.0, 3))
+            for d in dbs_used}
+
     # ------------------------- نموذج العرض ثلاثي الأبعاد -------------------
     model = dict(
         floors=floors, story_h=hs, levels=[k * hs for k in range(floors + 1)],
+        stock=E.BAR_STOCK, laps=laps,
         col=dict(b=cb, h=ch, rebar=col_rebar),
-        beams=dict(x=dict(b=bx['section']['b'], h=bx['section']['h'], rebar=bx['rebar']),
-                   y=dict(b=by['section']['b'], h=by['section']['h'], rebar=by['rebar'])),
-        slab=dict(h=slab['h'], kind=slab['kind'], mesh=slab['mesh'], name=slab['kind_name']),
+        beams=dict(x=dict(b=bx['section']['b'], h=bx['section']['h'], rebar=bx['rebar'],
+                          env=envelope(bx), span=g['sx'], n=g['nx'],
+                          d_long=min(d['d_long'] for d in bx['design']),
+                          d_limit=bx['design'][0]['d_limit']),
+                   y=dict(b=by['section']['b'], h=by['section']['h'], rebar=by['rebar'],
+                          env=envelope(by), span=g['sy'], n=g['ny'],
+                          d_long=min(d['d_long'] for d in by['design']),
+                          d_limit=by['design'][0]['d_limit'])),
+        slab=dict(h=slab['h'], kind=slab['kind'], mesh=slab['mesh'], name=slab['kind_name'],
+                  chairs=ch_slab, top_strip=0.5,
+                  extra=dict(corner=dict(db=slab['mesh']['top']['db'],
+                                         s=slab['mesh']['top']['s'], size=0.2),
+                             integrity=dict(n=2, db=slab['mesh']['bottom']['db']))),
+        found=dict(mode=rec, chairs=ch_found),
+        punch=[dict(x=q['x'], y=q['y'], kind=q['kind'],
+                    ratio=q['found']['ratio'], b0=q['found']['b0'], d=q['found']['d'],
+                    Vu=q['found']['Vu'], phiVc=q['found']['phiVc'], ok=q['found']['ok'],
+                    where=q['found']['where'], rec=q['found']['rec'],
+                    slab_ratio=q['slab']['ratio']) for q in punch],
     )
 
     summary = [
@@ -272,6 +351,7 @@ def wizard(p):
                 col=dict(b=cb, h=ch, sw=col_sw, rebar=col_rebar, Mu=Mcol),
                 slab=slab, beams=dict(x=bx, y=by),
                 advisor=adv, alts=alts, recommended=rec, design=design, model=model,
+                punching=punch, chairs=dict(slab=ch_slab, found=ch_found), laps=laps,
                 earth=ew, boq=dict(rows=rows, total=grand), seismic=seis,
                 summary=summary, span_max=span_max)
 

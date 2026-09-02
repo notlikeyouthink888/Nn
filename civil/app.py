@@ -8,6 +8,8 @@ import earth as EW
 import survey as SV
 import project as PJ
 import dxf as DXF
+import room as RM
+import bbs as BBS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, 'static')
@@ -50,6 +52,8 @@ ROUTES = {
     'project/list': PJ.listing,
     'project/load': PJ.load,
     'project/delete': PJ.delete,
+    'room': RM.room,
+    'bbs': lambda p: BBS.schedule(p if 'model' in p else PJ.wizard(p)),
 }
 
 class H(BaseHTTPRequestHandler):
@@ -84,15 +88,25 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split('?')[0]
         name = path[5:] if path.startswith('/api/') else ''
-        if name not in ROUTES and name != 'dxf':
+        if name not in ROUTES and name not in ('dxf', 'bbs/csv'):
             return self._send(404, json.dumps(dict(error='unknown endpoint: %s' % name)))
         try:
             n = int(self.headers.get('Content-Length') or 0)
             payload = json.loads(self.rfile.read(n) or b'{}')
+            if name == 'bbs/csv':
+                body = BBS.csv(payload if 'model' in payload else PJ.wizard(payload))
+                data = ('\ufeff' + body).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/csv; charset=utf-8')
+                self.send_header('Content-Disposition', 'attachment; filename="bbs.csv"')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                return self.wfile.write(data)
             if name == 'dxf':
                 if 'grid' not in payload:          # يقبل مدخلات المعالج مباشرة
                     payload = PJ.wizard(payload)
-                body = DXF.foundation_plan(payload)
+                body = (DXF.rebar_details(payload) if self.path.endswith('kind=rebar')
+                        else DXF.foundation_plan(payload))
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/dxf')
                 self.send_header('Content-Disposition', 'attachment; filename="foundation.dxf"')

@@ -89,3 +89,74 @@ def foundation_plan(p):
     dx.text(-1.5, -3.7, 0.28, "Grid %dx%d @ %.2f x %.2f m | Columns %d"
             % (g['nx'], g['ny'], g['sx'], g['sy'], g['cols']), "TEXT")
     return dx.out()
+
+
+def rebar_details(p):
+    """تفاصيل التسليح: مقطع عمود · مقطع وواجهة جسر · تفصيل السقف · تفصيل الأساس."""
+    m = p['model']; g = p['grid']
+    dx = Dxf()
+    def title(x, y, s, h=0.35):
+        dx.text(x, y, h, s, "TEXT")
+    def sect_col(ox, oy):
+        b = m['col']['b'] / 1000.0; h = m['col']['h'] / 1000.0
+        r = m['col']['rebar']; cov = 0.04
+        dx.rect(ox, oy, b, h, "COLUMN")
+        dx.rect(ox + cov, oy + cov, b - 2 * cov, h - 2 * cov, "FOOTING")
+        nb = r.get('nb', 3); db = r['db'] / 1000.0
+        pts = []
+        ix = b - 2 * cov - db; iz = h - 2 * cov - db
+        for i in range(nb):
+            t = 0.5 if nb == 1 else i / float(nb - 1)
+            pts.append((ox + cov + db / 2 + ix * t, oy + cov + db / 2))
+            pts.append((ox + cov + db / 2 + ix * t, oy + h - cov - db / 2))
+        for i in range(1, nb - 1):
+            t = i / float(nb - 1)
+            pts.append((ox + cov + db / 2, oy + cov + db / 2 + iz * t))
+            pts.append((ox + b - cov - db / 2, oy + cov + db / 2 + iz * t))
+        for x, y in pts:
+            dx.circle(x, y, max(db / 2, 0.008), "PILE")
+        title(ox, oy + h + 0.25, "COLUMN %dx%d - %s" % (m['col']['b'], m['col']['h'], r['label']))
+        title(ox, oy - 0.35, "TIES %s / CONF %s" % (
+            r['tie_label'].replace('أتاري', '').replace('مم', 'mm'),
+            (r.get('conf_label') or '').replace('تطويق', '').replace('مم', 'mm')), 0.22)
+    def sect_beam(ox, oy, bm, tag):
+        b = bm['b'] / 1000.0; h = bm['h'] / 1000.0; cov = 0.04
+        dx.rect(ox, oy, b, h, "COLUMN")
+        dx.rect(ox + cov, oy + cov, b - 2 * cov, h - 2 * cov, "FOOTING")
+        for nm, n, db, yy in (("BOT", bm['rebar']['bottom']['n'], bm['rebar']['bottom']['db'], oy + cov + 0.02),
+                              ("TOP", bm['rebar']['top']['n'], bm['rebar']['top']['db'], oy + h - cov - 0.02)):
+            for i in range(n):
+                t = 0.5 if n == 1 else i / float(n - 1)
+                dx.circle(ox + cov + 0.02 + (b - 2 * cov - 0.04) * t, yy, max(db / 2000.0, 0.008), "PILE")
+        title(ox, oy + h + 0.25, "BEAM %s %dx%d" % (tag, bm['b'], bm['h']))
+        title(ox, oy - 0.3, "BOT %s / TOP %s / STIR %s" % (
+            bm['rebar']['bottom']['label'], bm['rebar']['top']['label'],
+            bm['rebar']['stirrup']['label'].replace('أرجل', 'legs')), 0.22)
+    def slab_detail(ox, oy):
+        w = 4.0, 
+        dx.line(ox, oy, ox + 4.0, oy, "GRID"); dx.line(ox, oy + 0.2, ox + 4.0, oy + 0.2, "GRID")
+        s = m['slab']
+        n = 9
+        for i in range(n):
+            x = ox + 0.15 + i * (3.7 / (n - 1))
+            dx.line(x, oy + 0.04, x, oy + 0.04, "FOOTING")
+            dx.circle(x, oy + 0.04, 0.012, "PILE")
+            dx.circle(x, oy + 0.16, 0.012, "RAFT")
+        title(ox, oy + 0.5, "SLAB t=%d  BOT %s  TOP %s" % (
+            s['h'], s['mesh']['bottom']['label'], s['mesh']['top']['label']), 0.25)
+        ch = s.get('chairs')
+        if ch:
+            title(ox, oy - 0.3, "CHAIRS D%d h=%dmm @%.1fm  (n=%d)" % (
+                ch['db'], int(ch['height']), ch['spacing'], ch['n']), 0.22)
+    sect_col(0, 0)
+    sect_beam(2.5, 0, m['beams']['x'], "X")
+    sect_beam(5.0, 0, m['beams']['y'], "Y")
+    slab_detail(0, -2.5)
+    laps = m.get('laps', {})
+    title(0, -4.0, "LAP SPLICES (Class B = 1.3 ld) - stock bar %.0f m" % m.get('stock', 12), 0.3)
+    y = -4.5
+    for db, v in sorted(laps.items(), key=lambda a: int(a[0])):
+        lp = v['bottom'] if isinstance(v, dict) else v
+        title(0, y, "D%s : %.2f m" % (db, lp), 0.25); y -= 0.35
+    title(0, y - 0.3, "PROJECT %s m2 / %d floors" % (p['input']['area'], p['input']['floors']), 0.3)
+    return dx.out()

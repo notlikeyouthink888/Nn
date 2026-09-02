@@ -90,13 +90,18 @@ code{background:var(--bg2);padding:2px 6px;border-radius:5px;font-size:12px;colo
 .steps div b{color:var(--acc)}
 .v3d{position:relative;border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#0a1020}
 .v3d canvas{position:relative;z-index:1}
+.v3bar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:9px}
+.v3bar button,.v3d .tools button{background:var(--panel2);border:1px solid var(--line);color:var(--tx);
+  border-radius:8px;padding:6px 12px;font:inherit;font-size:11.5px;cursor:pointer}
+.v3bar button:hover{border-color:var(--acc);color:#fff}
+.v3bar button.hot{background:linear-gradient(135deg,#0ea5e9,#0891b2);border-color:transparent;color:#fff}
 .v3d .tools{position:absolute;top:10px;left:10px;display:flex;gap:6px;flex-wrap:wrap;z-index:20}
 .v3d .tools button{background:rgba(18,29,51,.9);border:1px solid var(--line);color:var(--tx);
   border-radius:8px;padding:5px 11px;font:inherit;font-size:11.5px;cursor:pointer}
 .v3d .tools button:hover{border-color:var(--acc);color:#fff}
 .v3d .slider{position:absolute;bottom:12px;left:12px;right:12px;z-index:20;display:flex;gap:10px;align-items:center}
 .v3d .slider input{flex:1}
-.v3d .info{position:absolute;top:10px;right:10px;width:265px;pointer-events:auto;background:rgba(10,16,32,.94);
+.v3d .info{position:absolute;top:10px;right:10px;width:255px;pointer-events:auto;background:rgba(10,16,32,.94);
   border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:11.5px;z-index:20;max-height:78%;overflow:auto}
 .v3d .info h4{margin:0 0 6px;font-size:12.5px;color:var(--acc)}
 .v3d .info table{font-size:11px}

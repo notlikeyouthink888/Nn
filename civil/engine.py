@@ -312,6 +312,61 @@ def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0):
     r['label'] = "Ø%d@%d (%dأرجل)" % (db_stirrup, int(s), legs)
     return r
 
+BAR_STOCK = 12.0          # أقصى طول سيخ متوفر بالسوق (م)
+
+def lap_length(db, fc, fy, top=False, class_b=True):
+    """طول الوصلة (Lap Splice) — ACI 25.5.2.1: صنف B = 1.3·ld، بحد أدنى 300 مم."""
+    ld = dev_length(db, fc, fy, top=top)
+    return max(300.0, (1.3 if class_b else 1.0) * ld)
+
+def cut_run(total_len, lap, max_len=BAR_STOCK):
+    """تقطيع سيخ طويل على أطوال السوق مع وصلات — كل الأطوال بالمتر.
+    يرجع مواضع القطع وأطوالها وعدد الوصلات والهدر."""
+    lapm = lap / 1000.0
+    if total_len <= max_len + 1e-9:
+        return dict(n=1, piece=total_len, laps=0, lap=lapm, total_steel=total_len,
+                    waste=0.0, starts=[0.0], lengths=[total_len])
+    n = 1
+    while (total_len + (n - 1) * lapm) / n > max_len:
+        n += 1
+        if n > 200:
+            break
+    piece = (total_len + (n - 1) * lapm) / n
+    starts, lengths, x = [], [], 0.0
+    for i in range(n):
+        starts.append(x); lengths.append(piece)
+        x += piece - lapm
+    return dict(n=n, piece=piece, laps=n - 1, lap=lapm,
+                total_steel=total_len + (n - 1) * lapm,
+                waste=(n - 1) * lapm, starts=starts, lengths=lengths)
+
+def punching(Vu, c1, c2, d, fc, pos='interior', lam=1.0):
+    """قص الثقب (Two-way shear) — ACI 318-19 المادة 22.6.
+    Vu بـ kN · c1,c2,d بالمليمتر · النتيجة kN."""
+    d = max(d, 50.0)
+    if pos == 'interior':
+        b0 = 2 * (c1 + d) + 2 * (c2 + d); als = 40.0
+    elif pos == 'edge':
+        b0 = 2 * (c1 + d / 2) + (c2 + d); als = 30.0
+    else:
+        b0 = (c1 + d / 2) + (c2 + d / 2); als = 20.0
+    beta = max(c1, c2) / min(c1, c2)
+    v1 = 0.33 * lam * math.sqrt(fc)
+    v2 = 0.17 * (1 + 2 / beta) * lam * math.sqrt(fc)
+    v3 = 0.083 * (2 + als * d / b0) * lam * math.sqrt(fc)
+    vc = min(v1, v2, v3)
+    phiVc = 0.75 * vc * b0 * d / 1000.0
+    r = Vu / phiVc if phiVc > 0 else 9.9
+    if r <= 1.0:
+        rec = 'مقبول'
+    elif r <= 1.3:
+        rec = 'زد سماكة العنصر 50–100 مم أو كبّر مقطع العمود'
+    else:
+        rec = 'يحتاج معالجة: زيادة السماكة أو رأس عمود (Drop Panel) أو مسامير قص (Shear Studs)'
+    return dict(b0=b0, d=d, beta=beta, alpha_s=als, pos=pos, vc=vc, phiVc=phiVc,
+                Vu=Vu, ratio=r, ok=r <= 1.0, rec=rec,
+                govern=('0.33√f\'c' if vc == v1 else ('0.17(1+2/β)√f\'c' if vc == v2 else '0.083(2+αs·d/b0)√f\'c')))
+
 def dev_length(db, fc, fy, top=False, epoxy=False, lam=1.0):
     pt = 1.3 if top else 1.0; pe = 1.5 if epoxy else 1.0
     ps = 0.8 if db <= 20 else 1.0

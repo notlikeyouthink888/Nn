@@ -314,10 +314,21 @@ def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0):
 
 BAR_STOCK = 12.0          # أقصى طول سيخ متوفر بالسوق (م)
 
-def lap_length(db, fc, fy, top=False, class_b=True):
-    """طول الوصلة (Lap Splice) — ACI 25.5.2.1: صنف B = 1.3·ld، بحد أدنى 300 مم."""
+LAP_MODES = [('code', 'محسوب وفق ACI 25.5.2.1 (صنف B = 1.3·ld)'),
+             ('40db', 'قاعدة الموقع 40·db'), ('50db', 'قاعدة الموقع 50·db'),
+             ('60db', 'قاعدة الموقع 60·db'), ('max', 'الأكبر من الكودي و 60·db')]
+
+def lap_length(db, fc, fy, top=False, class_b=True, mode='code'):
+    """طول الوصلة (Lap Splice). الكودي: ACI 25.5.2.1 صنف B = 1.3·ld ≥ 300 مم.
+    وقواعد الموقع (40/50/60·db) متاحة كخيار."""
     ld = dev_length(db, fc, fy, top=top)
-    return max(300.0, (1.3 if class_b else 1.0) * ld)
+    code = max(300.0, (1.3 if class_b else 1.0) * ld)
+    site = {'40db': 40.0, '50db': 50.0, '60db': 60.0}.get(mode)
+    if site:
+        return max(300.0, site * db)
+    if mode == 'max':
+        return max(code, 60.0 * db)
+    return code
 
 def cut_run(total_len, lap, max_len=BAR_STOCK):
     """تقطيع سيخ طويل على أطوال السوق مع وصلات — كل الأطوال بالمتر.

@@ -3,18 +3,18 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PAY=$(mktemp)
-tar czf "$PAY" engine.py app.py static
+tar czf "$PAY" *.py static README.md
 {
 cat <<'HDR'
 #!/usr/bin/env bash
 # ============================================================================
 #  منصة الهندسة المدنية — تحليل وتصميم إنشائي (ACI 318-19 + الكود العراقي)
 #  التنصيب: انسخ هذا الملف كاملاً والصقه في طرفية السيرفر (root) ثم Enter
-#  الموقع سيعمل على:  http://<عنوان-السيرفر>:5819
+#  الموقع سيعمل على:  http://<عنوان-السيرفر>:8001   (غيّره بـ PORT=... قبل التشغيل)
 # ============================================================================
 set -euo pipefail
 APP=/opt/civil5819
-PORT=5819
+PORT=${PORT:-8001}
 
 echo "==> [1/6] التحقق من بايثون"
 command -v python3 >/dev/null || { apt-get update -y && apt-get install -y python3; }
@@ -35,15 +35,15 @@ pkill -f "/opt/civil5819/app.py" 2>/dev/null || true
 USE_SYSTEMD=0
 if command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1; then USE_SYSTEMD=1; fi
 if [ "$USE_SYSTEMD" = "1" ]; then
-cat > /etc/systemd/system/civil5819.service <<'UNIT'
+cat > /etc/systemd/system/civil5819.service <<UNIT
 [Unit]
-Description=Civil Engineering Platform (ACI 318-19 + Iraqi Code) on port 5819
+Description=Civil Engineering Platform (ACI 318-19 + Iraqi Code)
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/civil5819
-Environment=PORT=5819
+Environment=PORT=$PORT
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /opt/civil5819/app.py
 Restart=always

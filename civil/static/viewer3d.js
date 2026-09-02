@@ -19,7 +19,8 @@ function Viewer3D(el, M, onPick) {
   const cam = new T.PerspectiveCamera(45, W / H, 0.05, 2000);
   const home = new T.Vector3(R * 1.05, R * 0.75, R * 1.35);
   cam.position.copy(home);
-  const rn = new T.WebGLRenderer({ antialias: true });
+  // preserveDrawingBuffer يسمح بطباعة المجسم وأخذ لقطة له
+  const rn = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   rn.setSize(W, H); rn.setPixelRatio(Math.min(2, devicePixelRatio));
   rn.localClippingEnabled = true;
   el.innerHTML = ''; el.appendChild(rn.domElement);
@@ -122,7 +123,11 @@ function Viewer3D(el, M, onPick) {
       box(G.columns, cb, z1 - z0, ch, X, (z0 + z1) / 2, Z, 0x8ea6c4, 1,
         { title: 'عمود C' + (k + 1) + (ROOM ? '' : ' — طابق ' + (s + 1)), kind: 'column',
           grp: 'columns', floor: s + 1,
-          rows: [['المقطع', md.col.b + ' × ' + md.col.h + ' مم'],
+          gk: ROOM ? null : 'col|' + l.i + '|' + l.j + '|' + (s + 1),
+          rows: [['الموقع', l.kind || '—'],
+            ['استمرارية الجسور', l.cont_x === undefined ? '—' :
+              ('X ' + (l.cont_x ? 'مستمر' : 'طرفي') + ' · Y ' + (l.cont_y ? 'مستمر' : 'طرفي'))],
+            ['المقطع', md.col.b + ' × ' + md.col.h + ' مم'],
             ['الارتفاع', (z1 - z0).toFixed(2) + ' م'],
             ['التسليح', md.col.rebar.label], ['الأتاري', md.col.rebar.tie_label],
             ['التطويق', md.col.rebar.conf_label || '—'],
@@ -162,6 +167,74 @@ function Viewer3D(el, M, onPick) {
           ['سفلي (قصير)', md.slab.mesh.bottom.label], ['سفلي (طويل)', md.slab.long.label],
           ['علوي', md.slab.mesh.top.label]] });
   } else {
+    /* ------- ملحقات نوع السقف: أعصاب وبلوك · رؤوس أعمدة · كرات ------- */
+    function slabGeom(z, s) {
+      const gm = md.slab.geom;
+      if (!gm) return;
+      const yb = z - th, name = md.slab.name;
+      const inf = (t, rows) => ({ title: t + ' — طابق ' + s, kind: 'slab', grp: 'slabs',
+        floor: s, rows: rows });
+      if (gm.kind === 'hordi' || gm.kind === 'waffle') {
+        const sp = gm.spacing / 1000, rw = gm.rib_w / 1000, rh = gm.rib_h / 1000;
+        const bw2 = sp - rw, bl = gm.block ? gm.block.L / 1000 : sp - rw;
+        const pos = [], solid = gm.solid_head || 0;
+        for (let zz = -B / 2 + sp / 2; zz < B / 2; zz += sp)
+          for (let xx = -L / 2 + bl / 2 + solid; xx < L / 2 - solid; xx += bl)
+            pos.push([xx, yb + rh / 2, zz]);
+        if (gm.kind === 'hordi' && pos.length && pos.length < 12000) {
+          const im = new T.InstancedMesh(new T.BoxGeometry(bl * .96, rh * .95, bw2 * .96),
+            mat(0xd9c9a3, .95), pos.length);
+          const mx2 = new T.Matrix4();
+          pos.forEach((p, i) => { mx2.makeTranslation(p[0], p[1], p[2]); im.setMatrixAt(i, mx2); });
+          im.instanceMatrix.needsUpdate = true; im.frustumCulled = false;
+          im.userData = inf('بلوك الهوردي', [['المقاس', gm.block.W + '×' + gm.block.L + '×' + gm.block.H + ' مم'],
+            ['العدد بالمتر المربع', (gm.blocks_per_m2 || 0).toFixed(1) + ' قطعة'],
+            ['العدد بالسقف', pos.length + ' قطعة'], ['وزن القطعة', (gm.block.kg || 12) + ' كغم'],
+            ['المنطقة المصمتة', solid ? solid.toFixed(2) + ' م عند المساند' : 'لا حاجة']]);
+          picks.push(im); G.slabs.add(im);
+        }
+        // الأعصاب الخرسانية
+        const rp = [];
+        for (let zz = -B / 2 + sp / 2; zz < B / 2; zz += sp) rp.push(zz);
+        rp.forEach((zz, i2) => box(G.slabs, L, rh, rw, 0, yb + rh / 2, zz + bw2 / 2 + rw / 2,
+          0x9fb4cc, .9, i2 ? null : inf('أعصاب ' + name,
+            [['عرض العصب', gm.rib_w + ' مم'], ['ارتفاع العصب', gm.rib_h + ' مم'],
+             ['التباعد', gm.spacing + ' مم'], ['عدد الأعصاب/م', (gm.ribs_per_m || 0).toFixed(2)],
+             ['التسليح السفلي', (gm.rib_rebar || {}).label || '—'],
+             ['طبقة التغطية', gm.topping + ' مم']])));
+        if (gm.kind === 'waffle') {
+          for (let xx = -L / 2 + sp / 2; xx < L / 2; xx += sp)
+            box(G.slabs, rw, rh, B, xx, yb + rh / 2, 0, 0x9fb4cc, .9, null);
+        }
+      } else if (gm.kind === 'flat' && gm.drop) {
+        const dh = (gm.drop.h - md.slab.h) / 1000, sz = gm.drop.size;
+        COLS.forEach((l, k2) => box(G.slabs, sz, Math.max(dh, .05), sz, px(l.x),
+          yb - Math.max(dh, .05) / 2, pz(l.y), 0x8fa8c6, 1, k2 ? null :
+          inf('رأس عمود (Drop Panel)', [['السماكة الكلية', Math.round(gm.drop.h) + ' مم'],
+            ['المقاس', sz.toFixed(2) + ' × ' + sz.toFixed(2) + ' م'],
+            ['السبب', 'رفع مقاومة قص الثقب'], ['المرجع', 'ACI 8.2.4']])));
+      } else if (gm.kind === 'bubble') {
+        const dia = gm.ball / 1000, sp = gm.spacing / 1000, pos = [], sd = gm.solid_head || 0;
+        for (let xx = -L / 2 + sp; xx < L / 2 - sp; xx += sp)
+          for (let zz = -B / 2 + sp; zz < B / 2 - sp; zz += sp) {
+            if (COLS.some(l => Math.abs(px(l.x) - xx) < sd && Math.abs(pz(l.y) - zz) < sd)) continue;
+            pos.push([xx, z - th / 2, zz]);
+          }
+        if (pos.length && pos.length < 12000) {
+          const im = new T.InstancedMesh(new T.SphereGeometry(dia / 2, 10, 8),
+            mat(0x30455f, .9), pos.length);
+          const mx2 = new T.Matrix4();
+          pos.forEach((p, i) => { mx2.makeTranslation(p[0], p[1], p[2]); im.setMatrixAt(i, mx2); });
+          im.instanceMatrix.needsUpdate = true; im.frustumCulled = false;
+          im.userData = inf('كرات الببل ديك', [['القطر', Math.round(gm.ball) + ' مم'],
+            ['التباعد', Math.round(gm.spacing) + ' مم'],
+            ['نسبة الفراغ', ((gm.void_ratio || 0) * 100).toFixed(0) + '%'],
+            ['العدد بالسقف', pos.length],
+            ['المصمت حول الأعمدة', sd.toFixed(2) + ' م — تُزال الكرات']]);
+          picks.push(im); G.slabs.add(im);
+        }
+      }
+    }
     const bxs = md.beams.x, bys = md.beams.y;
     for (let s = 1; s <= nf; s++) {
       const z = s * hs;
@@ -169,6 +242,7 @@ function Viewer3D(el, M, onPick) {
         box(G.beams, g.sx - cb, bxs.h / 1000, bxs.b / 1000, px((xs[i] + xs[i + 1]) / 2),
           z - bxs.h / 2000, pz(ys[j]), 0x7f97b8, 1,
           { title: 'جسر X — طابق ' + s, kind: 'beam', grp: 'beams', floor: s,
+            gk: 'bx|' + i + '|' + j + '|' + s,
             rows: [['المقطع', bxs.b + ' × ' + bxs.h + ' مم'], ['البحر', g.sx.toFixed(2) + ' م'],
               ['سفلي', bxs.rebar.bottom.label], ['علوي', bxs.rebar.top.label],
               ['الأساور', bxs.rebar.stirrup.label],
@@ -177,20 +251,25 @@ function Viewer3D(el, M, onPick) {
         box(G.beams, bys.b / 1000, bys.h / 1000, g.sy - ch, px(xs[i]), z - bys.h / 2000,
           pz((ys[j] + ys[j + 1]) / 2), 0x7f97b8, 1,
           { title: 'جسر Y — طابق ' + s, kind: 'beam', grp: 'beams', floor: s,
+            gk: 'by|' + i + '|' + j + '|' + s,
             rows: [['المقطع', bys.b + ' × ' + bys.h + ' مم'], ['البحر', g.sy.toFixed(2) + ' م'],
               ['سفلي', bys.rebar.bottom.label], ['علوي', bys.rebar.top.label],
               ['الأساور', bys.rebar.stirrup.label]] });
+      slabGeom(z, s);
       box(G.slabs, L, th, B, 0, z - th / 2, 0, 0xa8bcd4, 1,
         { title: md.slab.name + ' — سقف طابق ' + s, kind: 'slab', grp: 'slabs', floor: s,
           rows: [['السماكة', md.slab.h + ' مم'], ['المساحة', (L * B).toFixed(1) + ' م²'],
-            ['شبكة سفلية', md.slab.mesh.bottom.label],
+            ['النوع', md.slab.name],
+            ['فرش (قصير)', (md.slab.mesh.short || md.slab.mesh.bottom).label],
+            ['غطاء (طويل)', (md.slab.mesh.long || md.slab.mesh.bottom).label],
             ['علوي فوق المساند', md.slab.mesh.top.label],
             ['الخرسانة', (L * B * md.slab.h / 1000).toFixed(1) + ' م³']] });
     }
   }
 
   /* ============================== التسليح ============================== */
-  const STEEL = 0xe8443a, TIE = 0xff9f1c, EXTRA = 0x22d3ee, CHAIR = 0x86efac;
+  const STEEL = 0xe8443a, TIE = 0xff9f1c, EXTRA = 0x22d3ee, CHAIR = 0x86efac,
+    DOWEL = 0xc084fc;
   let built = false, S = { bars: 0, meshes: 0, weight: 0, byGrp: {} }, CURG = 'rebar';
   const stock = md.stock || 12.0, LAPS = md.laps || {};
   const lapOf = db => { const l = LAPS[db] || LAPS[String(db)];
@@ -245,26 +324,63 @@ function Viewer3D(el, M, onPick) {
       .forEach(q => pts.push(new T.Vector3(q[0], 0, q[1])));
     return new T.TubeGeometry(new T.CatmullRomCurve3(pts, true, 'catmullrom', .1), 36, db / 2000, 5, true);
   }
-  function addRings(w, d, db, pos, info, col, grp, rot) {
+  /* ذيلا العكفة 135° عند ركن السوار (ACI 25.3.2 — امتداد 6db ≥ 75 مم) */
+  function hookGeo(w, d, db, ext) {
+    const e = Math.max(ext || 0, .075), s2 = e / Math.SQRT2, pts = [];
+    const mk = a => new T.TubeGeometry(new T.CatmullRomCurve3(a, false, 'catmullrom', 0),
+      6, db / 2000, 5, false);
+    pts.push(new T.Vector3(w / 2, 0, d / 2), new T.Vector3(w / 2 - s2, 0, d / 2 - s2));
+    return mk(pts);
+  }
+  function addRings(w, d, db, pos, info, col, grp, rot, hookExt) {
     if (!pos.length) return null;
     const geo = ringGeo(w, d, db);
-    if (rot === 'x') geo.rotateX(Math.PI / 2);
-    if (rot === 'z') { geo.rotateX(Math.PI / 2); geo.rotateY(Math.PI / 2); }
-    return inst(geo, col || TIE, pos, info, grp,
+    const hg = hookGeo(w, d, db, hookExt);
+    if (rot === 'x') { geo.rotateX(Math.PI / 2); hg.rotateX(Math.PI / 2); }
+    if (rot === 'z') { geo.rotateX(Math.PI / 2); geo.rotateY(Math.PI / 2);
+      hg.rotateX(Math.PI / 2); hg.rotateY(Math.PI / 2); }
+    const im = inst(geo, col || TIE, pos, info, grp,
       pos.length * 2 * (w + d) * Math.PI * Math.pow(db / 2000, 2) * 7850);
+    inst(hg, col || TIE, pos, null, grp, 0,
+      { grp: (info && info.grp) || CURG, floor: info && info.floor });
+    return im;
   }
-  function chairGeo(ht, db, wdt) {
-    const w2 = (wdt || .25) / 2, pts = [
-      new T.Vector3(-w2 - .08, 0, 0), new T.Vector3(-w2, 0, 0), new T.Vector3(-w2, ht, 0),
-      new T.Vector3(w2, ht, 0), new T.Vector3(w2, 0, 0), new T.Vector3(w2 + .08, 0, 0)];
-    return new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'catmullrom', .05), 24, db / 2000, 5, false);
+  /* الكرسي حسب نوعه وزاويته — z90 أرجل عمودية · s135 ميل 45° · sb مستمر · ihc منفرد */
+  function chairGeo(kind, ht, db, tr, foot) {
+    tr = (tr || 250) / 1000; foot = (foot || 80) / 1000;
+    const t2 = tr / 2, run = (kind === 's135') ? ht : 0;   // الإزاحة الأفقية للرجل
+    const pts = [
+      new T.Vector3(-t2 - run - foot, 0, 0), new T.Vector3(-t2 - run, 0, 0),
+      new T.Vector3(-t2, ht, 0), new T.Vector3(t2, ht, 0),
+      new T.Vector3(t2 + run, 0, 0), new T.Vector3(t2 + run + foot, 0, 0)];
+    if (kind !== 'sb')
+      return new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'catmullrom', 0),
+        kind === 's135' ? 24 : 12, db / 2000, 5, false);
+    // Slab Bolster: سلك واحد مستمر بشكل زكزاك — قدم/قمة كل 200 مم على طول متر
+    const zz = [new T.Vector3(0, 0, -.05)];
+    for (let o = 0; o <= 1.0001; o += .2) {
+      zz.push(new T.Vector3(0, 0, o), new T.Vector3(0, ht, o + .1));
+    }
+    zz.push(new T.Vector3(0, 0, 1.05));
+    return new T.TubeGeometry(new T.CatmullRomCurve3(zz, false, 'catmullrom', 0),
+      zz.length * 2, db / 2000, 5, false);
   }
-  function addChairs(x0, z0, lx, lz, sp, ht, db, y, info) {
-    const pos = [];
+  function addChairs(x0, z0, lx, lz, sp, ht, db, y, info, ch) {
+    const pos = [], kind = (ch && ch.kind) || 'z90';
     for (let a = sp / 2; a < lx; a += sp) for (let b2 = sp / 2; b2 < lz; b2 += sp)
       pos.push([x0 + a, y, z0 + b2]);
-    return inst(chairGeo(ht, db), CHAIR, pos, info, G.chairs,
-      pos.length * (2 * ht + .3) * Math.PI * Math.pow(db / 2000, 2) * 7850);
+    const each = (ch && ch.len_each) || (2 * ht + .3);
+    return inst(chairGeo(kind, ht, db, ch && ch.top_run, ch && ch.foot), CHAIR, pos, info,
+      G.chairs, pos.length * each * Math.PI * Math.pow(db / 2000, 2) * 7850);
+  }
+  /* سيخ سفلي مثني 45° عند ln/7 من كل مسند */
+  function bentGeo(len, rise, bendAt, db, dir) {
+    const a = len / 2, b3 = Math.max(.05, a - bendAt);
+    const p = [[-a, rise], [-b3 - rise, rise], [-b3, 0], [b3, 0], [b3 + rise, rise], [a, rise]];
+    const v = p.map(q => dir === 'x' ? new T.Vector3(q[0], q[1], 0)
+      : new T.Vector3(0, q[1], q[0]));
+    return new T.TubeGeometry(new T.CatmullRomCurve3(v, false, 'catmullrom', 0),
+      24, db / 2000, 5, false);
   }
   function meshGrid(x0, z0, lx, lz, s, db, y, info, col, grp) {
     const n1 = Math.max(2, Math.floor(lz / (s / 1000)) + 1);
@@ -366,22 +482,46 @@ function Viewer3D(el, M, onPick) {
         for (let y2 = z0 + lo; y2 < z1 - lo; y2 += sm) tp.push([X, y2, Z]);
         for (let y2 = Math.max(z1 - lo, z0 + lo); y2 < z1 - .05; y2 += sc2) tp.push([X, y2, Z]);
         addRings(cb - 2 * cvr, ch - 2 * cvr, cr.tie_db, tp,
-          { title: 'أتاري العمود — طابق ' + (s + 1), kind: 'rebar', floor: s + 1,
-            rows: [['الوسط', cr.tie_label], ['التطويق', cr.conf_label || '—'], ['العدد', tp.length]] });
+          { title: 'أتاري العمود بعكفة 135° — طابق ' + (s + 1), kind: 'rebar', floor: s + 1,
+            rows: [['الوسط', cr.tie_label], ['التطويق', cr.conf_label || '—'],
+              ['العكفة', (cr.hook && cr.hook.label) || 'عكفة 135°'], ['العدد', tp.length]],
+          }, null, null, null, cr.hook ? cr.hook.ext / 1000 : .075);
+        // ---- الدولات (أشاير الربط) عند قاعدة العمود ----
+        if (s === 0 && cr.dowels) {
+          const dw = cr.dowels, em = dw.embed / 1000, pj = dw.project / 1000;
+          const dp = [], ixd = cb / 2 - cvr, izd = ch / 2 - cvr;
+          for (let a = 0; a < Math.max(2, Math.round(dw.n / 4) + 1); a++) {
+            const t3 = a / Math.max(1, Math.round(dw.n / 4));
+            dp.push([X - ixd + 2 * ixd * t3, ft - em + (em + pj) / 2, Z - izd]);
+            dp.push([X - ixd + 2 * ixd * t3, ft - em + (em + pj) / 2, Z + izd]);
+          }
+          inst(barGeo(em + pj, dw.db, 'y'), DOWEL, dp,
+            { title: 'دولات ربط العمود C' + (k + 1) + ' بالأساس', kind: 'rebar', floor: 1,
+              grp: 'columns',
+              rows: [['التفصيل', dw.label], ['القاعدة', dw.mode],
+                ['الدفن بالأساس', Math.round(dw.embed) + ' مم'],
+                ['البروز بالعمود', Math.round(dw.project) + ' مم'],
+                ['ldc الكودي', Math.round(dw.ldc) + ' مم'],
+                ['ملاحظة', dw.warn || 'مطابق للكود ✓']] }, null,
+            dp.length * (em + pj) * Math.PI * Math.pow(dw.db / 2000, 2) * 7850,
+            { grp: 'columns', floor: 1 });
+        }
       }
     });
     // ---- الجسور ----
     CURG = 'beams';
-    const drawBeam = (cX, cZ, len, bw, hB, z, reb, dir, floor, ttl) => {
-      const bot = [], top = [], stp = [];
+    const drawBeam = (cX, cZ, len, bw, hB, z, reb, dir, floor, ttl, det, ends) => {
+      const bot = [], bnt = [], top = [], stp = [];
       const nb2 = reb.bottom.n, nt = reb.top.n, sdb = reb.stirrup;
-      const yb = z - hB + cvr, yt = z - cvr - th;
+      const cv = (reb.cover || 40) / 1000;
+      const yb = z - hB + cv, yt = z - cv - th;
+      const nBent = (det && det.bent) ? (det.n_bent || 0) : 0;
       for (let i = 0; i < nb2; i++) {
-        const o = nb2 === 1 ? 0 : (i / (nb2 - 1) - .5) * (bw - 2 * cvr);
-        bot.push(dir === 'x' ? [cX, yb, cZ + o] : [cX + o, yb, cZ]);
+        const o = nb2 === 1 ? 0 : (i / (nb2 - 1) - .5) * (bw - 2 * cv);
+        (i < nBent ? bnt : bot).push(dir === 'x' ? [cX, yb, cZ + o] : [cX + o, yb, cZ]);
       }
       for (let i = 0; i < nt; i++) {
-        const o = nt === 1 ? 0 : (i / (nt - 1) - .5) * (bw - 2 * cvr);
+        const o = nt === 1 ? 0 : (i / (nt - 1) - .5) * (bw - 2 * cv);
         top.push(dir === 'x' ? [cX, yt, cZ + o] : [cX + o, yt, cZ]);
       }
       const ns = Math.max(2, Math.floor(len / (sdb.s / 1000)));
@@ -391,11 +531,47 @@ function Viewer3D(el, M, onPick) {
       }
       const inf = t => ({ title: t + ' — ' + ttl, kind: 'rebar', floor: floor,
         rows: [['المقطع', Math.round(bw * 1000) + ' × ' + Math.round(hB * 1000) + ' مم'],
-          ['سفلي', reb.bottom.label], ['علوي', reb.top.label], ['الأساور', sdb.label]] });
-      addRun(len, reb.bottom.db, dir, bot, inf('تسليح سفلي'));
-      addRun(len, reb.top.db, dir, top, inf('تسليح علوي'));
-      addRings(dir === 'x' ? bw - 2 * cvr : hB - 2 * cvr, dir === 'x' ? hB - 2 * cvr : bw - 2 * cvr,
-        sdb.db, stp, inf('أساور'), null, null, dir === 'x' ? 'x' : 'z');
+          ['سفلي', reb.bottom.label], ['علوي', reb.top.label], ['الأساور', sdb.label],
+          ['الغطاء', Math.round(cv * 1000) + ' مم']] });
+      addRun(len, reb.bottom.db, dir, bot, inf('تسليح سفلي مستقيم'));
+      // الأسياخ المثنية 45° عند ln/7 (نصف الحديد السفلي)
+      if (bnt.length && det) {
+        const rise = hB - 2 * cv - reb.bottom.db / 1000;
+        const geo = bentGeo(len, rise, det.bend_at, reb.bottom.db, dir);
+        inst(geo, STEEL, bnt, Object.assign(inf('تسليح سفلي مثني 45°'), { rows:
+          inf('').rows.concat([['نقطة الثني', 'ln/7 = ' + det.bend_at.toFixed(2) + ' م من وجه المسند'],
+            ['ارتفاع الثنية', Math.round(det.bar.rise) + ' مم'],
+            ['الزيادة بالطول', Math.round(det.bar.extra_total * 1000) + ' مم للسيخ'],
+            ['عدد المثني', nBent + ' من ' + nb2 + ' سيخ (50%)']]) }), null,
+          bnt.length * (len + det.bar.extra_total) * Math.PI * Math.pow(reb.bottom.db / 2000, 2) * 7850,
+          { grp: CURG, floor: floor });
+      }
+      // الحديد العلوي: يمتد ln/3 لكل جهة من المسند (قطع عند ln/5 لنصفه)
+      // عند المسند الطرفي يمتد للداخل فقط — لا يبرز خارج المبنى
+      if (det) {
+        const half = Math.ceil(top.length / 2);
+        const ed = ends || [false, false];
+        [[top.slice(0, half), det.top1_len, 'الطبقة الأولى — تمتد ln/3 = ' + det.top1.toFixed(2) + ' م'],
+         [top.slice(half), det.top2_len, 'الطبقة الثانية — تُقطع عند ln/5 = ' + det.top2.toFixed(2) + ' م']]
+          .forEach(([pp, L2, why], qi) => {
+            if (!pp.length) return;
+            [[-len / 2, ed[0], +1], [len / 2, ed[1], -1]].forEach(([e, outer, into]) => {
+              const Lb = outer ? L2 / 2 : L2;             // الطرفي: نصف السيخ للداخل
+              const ctr = e + (outer ? into * L2 / 4 : 0);
+              const sh = pp.map(p => dir === 'x' ? [p[0] + ctr, p[1], p[2]] : [p[0], p[1], p[2] + ctr]);
+              addRun(Lb, reb.top.db, dir, sh, e < 0 && qi === 0 ? Object.assign(
+                inf('تسليح علوي فوق المسند'), { rows: inf('').rows.concat(
+                  [['الامتداد', why], ['طول السيخ', Lb.toFixed(2) + ' م'],
+                   ['المسند', outer ? 'طرفي — يمتد للداخل فقط بعكفة 90° بالعمود' : 'داخلي — متصل بالفضاءين'],
+                   ['المرجع', 'ACI 9.7.3.8 — L/3 و L/5 من وجه المسند']]) }) : null);
+            });
+          });
+      } else {
+        addRun(len, reb.top.db, dir, top, inf('تسليح علوي'));
+      }
+      addRings(dir === 'x' ? bw - 2 * cv : hB - 2 * cv, dir === 'x' ? hB - 2 * cv : bw - 2 * cv,
+        sdb.db, stp, inf('أساور بعكفة 135°'), null, null, dir === 'x' ? 'x' : 'z',
+        Math.max(6 * sdb.db / 1000, .075));
     };
     if (ROOM) {
       (md.beams || []).forEach((b, i) => {
@@ -409,51 +585,82 @@ function Viewer3D(el, M, onPick) {
         const z = s * hs;
         for (let j = 0; j <= g.ny; j++) for (let i = 0; i < g.nx; i++)
           drawBeam(px((xs[i] + xs[i + 1]) / 2), pz(ys[j]), g.sx - cb, md.beams.x.b / 1000,
-            md.beams.x.h / 1000, z, md.beams.x.rebar, 'x', s, 'جسور X طابق ' + s);
+            md.beams.x.h / 1000, z, md.beams.x.rebar, 'x', s, 'جسور X طابق ' + s,
+            md.beams.x.detail, [i === 0, i === g.nx - 1]);
         for (let i = 0; i <= g.nx; i++) for (let j = 0; j < g.ny; j++)
           drawBeam(px(xs[i]), pz((ys[j] + ys[j + 1]) / 2), g.sy - ch, md.beams.y.b / 1000,
-            md.beams.y.h / 1000, z, md.beams.y.rebar, 'z', s, 'جسور Y طابق ' + s);
+            md.beams.y.h / 1000, z, md.beams.y.rebar, 'z', s, 'جسور Y طابق ' + s,
+            md.beams.y.detail, [j === 0, j === g.ny - 1]);
       }
     }
     // ---- السقوف ----
     CURG = 'slabs';
-    const mb = md.slab.mesh.bottom, mt = md.slab.mesh.top;
+    const msh = md.slab.mesh, mS = msh.short || msh.bottom, mLg = msh.long || msh.bottom,
+      mt = msh.top;
+    const cvS = (md.slab.cover || 20) / 1000;
+    const shortIsX = L <= B;                       // اتجاه الفرش = البعد الأقصر
     const floorsList = ROOM ? [1] : Array.from({ length: nf }, (_, i) => i + 1);
     floorsList.forEach(s => {
       const z = ROOM ? hs : s * hs;
-      meshGrid(-L / 2, -B / 2, L, B, mb.s, mb.db, z - th + .025,
-        { title: 'تسليح السقف السفلي — طابق ' + s, kind: 'rebar', floor: s,
-          rows: [['التفصيل', mb.label], ['الاتجاه', 'بالاتجاهين']] });
+      // ---- الفرش (الاتجاه القصير) ثم الغطاء (الطويل) فوقه بقطر سيخ واحد ----
+      const yF = z - th + cvS + mS.db / 2000, yG = yF + (mS.db + mLg.db) / 2000;
+      const lay = (run, across, dirC, s2, db2, y2, ttl, ord, dd) => {
+        const n2 = Math.max(2, Math.ceil(across / (s2 / 1000)) + 1), p = [];
+        for (let i = 0; i < n2; i++) {
+          const o = -across / 2 + Math.min(i * s2 / 1000, across);
+          p.push(dirC === 'x' ? [0, y2, o] : [o, y2, 0]);
+        }
+        addRun(run - 2 * cvS + .4, db2, dirC, p,
+          { title: ttl + ' — طابق ' + s, kind: 'rebar', floor: s,
+            rows: [['التفصيل', (dd && dd.label) || ''], ['الترتيب بالتنفيذ', ord],
+              ['العدد', n2 + ' سيخ = ⌈' + across.toFixed(2) + ' ÷ ' + (s2 / 1000).toFixed(2) + '⌉ + 1'],
+              ['طول السيخ', (run - 2 * cvS + .4).toFixed(2) + ' م'],
+              ['العمق الفعّال d', Math.round((dd && dd.d) || 0) + ' مم']] });
+      };
+      lay(shortIsX ? L : B, shortIsX ? B : L, shortIsX ? 'x' : 'z', mS.s, mS.db, yF,
+        'فرش السقف (الاتجاه القصير)', 'الطبقة الأولى من الأسفل', mS);
+      lay(shortIsX ? B : L, shortIsX ? L : B, shortIsX ? 'z' : 'x', mLg.s, mLg.db, yG,
+        'غطاء السقف (الاتجاه الطويل)', 'الطبقة الثانية فوق الفرش', mLg);
       const sch = md.slab.chairs;
-      if (sch) addChairs(-L / 2, -B / 2, L, B, sch.spacing, sch.height / 1000, sch.db, z - th + .03,
+      if (sch) addChairs(-L / 2, -B / 2, L, B, sch.spacing, sch.height / 1000, sch.db, yG,
         { title: 'كراسي السقف — طابق ' + s, kind: 'rebar', grp: 'slabs', floor: s,
-          rows: [['التفصيل', sch.label], ['العدد', sch.n], ['بسكويت الغطاء', sch.spacers]] });
-      // التسليح العلوي: شرائط فوق المساند فقط
+          rows: [['النوع', sch.name || sch.label], ['الزاوية', (sch.angle || 90) + '°'],
+            ['الارتفاع', Math.round(sch.height) + ' مم'], ['طول القطعة', (sch.len_each || 0).toFixed(2) + ' م'],
+            ['العدد', sch.n], ['بسكويت الغطاء السفلي', sch.spacers]] }, sch);
+      // ---- التسليح العلوي: أسياخ محدودة فوق المساند تمتد L/4 لكل جهة ----
       CURG = 'slabs';
       if (ROOM) {
         meshGrid(-L / 2, -B / 2, L, B, mt.s, mt.db, z - .025,
           { title: 'تسليح السقف العلوي', kind: 'rebar', floor: s,
             rows: [['التفصيل', mt.label]] });
       } else {
-        const wstrip = md.slab.top_strip || .5;
+        const tl = md.slab.top_len || { x: g.sx / 2, y: g.sy / 2, ext: .25 };
+        const yT = z - cvS - mt.db / 2000;
+        // فوق محاور جسور X: الأسياخ عمودية عليها (باتجاه Z) بطول 2·sy/4 + عرض المسند
+        // المحور الطرفي: نصف السيخ للداخل فقط حتى لا يبرز خارج البلاطة
         for (let j = 0; j <= g.ny; j++) {
-          const w2 = wstrip * g.sy;
-          addRun(L - .1, mt.db, 'x',
-            (() => { const p = []; const n2 = Math.max(2, Math.floor(w2 / (mt.s / 1000)) + 1);
-              for (let i = 0; i < n2; i++) p.push([0, z - .025, pz(ys[j]) - w2 / 2 + i * w2 / (n2 - 1)]);
-              return p; })(),
-            { title: 'تسليح علوي فوق محور جسور X', kind: 'rebar', floor: s,
-              rows: [['التفصيل', mt.label], ['عرض الشريط', w2.toFixed(2) + ' م'],
-                ['المرجع', 'يمتد 0.25·Ln لكل جهة']] });
+          const edge = (j === 0 || j === g.ny), into = j === 0 ? -1 : 1;
+          const Lb = edge ? tl.y / 2 : tl.y, off = edge ? into * tl.y / 4 : 0;
+          const p = [], n2 = Math.max(2, Math.ceil(L / (mt.s / 1000)) + 1);
+          for (let i = 0; i < n2; i++) p.push([-L / 2 + Math.min(i * mt.s / 1000, L), yT, pz(ys[j]) + off]);
+          addRun(Lb, mt.db, 'z', p, j === 1 || (g.ny === 1 && !j) ? null :
+            { title: 'تسليح علوي فوق محاور جسور X', kind: 'rebar', floor: s,
+              rows: [['التفصيل', mt.label], ['طول السيخ', Lb.toFixed(2) + ' م'],
+                ['الامتداد', 'L/4 = ' + (g.sy / 4).toFixed(2) + ' م لكل جهة من محور المسند'],
+                ['المحور', edge ? 'طرفي — نصف السيخ للداخل بعكفة 90°' : 'داخلي — سيخ متماثل'],
+                ['العدد بالمحور الواحد', n2 + ' سيخ'],
+                ['المرجع', 'التسليح العلوي فوق الأعمدة والمساند فقط — لا يمتد على البلاطة كاملة']] });
         }
         for (let i = 0; i <= g.nx; i++) {
-          const w2 = wstrip * g.sx;
-          addRun(B - .1, mt.db, 'z',
-            (() => { const p = []; const n2 = Math.max(2, Math.floor(w2 / (mt.s / 1000)) + 1);
-              for (let k2 = 0; k2 < n2; k2++) p.push([px(xs[i]) - w2 / 2 + k2 * w2 / (n2 - 1), z - .02, 0]);
-              return p; })(),
-            { title: 'تسليح علوي فوق محور جسور Y', kind: 'rebar', floor: s,
-              rows: [['التفصيل', mt.label], ['عرض الشريط', w2.toFixed(2) + ' م']] });
+          const edge = (i === 0 || i === g.nx), into = i === 0 ? 1 : -1;
+          const Lb = edge ? tl.x / 2 : tl.x, off = edge ? into * tl.x / 4 : 0;
+          const p = [], n2 = Math.max(2, Math.ceil(B / (mt.s / 1000)) + 1);
+          for (let k2 = 0; k2 < n2; k2++) p.push([px(xs[i]) + off, yT, -B / 2 + Math.min(k2 * mt.s / 1000, B)]);
+          addRun(Lb, mt.db, 'x', p, i === 1 || (g.nx === 1 && !i) ? null :
+            { title: 'تسليح علوي فوق محاور جسور Y', kind: 'rebar', floor: s,
+              rows: [['التفصيل', mt.label], ['طول السيخ', Lb.toFixed(2) + ' م'],
+                ['الامتداد', 'L/4 = ' + (g.sx / 4).toFixed(2) + ' م لكل جهة'],
+                ['المحور', edge ? 'طرفي — نصف السيخ للداخل' : 'داخلي — سيخ متماثل']] });
         }
       }
       // ---- التسليح الإضافي (أركان + تماسك) ----
@@ -470,16 +677,20 @@ function Viewer3D(el, M, onPick) {
           });
         COLS.forEach(l => {
           const p1 = [], p2 = [];
+          const lx = Math.min(g.sx, L) * .9, lz = Math.min(g.sy, B) * .9;
+          // يُقيَّد المركز حتى لا يبرز السيخ خارج البلاطة عند الأعمدة الطرفية
+          const cx2 = Math.max(-L / 2 + lx / 2, Math.min(L / 2 - lx / 2, px(l.x)));
+          const cz2 = Math.max(-B / 2 + lz / 2, Math.min(B / 2 - lz / 2, pz(l.y)));
           for (let i = 0; i < ex.integrity.n; i++) {
             const o = (i - (ex.integrity.n - 1) / 2) * .08;
-            p1.push([px(l.x) + o, z - th + .03, pz(l.y)]);
-            p2.push([px(l.x), z - th + .05, pz(l.y) + o]);
+            p1.push([cx2 + o, z - th + .03, pz(l.y)]);
+            p2.push([px(l.x), z - th + .05, cz2 + o]);
           }
-          addRun(Math.min(g.sx, L) * .9, ex.integrity.db, 'x', p1,
+          addRun(lx, ex.integrity.db, 'x', p1,
             { title: 'تسليح التماسك خلال العمود', kind: 'extra', floor: s,
               rows: [['المرجع', 'ACI 8.7.4.2'], ['التفصيل', ex.integrity.n + 'Ø' + ex.integrity.db + ' مستمر'],
                 ['السبب', 'يمنع الانهيار التدريجي عند فشل قص الثقب']] }, EXTRA, G.extra);
-          addRun(Math.min(g.sy, B) * .9, ex.integrity.db, 'z', p2, null, EXTRA, G.extra);
+          addRun(lz, ex.integrity.db, 'z', p2, null, EXTRA, G.extra);
         });
       }
       CURG = 'slabs';
@@ -578,6 +789,35 @@ function Viewer3D(el, M, onPick) {
     });
   }
 
+  /* ===================== وضع المختبر: الإنشائيات والتجربة ===================== */
+  let labOn = false;
+  function labApply(res, removed) {
+    /* res = { "col|i|j|k": {after, mode_ar, before, modes} } — تلوين حسب نسبة الاستغلال */
+    const key = o => {
+      const u = o.userData || {};
+      if (!u.gk) return null;
+      return u.gk;
+    };
+    [G.columns, G.beams].forEach(grp => grp.children.forEach(o => {
+      const k = key(o); if (!k || !o.material) return;
+      if (o.userData._c0 === undefined) o.userData._c0 = o.material.color.getHex();
+      if (removed && k === removed) { o.visible = false; o.userData._gone = true; return; }
+      o.userData._gone = false;
+      const r = res && res[k];
+      if (!res) { o.material.color.setHex(o.userData._c0); o.userData.labRows = null; return; }
+      const v = r ? r.after : 0;
+      o.material.color.setHex(!r ? 0x2e4258 : v > 1 ? 0xf87171 : v > .7 ? 0xfbbf24 : 0x34d399);
+      o.userData.labRows = r ? [['نسبة الاستغلال قبل الحذف', r.before.toFixed(2)],
+        ['بعد الحذف', r.after.toFixed(2)], ['النمط الحاكم', r.mode_ar],
+        ['انحناء', (r.modes.bending || 0).toFixed(2)], ['قص', (r.modes.shear || 0).toFixed(2)],
+        ['التواء', (r.modes.torsion || 0).toFixed(2)],
+        ['ضغط/انبعاج', (r.modes.buckling || 0).toFixed(2)],
+        ['شد', (r.modes.tension || 0).toFixed(2)]] : null;
+    }));
+    labOn = !!res;
+    applyVis();
+  }
+
   /* ============================== التفاعل ============================== */
   const ray = new T.Raycaster(), mouse = new T.Vector2();
   let floorSel = 'all', anim = null;
@@ -586,7 +826,7 @@ function Viewer3D(el, M, onPick) {
       .forEach(grp => grp.children.forEach(o => {
         const u = o.userData || {};
         const okG = u.grp ? on[u.grp] !== 0 : true;
-        o.visible = okG && (floorSel === 'all' || !u.floor || u.floor === floorSel);
+        o.visible = okG && !u._gone && (floorSel === 'all' || !u.floor || u.floor === floorSel);
       }));
   }
   function pickAt(ev) {
@@ -599,7 +839,12 @@ function Viewer3D(el, M, onPick) {
   let last = null;
   rn.domElement.addEventListener('pointerdown', ev => {
     const hit = pickAt(ev);
-    if (hit) { last = hit.object; if (onPick) onPick(hit.object.userData); }
+    if (hit) {
+      last = hit.object;
+      const u = hit.object.userData;
+      if (onPick) onPick(labOn && u.labRows
+        ? Object.assign({}, u, { rows: u.labRows.concat(u.rows || []) }) : u);
+    }
   });
   rn.domElement.addEventListener('dblclick', ev => {
     const hit = pickAt(ev); if (hit) zoomTo(hit.object);
@@ -652,12 +897,40 @@ function Viewer3D(el, M, onPick) {
         }));
     },
     floor: v => { floorSel = v; applyVis(); },
+    lab: (rows, removed) => {
+      if (!rows) return labApply(null, null);
+      const res = {};
+      rows.forEach(r => { res[r.key.join('|')] = r; });
+      labApply(res, removed ? removed.join('|') : null);
+    },
     clip: v => { clip.constant = v; },
     zoomSel: () => zoomTo(last),
     reset: () => { anim = { t: 0, p0: cam.position.clone(), t0: ctl.target.clone(),
       p1: home.clone(), t1: mid.clone() }; },
     top: () => { anim = { t: 0, p0: cam.position.clone(), t0: ctl.target.clone(),
       p1: new T.Vector3(.01, R * 2.4, .01), t1: new T.Vector3(0, 0, 0) }; },
+    /* فحص: يرجع أسماء المجموعات التي تخرج أسياخها خارج حدود المبنى */
+    outside: (mx, mz) => {
+      const bad = [], bb = new T.Box3(), gb = new T.Box3(), m4 = new T.Matrix4();
+      Object.entries(G).forEach(([gn, grp]) => grp.traverse(o => {
+        if (!o.geometry || o === grp) return;
+        o.geometry.computeBoundingBox();
+        const g0 = o.geometry.boundingBox;
+        bb.makeEmpty();
+        if (o.isInstancedMesh) {
+          for (let i = 0; i < o.count; i++) {
+            o.getMatrixAt(i, m4); gb.copy(g0).applyMatrix4(m4); bb.union(gb);
+          }
+          bb.applyMatrix4(o.matrixWorld);
+        } else { bb.copy(g0).applyMatrix4(o.matrixWorld); }
+        if (!isFinite(bb.min.x)) return;
+        const over = Math.max(bb.max.x - mx, -mx - bb.min.x,
+          bb.max.z - mz, -mz - bb.min.z);
+        if (over > 0.35) bad.push([gn, (o.userData && (o.userData.title || o.userData.grp)) || o.type,
+          +over.toFixed(2)]);
+      }));
+      return bad.slice(0, 40);
+    },
     debug: () => ({ picks: picks.length, vis: picks.filter(o => o.visible && o.parent && o.parent.visible).length,
       groups: Object.fromEntries(Object.entries(G).map(([k, v2]) => [k, v2.children.length + '/' + v2.visible])) }),
     hit: (nx, ny) => { mouse.set(nx, ny); ray.setFromCamera(mouse, cam);

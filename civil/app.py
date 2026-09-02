@@ -10,6 +10,8 @@ import project as PJ
 import dxf as DXF
 import room as RM
 import bbs as BBS
+import detail as DT
+import slabs as SL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, 'static')
@@ -24,7 +26,17 @@ def meta():
                 cities=[dict(name=k, Ss=v[0], S1=v[1]) for k, v in E.SEISMIC_CITIES.items()],
                 systems=[dict(name=k, **v) for k, v in E.SYSTEMS.items()],
                 bars=E.BARS, soils=[dict(name=n, qa=q, kind=k) for n, q, k in FD.SOILS],
-                pile_types=FD.PILE_TYPES, version="2.0")
+                pile_types=FD.PILE_TYPES,
+                walls=[dict(name=w[0]) for w in RM.WALLS],
+                slab_types=[dict(k=a, name=b, span=c, note=d) for a, b, c, d in SL.TYPES],
+                chairs=[dict(k=a, name=b, note=c) for a, b, c in DT.CHAIRS],
+                lap_modes=[dict(k=a, name=b) for a, b in E.LAP_MODES],
+                dowel_modes=[dict(k='code', name='محسوب وفق ACI 25.4.9'),
+                             dict(k='16db', name='قاعدة الموقع 16·db'),
+                             dict(k='40db', name='قاعدة الموقع 40·db')],
+                exposures=[dict(k=a, name=b) for a, b in DT.EXPOSURES],
+                cover_table=[dict(name=a, v=b, ref=c) for a, b, c in DT.COVER_TABLE],
+                hordi=SL.HORDI_DEFAULT, version="3.0")
 
 ROUTES = {
     'meta': lambda p: meta(),
@@ -54,6 +66,15 @@ ROUTES = {
     'project/delete': PJ.delete,
     'room': RM.room,
     'bbs': lambda p: BBS.schedule(p if 'model' in p else PJ.wizard(p)),
+    # --- التفاصيل والتجربة وأنواع السقوف ---
+    'lab': PJ.lab,
+    'slabtypes': PJ.slabtypes,
+    'slabtype': lambda p: SL.design(p.get('kind', 'hordi'), p),
+    'detail/cover': lambda p: dict(
+        cover=DT.cover(p.get('element', 'slab'), p.get('exposure', 'interior'),
+                       float(p.get('db', 16))),
+        table=[dict(name=a, v=b, ref=c) for a, b, c in DT.COVER_TABLE],
+        exposures=[dict(k=a, name=b) for a, b in DT.EXPOSURES]),
 }
 
 class H(BaseHTTPRequestHandler):

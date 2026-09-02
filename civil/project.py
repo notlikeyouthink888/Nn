@@ -8,6 +8,8 @@ import json, os, re, time, math
 import engine as E
 import found as F
 import earth as W
+import detail as DT
+import slabs as SL
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'projects')
 
@@ -38,30 +40,136 @@ def tributary(g):
     return out
 
 # ---------------------- تصميم عناصر الهيكل الفوقي ------------------------
-def design_slab(g, t_slab, wD_super, live, fc, fy, col_b):
-    """يختار نوع السقف ويصممه، ويرجع شبكتي التسليح للرسم."""
+def _layer(row, d, dirname, order):
+    """طبقة تسليح واحدة مع عمقها الفعّال وترتيبها بالتنفيذ."""
+    return dict(db=row['db'], s=row['s'], label=row['label'], d=round(d, 1),
+                dir=dirname, order=order,
+                As_m=round(row.get('As_m', row.get('As', 0.0)), 1))
+
+def design_slab(g, t_slab, wD_super, live, fc, fy, col_b, exposure='interior', db0=12.0):
+    """بلاطة مصمتة — كل اتجاه يُصمَّم على عمقه الفعّال الحقيقي (فرش ثم غطاء)."""
     lo, hi = min(g['sx'], g['sy']), max(g['sx'], g['sy'])
     kind = 'two' if hi / lo <= 2.0 else 'one'
-    r = E.slab_module(dict(kind=kind, Lx=g['sx'], Ly=g['sy'], nspans=max(g['nx'], g['ny']),
-                           wD=wD_super, wL=live, h=t_slab, fc=fc, fy=fy, col=col_b / 1000.0))
+    cov = DT.cover('slab', exposure, db0)
+    ml = DT.mesh_layers(t_slab, cov, cov, db0, db0)
+    base = dict(kind=kind, Lx=g['sx'], Ly=g['sy'], nspans=max(g['nx'], g['ny']),
+                wD=wD_super, wL=live, h=t_slab, fc=fc, fy=fy, col=col_b / 1000.0, cover=cov)
+    d_ref = t_slab - cov - (10.0 if kind == 'two' else 6.0)
+    def at(d_target):
+        """يشغّل تصميم البلاطة بعمق فعّال محدد (بإزاحة الغطاء داخلياً)."""
+        q = dict(base); q['cover'] = cov + (d_ref - d_target)
+        return E.slab_module(q)
+    r = at(ml['d_short'])                     # الفرش — الطبقة الأولى
+    rl = at(ml['d_long'])                     # الغطاء — الطبقة الثانية
     if kind == 'one':
-        pos = [x for x in r['results'] if x['M'] > 0]
-        neg = [x for x in r['results'] if x['M'] < 0]
-        bot = max(pos, key=lambda x: x['As']); top = max(neg, key=lambda x: x['As'])
-        mesh = dict(bottom=dict(db=bot['db'], s=bot['s'], label=bot['label']),
-                    top=dict(db=top['db'], s=top['s'], label=top['label']))
+        pos = max((x for x in r['results'] if x['M'] > 0), key=lambda x: x['As'])
+        neg = max((x for x in r['results'] if x['M'] < 0), key=lambda x: x['As'])
+        sh = E.bar_spacing(0.0018 * 1000.0 * t_slab, dbs=(10, 12), smax=min(5 * t_slab, 450))
+        short = _layer(pos, ml['d_short'], 'الاتجاه القصير (حامل)', 'فرش — الطبقة الأولى من الأسفل')
+        long_ = _layer(sh, ml['d_long'], 'الاتجاه الطويل (انكماش)', 'غطاء — الطبقة الثانية')
+        top = _layer(neg, ml['d_short'], 'فوق المساند', 'علوي')
     else:
-        rows = [x for d in r['dirs'] for x in d['rows']]
-        pos = [x for x in rows if x['M'] > 0]; neg = [x for x in rows if x['M'] < 0]
-        bot = max(pos, key=lambda x: x['As_m']); top = max(neg, key=lambda x: x['As_m'])
-        mesh = dict(bottom=dict(db=bot['db'], s=bot['s'], label=bot['label']),
-                    top=dict(db=top['db'], s=top['s'], label=top['label']))
+        def pick(res, want_short, positive):
+            for dd in res['dirs']:
+                if ('القصير' in dd['dir']) == want_short:
+                    rows = [x for x in dd['rows'] if (x['M'] > 0) == positive]
+                    return max(rows, key=lambda x: x['As_m'])
+            return None
+        short = _layer(pick(r, True, True), ml['d_short'],
+                       'الاتجاه القصير', 'فرش — الطبقة الأولى من الأسفل')
+        long_ = _layer(pick(rl, False, True), ml['d_long'],
+                       'الاتجاه الطويل', 'غطاء — الطبقة الثانية فوق الفرش')
+        negs = [x for dd in r['dirs'] for x in dd['rows'] if x['M'] < 0]
+        top = _layer(max(negs, key=lambda x: x['As_m']), ml['d_short'], 'فوق المساند', 'علوي')
     r['kind_name'] = ('بلاطة مصمتة ثنائية الاتجاه' if kind == 'two'
                       else 'بلاطة مصمتة أحادية الاتجاه')
     r['why'] = ('نسبة البحور %.2f ≤ 2 — تعمل بالاتجاهين وتوزّع الحمل على كل الجسور'
                 % (hi / lo)) if kind == 'two' else (
                'نسبة البحور %.2f > 2 — الحمل ينتقل بالاتجاه القصير فقط' % (hi / lo))
-    r['mesh'] = mesh
+    r['mesh'] = dict(short=short, long=long_, top=top, bottom=short)
+    r['layers'] = ml
+    r['cover'] = cov
+    r['type'] = 'solid'
+    return r
+
+def slab_layout(L, B, mesh, cov=20.0, geom=None, lap=0.0):
+    """توزيع أسياخ الشبكة على السقف كاملاً — طريقة التنفيذ (فرش ثم غطاء)."""
+    short_side, long_side = min(L, B), max(L, B)
+    solid = not geom
+    out = []
+    names = (('فرش (الاتجاه القصير) — الطبقة الأولى من الأسفل',
+              'غطاء (الاتجاه الطويل) — الطبقة الثانية فوق الفرش') if solid else
+             ('شبكة الطبقة العلوية — الاتجاه القصير', 'شبكة الطبقة العلوية — الاتجاه الطويل'))
+    for key, name, run, across in (('short', names[0], short_side, long_side),
+                                   ('long', names[1], long_side, short_side)):
+        m = mesh[key]
+        n = DT.n_bars(across, m['s'] / 1000.0)
+        ln = run - 2 * cov / 1000.0 + 2 * 0.20          # طول السيخ + عكفتان
+        cut = E.cut_run(ln, lap)
+        out.append(dict(key=key, name=name, db=m['db'], s=m['s'], d=m['d'],
+                        n=n, length=round(ln, 2), across=round(across, 2),
+                        pieces=cut['n'], piece=round(cut['piece'], 2), laps=cut['laps'],
+                        note='العدد = ⌈%.2f ÷ %.2f⌉ + 1 = %d سيخ بطول %.2f م'
+                             % (across, m['s'] / 1000.0, n, ln)))
+    if geom and geom.get('kind') in ('hordi', 'waffle'):
+        s = geom['spacing'] / 1000.0
+        n = DT.n_bars(long_side, s)
+        rb = geom['rib_rebar']
+        out.insert(0, dict(key='ribs', name='الأعصاب (تسليح سفلي) — الاتجاه القصير',
+                           db=rb['db'], s=geom['spacing'], d=0.0, n=n * rb['n'],
+                           length=round(short_side + 0.3, 2), across=round(long_side, 2),
+                           pieces=E.cut_run(short_side + 0.3, lap)['n'], piece=0.0, laps=0,
+                           note='%d عصب @ %d مم × %s = %d سيخ' % (n, geom['spacing'],
+                                                                  rb['label'], n * rb['n'])))
+        if geom.get('kind') == 'waffle':
+            out.insert(1, dict(out[0], key='ribs2', name='الأعصاب — الاتجاه الطويل',
+                               n=DT.n_bars(short_side, s) * rb['n'],
+                               length=round(long_side + 0.3, 2), across=round(short_side, 2)))
+    return out
+
+def design_special(kind, g, t_slab, wD_super, live, fc, fy, cb, chh, Pu, opts):
+    """سقف غير مصمت — هوردي/فلات/وافل/ببل: يوحّد المخرجات بنفس شكل design_slab."""
+    lo, hi = min(g['sx'], g['sy']), max(g['sx'], g['sy'])
+    p = dict(opts or {})
+    p.update(span=hi, nspans=max(g['nx'], g['ny']), live=live, wD=wD_super, fc=fc, fy=fy,
+             Lx=g['sx'], Ly=g['sy'], cx=cb, cy=chh, Pu=Pu, continuous=max(g['nx'], g['ny']) > 1)
+    r = SL.design(kind, p)
+    h = r['h']
+    cov = r.get('cover', DT.cover('slab', 'interior', 12.0))
+    if kind == 'flat':
+        ml = r['layers']
+        def pk(is_top):
+            rows = [x for dd in r['dirs'] for x in dd['rows'] if x['top'] == is_top]
+            return max(rows, key=lambda x: x['As_m'])
+        bot = pk(False); top = pk(True)
+        mesh = dict(short=_layer(bot, ml['d_short'], 'الاتجاه القصير', 'فرش — الطبقة الأولى'),
+                    long=_layer(bot, ml['d_long'], 'الاتجاه الطويل', 'غطاء — الطبقة الثانية'),
+                    top=_layer(top, ml['d_short'], 'شريط الأعمدة', 'علوي فوق الأعمدة'))
+        geom = dict(kind='flat', drop=r['drop'], top_ext=r['top_ext'],
+                    top_len_x=r['top_len_x'], top_len_y=r['top_len_y'])
+    elif kind in ('hordi', 'waffle'):
+        ml = DT.mesh_layers(h, cov, cov, 10.0, 10.0)
+        m = r.get('mesh') or E.bar_spacing(0.0018 * 1000.0 * r['topping'], dbs=(6, 8, 10), smax=300.0)
+        lay = _layer(m, h - cov - 5.0, 'الطبقة العلوية', 'شبكة انكماش فوق البلوك/الأعصاب')
+        mesh = dict(short=lay, long=dict(lay, order='شبكة انكماش — الاتجاه الثاني'),
+                    top=dict(lay, order='علوي فوق المساند'))
+        geom = dict(kind=kind, spacing=r['spacing'], rib_w=r['rib_w'], topping=r['topping'],
+                    rib_h=r.get('rib_h', r.get('block', {}).get('H', 240.0)),
+                    block=r.get('block'), blocks_per_m2=r.get('blocks_per_m2'),
+                    solid_head=r.get('solid_head', 0.0), rib_rebar=r['rebar'],
+                    ribs_per_m=r['ribs_per_m'])
+    else:                                              # bubble
+        ml = DT.mesh_layers(h, cov, cov, r['mesh']['db'], r['mesh']['db'])
+        lay = _layer(r['mesh'], ml['d_short'], 'الاتجاه القصير', 'فرش — الطبقة الأولى')
+        mesh = dict(short=lay, long=_layer(r['mesh'], ml['d_long'], 'الاتجاه الطويل',
+                                           'غطاء — الطبقة الثانية'),
+                    top=dict(lay, order='علوي فوق الأعمدة'))
+        geom = dict(kind='bubble', ball=r['ball'], spacing=r['spacing'],
+                    void_ratio=r['void_ratio'], solid_head=r['solid_head'])
+    mesh['bottom'] = mesh['short']
+    r.update(kind_name=r['name'], kind='two' if hi / lo <= 2.0 else 'one', type=kind,
+             mesh=mesh, layers=ml, cover=cov, geom=geom,
+             why='اختيار المستخدم/التوصية: %s — %s' % (r['name'], SL.TYPE_MAP[kind][3]))
     return r
 
 def design_beam(span, nspan, trib, wD_floor, live, fc, fy, col_b):
@@ -78,10 +186,29 @@ def design_beam(span, nspan, trib, wD_floor, live, fc, fy, col_b):
     top = max(sup, key=lambda s: s['flex']['As_req'])['flex'] if sup else r['design'][0]['flex']
     bot = max(r['design'], key=lambda d: d['flex']['As_req'])['flex']
     sh = max(r['design'], key=lambda d: d['shear']['Vu'])['shear']
+    cov = DT.cover('beam', 'interior', bot['bars']['db'])
     r['section'] = dict(b=bw, h=hb, span=span, nspan=nspan, trib=trib)
     r['rebar'] = dict(bottom=bot['bars'], top=top['bars'], stirrup=dict(db=sh['db_stirrup'],
-                      s=sh['s'], legs=sh['legs'], label=sh['label']), cover=40.0)
+                      s=sh['s'], legs=sh['legs'], label=sh['label']), cover=cov)
     return r
+
+def beam_detail(bm, col_w, fc, fy, bent=True, lap_mode='code'):
+    """نقاط القطع والثني والعكفات والوصلات لجسر مصمَّم."""
+    sec = bm['section']; reb = bm['rebar']
+    sup = col_w / 1000.0
+    ct = DT.curtail(sec['span'], sup, bent=bent)
+    bb = DT.bent_bar(sec['span'], sec['h'], reb['cover'], reb['bottom']['db'], sup)
+    hk_st = DT.hook(reb['stirrup']['db'], 135, 'tie')
+    hk_bar = DT.hook(reb['top']['db'], 90, 'bar')
+    n_bent = reb['bottom']['n'] // 2 if bent else 0
+    run = sec['span'] * sec['nspan'] + 0.3
+    lap = E.lap_length(reb['bottom']['db'], fc, fy, mode=lap_mode) / 1000.0
+    lap_t = E.lap_length(reb['top']['db'], fc, fy, top=True, mode=lap_mode) / 1000.0
+    return dict(span=sec['span'], sup_w=sup, ln=ct['ln'], top1=ct['top1'], top2=ct['top2'],
+                bend_at=ct['bend_at'], top1_len=ct['top1_len'], top2_len=ct['top2_len'],
+                bent=bent, n_bent=n_bent, bar=bb, hook_stirrup=hk_st, hook_bar=hk_bar,
+                lap_bottom=round(lap, 3), lap_top=round(lap_t, 3),
+                run=round(run, 2), cover=reb['cover'], rows=ct['rows'])
 
 def design_column(b, h, Pu, Mu, fc, fy):
     """تسليح العمود بمنحني التفاعل + الأتاري."""
@@ -110,18 +237,10 @@ def design_column(b, h, Pu, Mu, fc, fy):
                 conf_label="تطويق Ø%d @ %d مم على مسافة %d مم من كل طرف" % (dbt, int(sc), int(lo)))
     return best
 
-def chairs(Lx, Ly, h_mm, cov, db_top, db_bot, spacing=1.0):
-    """كراسي دعم الشبكة العلوية — عدد ووزن وارتفاع."""
-    nx = int(Lx / spacing) + 1; ny = int(Ly / spacing) + 1
-    n = nx * ny
-    ht = max(60.0, h_mm - 2 * cov - db_top - db_bot)
-    db = 10.0 if ht <= 300 else 12.0
-    per = (2 * ht / 1000.0) + 0.30                      # رجلان + عرضة
-    wt = n * per * E.ab(db) / 1e6 * 7850.0 / 1000.0     # طن
-    return dict(n=n, nx=nx, ny=ny, height=ht, db=db, spacing=spacing,
-                len_each=per, weight=wt,
-                label="كرسي Ø%d ارتفاع %d مم @ %.1f م بالاتجاهين" % (db, int(ht), spacing),
-                spacers=int(Lx * Ly * 4))               # بسكويت الغطاء السفلي
+def chairs(Lx, Ly, h_mm, cov, db_top, db_bot, spacing=1.0, kind='s135', cov_bot=None):
+    """كراسي دعم الشبكة العلوية — النوع والزاوية والعدد والوزن (detail.chair_layout)."""
+    return DT.chair_layout(Lx, Ly, h_mm, cov, cov_bot if cov_bot is not None else cov,
+                          db_top, db_bot, kind=kind, spacing=spacing)
 
 def envelope(bm, npts=13):
     """مغلّف العزوم والهطول لكل فضاء — مبسّط للرسم."""
@@ -150,6 +269,14 @@ def wizard(p):
     hs = float(p.get('story_h', 3.2))
     cover = float(p.get('coverage', 1.0))
     fp = area * min(1.0, max(0.3, cover))
+    # --- خيارات التفاصيل والتنفيذ ---
+    lap_mode = p.get('lap_mode', '60db')
+    dowel_mode = p.get('dowel_mode', '16db')
+    chair_kind = p.get('chair_kind', 's135')
+    exposure = p.get('exposure', 'interior')
+    bent = p.get('bent', True) not in (False, 'false', 0, '0')
+    slab_type = p.get('slab_type', 'auto')
+    hordi_in = p.get('hordi') or {}
 
     g = grid_from_area(fp)
     trib = tributary(g)
@@ -157,8 +284,22 @@ def wizard(p):
     # ------------------------- الأحمال -------------------------
     live = dict(E.LIVE).get(use, 2.0)
     span_max = max(g['sx'], g['sy'])
+    span_min = min(g['sx'], g['sy'])
     t_slab = max(120.0, math.ceil(span_max * 1000 / 28.0 / 10) * 10)
+    sup_D = E.floor_load(dict(slab=0, live=live))['D']        # التشطيبات والقواطع بلا بلاطة
+    rec_slab = SL.recommend(span_max, span_min, live)
+    slab_kind = rec_slab['best'] if slab_type in ('auto', '', None) else slab_type
+    if slab_kind == 'solid':
+        slab_sw = t_slab / 1000.0 * 24.0
+    else:
+        pre = SL.design(slab_kind, dict(hordi_in, span=span_max, nspans=max(g['nx'], g['ny']),
+                                        live=live, wD=sup_D, fc=fc, fy=fy,
+                                        Lx=g['sx'], Ly=g['sy']))
+        t_slab = pre['h']; slab_sw = pre['sw']
     fl = E.floor_load(dict(slab=t_slab, live=live))
+    fl['items'][0] = dict(name='%s سماكة %d مم' % (SL.TYPE_MAP[slab_kind][1], int(t_slab)),
+                          v=round(slab_sw, 3))
+    fl['D'] = sum(i['v'] for i in fl['items'])
     beams_allow = 1.5
     D = fl['D'] + beams_allow
     Droof = D - 0.6
@@ -175,18 +316,43 @@ def wizard(p):
         Pu = (1.2 * D + 1.6 * live) * t['area'] * (floors - 1) + \
              (1.2 * Droof + 1.6 * Lroof) * t['area'] + 1.2 * col_sw
         loads.append(dict(kind=t['kind'], i=t['i'], j=t['j'], x=t['x'], y=t['y'],
-                          area=t['area'], P=Ps, Pu=Pu))
+                          area=t['area'], P=Ps, Pu=Pu,
+                          cont_x=(0 < t['i'] < g['nx']), cont_y=(0 < t['j'] < g['ny'])))
     Ps = [l['P'] for l in loads]
     total = sum(Ps)
     Pmax = max(Ps); Pumax = max(l['Pu'] for l in loads)
 
     # ------------------- الهيكل الفوقي: سقف وجسور وأعمدة -------------------
-    slab = design_slab(g, t_slab, fl['D'] - t_slab / 1000.0 * 24.0, live, fc, fy, cb)
+    if slab_kind == 'solid':
+        slab = design_slab(g, t_slab, fl['D'] - slab_sw, live, fc, fy, cb, exposure)
+    else:
+        slab = design_special(slab_kind, g, t_slab, fl['D'] - slab_sw, live, fc, fy,
+                              cb, ch, (1.2 * D + 1.6 * live) * max(t['area'] for t in trib),
+                              hordi_in)
+    slab['recommend'] = rec_slab
+    slab['types'] = [dict(kind=k, name=n, span=s2, note=w,
+                          chosen=(k == slab_kind)) for k, n, s2, w in SL.TYPES]
     bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb)
     by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb)
     Mcol = 0.40 * max(abs(min(s['M'] for s in bx['supports'])),
                       abs(min(s['M'] for s in by['supports'])))
     col_rebar = design_column(cb, ch, Pumax, Mcol, fc, fy)
+    dx = beam_detail(bx, ch, fc, fy, bent, lap_mode)
+    dy = beam_detail(by, cb, fc, fy, bent, lap_mode)
+    dow = DT.dowels(cb, ch, col_rebar['db'], fc, fy, mode=dowel_mode)
+    col_rebar['dowels'] = dow
+    col_rebar['hook'] = DT.hook(col_rebar['tie_db'], 135, 'tie')
+    # تصنيف الأعمدة: ركني/حافة/داخلي + استمرارية الجسور بكل اتجاه
+    col_kinds = []
+    for l in loads:
+        cx_ = 'مستمر' if l['cont_x'] else 'طرفي'
+        cy_ = 'مستمر' if l['cont_y'] else 'طرفي'
+        col_kinds.append(dict(i=l['i'], j=l['j'], kind=l['kind'], x=l['x'], y=l['y'],
+                              cont_x=l['cont_x'], cont_y=l['cont_y'], Pu=l['Pu'],
+                              label='%s — X %s · Y %s' % (l['kind'], cx_, cy_),
+                              note=('العزوم متوازنة على الجهتين' if l['cont_x'] and l['cont_y']
+                                    else 'عزم غير متوازن من جهة واحدة — يزداد Mu ويحتاج تسليحاً '
+                                         'علوياً أطول بالجسر الطرفي')))
 
     # ------------------------- بدائل الأساس -------------------------
     adv = F.advisor(dict(loads=Ps, qa=qa, footprint=fp, floors=floors, Df=Df,
@@ -244,10 +410,10 @@ def wizard(p):
         else:
             hf, where = des_i['h'], 'الأساس المنفرد'
             qu_f = l['Pu'] / max(iso['sizes'][idx]['B'] ** 2, 0.01)
-        df = hf - 75.0 - 20.0
+        df = hf - DT.cover('footing', 'ground') - 20.0
         Vu = max(0.0, l['Pu'] - qu_f * (cb + df) * (ch + df) / 1e6)
         r1 = E.punching(Vu, cb, ch, df, fc, pos_of(l['kind']))
-        ds = t_slab - 20.0 - 10.0
+        ds = slab['mesh']['short']['d']
         wu_f = 1.2 * D + 1.6 * live
         Vs = max(0.0, wu_f * l['area'] - wu_f * (cb + ds) * (ch + ds) / 1e6)
         r2 = E.punching(Vs, cb, ch, ds, fc, pos_of(l['kind']))
@@ -293,19 +459,33 @@ def wizard(p):
                                             for k in range(1, floors + 1)]))
 
     # ------------------------- الكراسي والوصلات -------------------------
-    ch_slab = chairs(g['L'], g['B'], slab['h'], 20.0,
-                     slab['mesh']['top']['db'], slab['mesh']['bottom']['db'])
-    ch_found = (chairs(rf['Lx'], rf['Ly'], rf['h'], 75.0, rf['top']['db'], rf['bottom']['db'])
+    cov_s = slab['cover']
+    ch_slab = chairs(g['L'], g['B'], slab['h'], cov_s,
+                     slab['mesh']['top']['db'], slab['mesh']['short']['db'], kind=chair_kind)
+    cov_ft = DT.cover('footing', 'weather'); cov_fb = DT.cover('footing', 'ground')
+    ch_found = (chairs(rf['Lx'], rf['Ly'], rf['h'], cov_ft, rf['top']['db'], rf['bottom']['db'],
+                       kind=chair_kind, cov_bot=cov_fb)
                 if rec == 'raft' else
-                chairs(math.sqrt(sum_foot_area), math.sqrt(sum_foot_area), des_i['h'], 75.0,
-                       des_i['bar_db'], des_i['bar_db']))
+                chairs(math.sqrt(sum_foot_area), math.sqrt(sum_foot_area), des_i['h'], cov_ft,
+                       des_i['bar_db'], des_i['bar_db'], kind=chair_kind, cov_bot=cov_fb))
     dbs_used = set([col_rebar['db'], bx['rebar']['bottom']['db'], bx['rebar']['top']['db'],
                     by['rebar']['bottom']['db'], by['rebar']['top']['db'],
-                    slab['mesh']['bottom']['db'], slab['mesh']['top']['db'],
+                    slab['mesh']['short']['db'], slab['mesh']['long']['db'],
+                    slab['mesh']['top']['db'],
                     rf['top']['db'], rf['bottom']['db'], des_i['bar_db']])
-    laps = {int(d): dict(bottom=round(E.lap_length(d, fc, fy) / 1000.0, 3),
-                         top=round(E.lap_length(d, fc, fy, top=True) / 1000.0, 3))
-            for d in dbs_used}
+    laps = {int(d2): dict(bottom=round(E.lap_length(d2, fc, fy, mode=lap_mode) / 1000.0, 3),
+                          top=round(E.lap_length(d2, fc, fy, top=True, mode=lap_mode) / 1000.0, 3),
+                          code=round(E.lap_length(d2, fc, fy) / 1000.0, 3),
+                          site=round(60.0 * d2 / 1000.0, 3))
+            for d2 in dbs_used}
+    lap_note = dict(LAP_MODES=[dict(k=a, name=b) for a, b in E.LAP_MODES], mode=lap_mode,
+                    label=dict(E.LAP_MODES).get(lap_mode, lap_mode))
+    covers = dict(slab=slab['cover'], beam=bx['rebar']['cover'],
+                  column=DT.cover('column', exposure, col_rebar['db']),
+                  footing_bottom=cov_fb, footing_top=cov_ft,
+                  table=[dict(name=a, v=b, ref=c) for a, b, c in DT.COVER_TABLE])
+    layout = slab_layout(g['L'], g['B'], slab['mesh'], slab['cover'], slab.get('geom'),
+                         laps.get(int(slab['mesh']['short']['db']), {}).get('bottom', 0.0))
 
     # ------------------------- نموذج العرض ثلاثي الأبعاد -------------------
     model = dict(
@@ -313,19 +493,27 @@ def wizard(p):
         stock=E.BAR_STOCK, laps=laps,
         col=dict(b=cb, h=ch, rebar=col_rebar),
         beams=dict(x=dict(b=bx['section']['b'], h=bx['section']['h'], rebar=bx['rebar'],
-                          env=envelope(bx), span=g['sx'], n=g['nx'],
+                          env=envelope(bx), span=g['sx'], n=g['nx'], detail=dx,
                           d_long=min(d['d_long'] for d in bx['design']),
                           d_limit=bx['design'][0]['d_limit']),
                    y=dict(b=by['section']['b'], h=by['section']['h'], rebar=by['rebar'],
-                          env=envelope(by), span=g['sy'], n=g['ny'],
+                          env=envelope(by), span=g['sy'], n=g['ny'], detail=dy,
                           d_long=min(d['d_long'] for d in by['design']),
                           d_limit=by['design'][0]['d_limit'])),
         slab=dict(h=slab['h'], kind=slab['kind'], mesh=slab['mesh'], name=slab['kind_name'],
-                  chairs=ch_slab, top_strip=0.5,
+                  chairs=ch_slab, top_strip=0.5, type=slab_kind,
+                  geom=slab.get('geom'), layout=layout, cover=slab['cover'],
+                  top_len=dict(x=2 * (g['sx'] / 4.0) + cb / 1000.0,
+                               y=2 * (g['sy'] / 4.0) + ch / 1000.0, ext=0.25),
                   extra=dict(corner=dict(db=slab['mesh']['top']['db'],
                                          s=slab['mesh']['top']['s'], size=0.2),
-                             integrity=dict(n=2, db=slab['mesh']['bottom']['db']))),
+                             integrity=dict(n=2, db=slab['mesh']['short']['db']))),
         found=dict(mode=rec, chairs=ch_found),
+        detail=dict(covers=covers, chairs=dict(slab=ch_slab, found=ch_found, kind=chair_kind,
+                                               types=[dict(k=a, name=b, note=c) for a, b, c in DT.CHAIRS]),
+                    curtail=dict(x=dx, y=dy), dowels=dow, cols=col_kinds,
+                    lap=lap_note, bent=bent, exposure=exposure,
+                    hook=dict(tie=col_rebar['hook'], bar=dx['hook_bar'])),
         punch=[dict(x=q['x'], y=q['y'], kind=q['kind'],
                     ratio=q['found']['ratio'], b0=q['found']['b0'], d=q['found']['d'],
                     Vu=q['found']['Vu'], phiVc=q['found']['phiVc'], ok=q['found']['ok'],
@@ -344,16 +532,101 @@ def wizard(p):
     ]
     return dict(input=dict(area=area, floors=floors, use=use, qa=qa, soil=soil_name,
                            ground=ground, old_depth=old_depth, Df=Df, fc=fc, fy=fy,
-                           story_h=hs, coverage=cover, city=p.get('city', 'بغداد')),
+                           story_h=hs, coverage=cover, city=p.get('city', 'بغداد'),
+                           slab_type=slab_kind, lap_mode=lap_mode, dowel_mode=dowel_mode,
+                           chair_kind=chair_kind, exposure=exposure, bent=bent,
+                           hordi=hordi_in),
                 grid=g, footprint=fp, loads=loads, total=total, Pmax=Pmax, Pumax=Pumax,
                 floor=dict(D=D, L=live, Droof=Droof, slab=t_slab, items=fl['items'],
-                           beams=beams_allow),
-                col=dict(b=cb, h=ch, sw=col_sw, rebar=col_rebar, Mu=Mcol),
-                slab=slab, beams=dict(x=bx, y=by),
+                           beams=beams_allow, slab_sw=slab_sw, slab_type=slab_kind),
+                col=dict(b=cb, h=ch, sw=col_sw, rebar=col_rebar, Mu=Mcol, kinds=col_kinds,
+                         dowels=dow),
+                slab=slab, beams=dict(x=bx, y=by), detail=model['detail'],
                 advisor=adv, alts=alts, recommended=rec, design=design, model=model,
                 punching=punch, chairs=dict(slab=ch_slab, found=ch_found), laps=laps,
                 earth=ew, boq=dict(rows=rows, total=grand), seismic=seis,
-                summary=summary, span_max=span_max)
+                summary=summary, span_max=span_max, span_min=span_min)
+
+# -------------------- مواصفات المختبر (الإنشائيات والتجربة) --------------------
+def lab_spec(R):
+    """يحوّل ناتج المعالج إلى مواصفات النموذج الفراغي في lab.build."""
+    g = R['grid']; m = R['model']; inp = R['input']
+    bx, by = m['beams']['x'], m['beams']['y']
+    big = bx if bx['h'] >= by['h'] else by
+    reb = big['rebar']
+    wu = 1.2 * R['floor']['D'] + 1.6 * R['floor']['L']
+    lat = [dict(floor=d0['h'] and int(round(d0['h'] / m['story_h'])) or 1, Fx=d0['Fx'], Fy=0.0)
+           for d0 in R['seismic']['dist']]
+    return dict(nx=g['nx'], ny=g['ny'], sx=g['sx'], sy=g['sy'],
+                floors=m['floors'], story_h=m['story_h'],
+                fc=inp['fc'], fy=inp['fy'],
+                col_b=m['col']['b'], col_h=m['col']['h'],
+                beam_b=big['b'], beam_h=big['h'], wu=wu, lateral=lat,
+                col_rebar=dict(nb=m['col']['rebar']['nb'], db=m['col']['rebar']['db']),
+                beam_rebar=dict(bottom_As=reb['bottom']['As'], top_As=reb['top']['As']),
+                stirrup=dict(db=reb['stirrup']['db'], s=reb['stirrup']['s'],
+                             legs=reb['stirrup']['legs']))
+
+def lab(p):
+    """يحذف عنصراً ويعيد التحليل — يقبل مدخلات المعالج مباشرة."""
+    import lab as LAB
+    R = p if 'model' in p else wizard(p)
+    sp = lab_spec(R)
+    rm = p.get('remove')
+    if rm:
+        sp['remove'] = [rm[0], int(rm[1]), int(rm[2]), int(rm[3])]
+    out = LAB.compare(sp)
+    bm = max((v['ratio'] for v in out['base'].values()), default=0.0)
+    # المفاتيح tuples — تُحوَّل لنصوص لتصلح بالـ JSON
+    out['base'] = {'|'.join(str(x) for x in k): dict(v, key=list(k))
+                   for k, v in out['base'].items()}
+    if out.get('after'):
+        out['after'] = {'|'.join(str(x) for x in k): dict(v, key=list(k))
+                        for k, v in out['after'].items()}
+    out['base_max'] = bm
+    out['base_note'] = (
+        'الحالة الأصلية تشمل الحمل الجانبي الزلزالي (V = %.0f kN) بينما المعالج يصمّم الأعمدة '
+        'على العزوم الشاقولية فقط — لذلك قد تظهر نسب > 1 قبل الحذف بأعمدة الطوابق العليا. '
+        'الحكم على أثر الحذف يكون بالفرق (قبل → بعد) لا بالقيمة المطلقة. '
+        'أعلى نسبة قبل الحذف = %.2f' % (R['seismic']['V'], bm))
+    out['spec'] = dict(nx=sp['nx'], ny=sp['ny'], floors=sp['floors'],
+                       col=[sp['col_b'], sp['col_h']], beam=[sp['beam_b'], sp['beam_h']],
+                       sx=sp['sx'], sy=sp['sy'], story_h=sp['story_h'])
+    out['grid'] = R['grid']; out['model'] = R['model']; out['loads'] = R['loads']
+    out['recommended'] = 'none'
+    return out
+
+def slabtypes(p):
+    """يقارن أنواع السقوف على نفس البحر والحمل."""
+    span = float(p.get('span', 6.0)); span2 = float(p.get('span2', span))
+    live = float(p.get('live', 2.0)); wD = float(p.get('wD', 2.5))
+    fc = float(p.get('fc', 25.0)); fy = float(p.get('fy', 420.0))
+    base = dict(p.get('hordi') or {})
+    base.update(span=span, Lx=span, Ly=span2, live=live, wD=wD, fc=fc, fy=fy,
+                nspans=int(p.get('nspans', 3)))
+    out = []
+    for k, name, rng, note in SL.TYPES:
+        if k == 'solid':
+            h = max(120.0, math.ceil(span * 1000 / 28.0 / 10) * 10)
+            out.append(dict(kind=k, name=name, span_range=rng, note=note, h=h,
+                            sw=h / 1000.0 * 24.0, ok=True,
+                            rows=[('السماكة', '%d مم' % h),
+                                  ('الوزن الذاتي', '%.2f kN/m²' % (h / 1000.0 * 24.0)),
+                                  ('الملاحظة', note)]))
+            continue
+        try:
+            r = SL.design(k, dict(base))
+            out.append(dict(kind=k, name=name, span_range=rng, note=note, h=r['h'],
+                            sw=r['sw'], ok=True, rows=r['rows'], detail=r))
+        except Exception as ex:
+            out.append(dict(kind=k, name=name, span_range=rng, note=note, ok=False,
+                            error=str(ex)))
+    rec = SL.recommend(max(span, span2), min(span, span2), live)
+    for o in out:
+        o['recommended'] = (o['kind'] == rec['best'])
+    return dict(types=out, recommend=rec, span=span,
+                note='الأنواع الشائعة بالعراق: الهوردي ثم المصمتة — والوافل والببل ديك '
+                     'للبحور الكبيرة بتنفيذ متخصص')
 
 # ------------------------------ حفظ المشاريع ------------------------------
 def _safe(name):

@@ -90,6 +90,8 @@ class H(BaseHTTPRequestHandler):
             n = int(self.headers.get('Content-Length') or 0)
             payload = json.loads(self.rfile.read(n) or b'{}')
             if name == 'dxf':
+                if 'grid' not in payload:          # يقبل مدخلات المعالج مباشرة
+                    payload = PJ.wizard(payload)
                 body = DXF.foundation_plan(payload)
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/dxf')

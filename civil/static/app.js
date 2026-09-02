@@ -1115,4 +1115,8 @@ PAGES.home.ttl = 'عن المنصة';
       <span class="ic">${PAGES[k].ic}</span>${PAGES[k].name}</button>`).join('')).join('');
   const want = (location.hash || '#wizard').slice(1);
   go(want in PAGES ? want : 'wizard');
+  window.addEventListener('hashchange', () => {          // دعم زر الرجوع وتغيير العنوان
+    const id = (location.hash || '#wizard').slice(1);
+    if (id in PAGES && !$('#nav button[data-id="' + id + '"]').classList.contains('on')) go(id);
+  });
 })();

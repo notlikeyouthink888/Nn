@@ -12,13 +12,15 @@ import room as RM
 import bbs as BBS
 import detail as DT
 import slabs as SL
+import plan as PL
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, 'static')
 PORT = int(os.environ.get('PORT', '5819'))
 MIME = {'.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8',
         '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
-        '.json': 'application/json; charset=utf-8'}
+        '.json': 'application/json; charset=utf-8',
+        '.wasm': 'application/wasm', '.gz': 'application/wasm'}
 
 def meta():
     return dict(live=[dict(name=a, v=b) for a, b in E.LIVE],
@@ -28,6 +30,8 @@ def meta():
                 bars=E.BARS, soils=[dict(name=n, qa=q, kind=k) for n, q, k in FD.SOILS],
                 pile_types=FD.PILE_TYPES,
                 walls=[dict(name=w[0]) for w in RM.WALLS],
+                plan_roles=[dict(k=a, name=b) for a, b in PL.ROLES],
+                plan_scales=[dict(v=a, name=b) for a, b in PL.SCALES],
                 slab_types=[dict(k=a, name=b, span=c, note=d) for a, b, c, d in SL.TYPES],
                 chairs=[dict(k=a, name=b, note=c) for a, b, c in DT.CHAIRS],
                 lap_modes=[dict(k=a, name=b) for a, b in E.LAP_MODES],
@@ -68,6 +72,8 @@ ROUTES = {
     'bbs': lambda p: BBS.schedule(p if 'model' in p else PJ.wizard(p)),
     # --- التفاصيل والتجربة وأنواع السقوف ---
     'lab': PJ.lab,
+    'plan/parse': PL.analyze,
+    'plan/dxf': PL.parse_dxf,
     'lab/sweep': PJ.lab_sweep,
     'slabtypes': PJ.slabtypes,
     'slabtype': lambda p: SL.design(p.get('kind', 'hordi'), p),
@@ -105,6 +111,17 @@ class H(BaseHTTPRequestHandler):
             return self._send(404, json.dumps(dict(error='not found')))
         ext = os.path.splitext(fn)[1]
         with open(fn, 'rb') as f: data = f.read()
+        if ext == '.gz':                       # محرّك DWG مخزون مضغوطاً (10م → 2.3م)
+            inner = os.path.splitext(fn)[0]
+            ctype = MIME.get(os.path.splitext(inner)[1], 'application/octet-stream')
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'public, max-age=604800')
+            self.end_headers()
+            try: return self.wfile.write(data)
+            except BrokenPipeError: return
         self._send(200, data, MIME.get(ext, 'application/octet-stream'))
 
     def do_POST(self):

@@ -298,7 +298,18 @@ def wizard(p):
     slab_type = p.get('slab_type', 'auto')
     hordi_in = p.get('hordi') or {}
 
-    g = grid_from_area(fp)
+    # شبكة مأخوذة من مخطط DWG/DXF إن وُجدت، وإلا تُولَّد من المساحة
+    go = p.get('grid_override')
+    if go:
+        g = dict(L=float(go['L']), B=float(go['B']), nx=int(go['nx']), ny=int(go['ny']),
+                 sx=float(go['sx']), sy=float(go['sy']),
+                 cols=(int(go['nx']) + 1) * (int(go['ny']) + 1),
+                 bays=int(go['nx']) * int(go['ny']), source='plan',
+                 max_dev=go.get('max_dev'), rms_dev=go.get('rms_dev'),
+                 spans_x=go.get('spans_x'), spans_y=go.get('spans_y'))
+        fp = float(p.get('footprint_override') or (g['L'] * g['B']))
+    else:
+        g = grid_from_area(fp)
     trib = tributary(g)
 
     # ------------------------- الأحمال -------------------------
@@ -539,6 +550,7 @@ def wizard(p):
                                          s=slab['mesh']['top']['s'], size=0.2),
                              integrity=dict(n=2, db=slab['mesh']['short']['db']))),
         found=dict(mode=rec, chairs=ch_found),
+        plan=p.get('plan_view'),
         detail=dict(covers=covers, chairs=dict(slab=ch_slab, found=ch_found, kind=chair_kind,
                                                types=[dict(k=a, name=b, note=c) for a, b, c in DT.CHAIRS]),
                     curtail=dict(x=dx, y=dy), dowels=dow, cols=col_kinds,
@@ -565,7 +577,8 @@ def wizard(p):
                            story_h=hs, coverage=cover, city=p.get('city', 'بغداد'),
                            slab_type=slab_kind, lap_mode=lap_mode, dowel_mode=dowel_mode,
                            chair_kind=chair_kind, exposure=exposure, bent=bent,
-                           hordi=hordi_in),
+                           hordi=hordi_in, grid_override=go,
+                           footprint_override=p.get('footprint_override')),
                 grid=g, footprint=fp, loads=loads, total=total, Pmax=Pmax, Pumax=Pumax,
                 floor=dict(D=D, L=live, Droof=Droof, slab=t_slab, items=fl['items'],
                            beams=beams_allow, slab_sw=slab_sw, slab_type=slab_kind),

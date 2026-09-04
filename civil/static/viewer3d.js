@@ -35,10 +35,10 @@ function Viewer3D(el, M, onPick) {
 
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
   const GN = ['layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
-              'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl', 'human'];
+              'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl', 'human', 'plan'];
   const G = {}; GN.forEach(k => { G[k] = new T.Group(); G[k].name = k; sc.add(G[k]); });
   G.moments.visible = G.punch.visible = G.defl.visible = G.rebar.visible = G.extra.visible =
-    G.chairs.visible = G.human.visible = false;
+    G.chairs.visible = G.human.visible = G.plan.visible = false;
   const on = {}; GN.forEach(k => on[k] = 1);
   const picks = [];
   const px = v => v - L / 2, pz = v => -(v - B / 2);
@@ -874,6 +874,79 @@ function Viewer3D(el, M, onPick) {
     });
   }
 
+  /* ============ خلفية مخطط DWG/DXF تحت المجسم ============ */
+  const ACAD = [0x000000, 0xff0000, 0xffff00, 0x00ff00, 0x00ffff, 0x0000ff, 0xff00ff,
+                0xffffff, 0x808080, 0xc0c0c0];
+  let planData = null, planX = { scale: 1, rot: 0, dx: 0, dy: 0, level: 0, op: 0.85 };
+  function acadColor(i) {
+    if (i === undefined || i === null || i === 256 || i === 7) return 0x9fb4cc;
+    return ACAD[i] !== undefined ? ACAD[i] : 0x9fb4cc;
+  }
+  /* يبني قطعاً مستقيمة مدمجة لكل طبقة — 7000 عنصر تصير عشرات الكائنات فقط */
+  function buildPlan(d) {
+    G.plan.clear ? G.plan.clear() : (G.plan.children.length = 0);
+    planData = d;
+    if (!d || !d.ents || !d.ents.length) return { layers: 0, segs: 0 };
+    const sc = d.scale || 0.001;
+    const off = d.origin || [0, 0];                 // نقطة التصفير بوحدات الرسم
+    const byLayer = {};
+    const seg = (lay, x1, y1, x2, y2) => {
+      (byLayer[lay] = byLayer[lay] || []).push(
+        (x1 - off[0]) * sc, (y1 - off[1]) * sc, (x2 - off[0]) * sc, (y2 - off[1]) * sc);
+    };
+    const arc = (lay, cx, cy, r, a0, a1) => {
+      const n = Math.max(6, Math.min(48, Math.ceil(r * sc * 24)));
+      let s = a0 * Math.PI / 180, e = a1 * Math.PI / 180;
+      if (e <= s) e += 2 * Math.PI;
+      for (let i = 0; i < n; i++) {
+        const t0 = s + (e - s) * i / n, t1 = s + (e - s) * (i + 1) / n;
+        seg(lay, cx + r * Math.cos(t0), cy + r * Math.sin(t0),
+                 cx + r * Math.cos(t1), cy + r * Math.sin(t1));
+      }
+    };
+    const off_ = d.roles || {};
+    for (const e of d.ents) {
+      if (off_[e.l] === 'off') continue;
+      const p = e.p;
+      if (e.t === 'L') seg(e.l, p[0], p[1], p[2], p[3]);
+      else if (e.t === 'P') {
+        for (let i = 0; i + 3 < p.length; i += 2) seg(e.l, p[i], p[i + 1], p[i + 2], p[i + 3]);
+        if (e.closed && p.length >= 6)
+          seg(e.l, p[p.length - 2], p[p.length - 1], p[0], p[1]);
+      } else if (e.t === 'C' && p[2] > 0) arc(e.l, p[0], p[1], p[2], 0, 360);
+      else if (e.t === 'A') arc(e.l, p[0], p[1], p[2], p[3], p[4]);
+    }
+    const colors = {};
+    (d.layers || []).forEach(l => colors[l.name] = acadColor(l.color));
+    let segs = 0;
+    Object.entries(byLayer).forEach(([lay, arr]) => {
+      const g2 = new T.BufferGeometry();
+      const v = new Float32Array(arr.length / 2 * 3);
+      for (let i = 0, j = 0; i < arr.length; i += 2) {
+        v[j++] = arr[i]; v[j++] = 0; v[j++] = -arr[i + 1];   // مستوى XZ مثل بقية المشهد
+      }
+      g2.setAttribute('position', new T.BufferAttribute(v, 3));
+      const m = new T.LineSegments(g2, new T.LineBasicMaterial({
+        color: colors[lay] || 0x9fb4cc, transparent: true, opacity: planX.op,
+        depthWrite: false, clippingPlanes: [clip] }));
+      m.userData = { title: 'مخطط — طبقة ' + lay, kind: 'plan', grp: 'plan',
+        rows: [['الطبقة', lay], ['عدد القطع', arr.length / 4],
+               ['الدور', ({ col: 'أعمدة', wall: 'جدران', axis: 'محاور',
+                            other: 'عرض فقط' })[off_[lay]] || 'عرض فقط'],
+               ['المقياس', (1 / sc).toFixed(0) + ' وحدة رسم = 1 م']] };
+      picks.push(m); G.plan.add(m);
+      segs += arr.length / 4;
+    });
+    applyPlanX();
+    return { layers: Object.keys(byLayer).length, segs: segs };
+  }
+  function applyPlanX() {
+    G.plan.position.set(planX.dx, planX.level, planX.dy);
+    G.plan.rotation.y = planX.rot * Math.PI / 180;
+    G.plan.scale.set(planX.scale, 1, planX.scale);
+    G.plan.children.forEach(o => { if (o.material) o.material.opacity = planX.op; });
+  }
+
   /* ==================== إنسان بطول 1.85 م للمقياس ==================== */
   let humanBuilt = false;
   function buildHuman() {
@@ -1028,6 +1101,16 @@ function Viewer3D(el, M, onPick) {
       else if (G.human.visible) humanTo(ROOM ? fb : (M.earth ? lv.existing : fb));
     },
     human: v => { if (v) buildHuman(); G.human.visible = !!v; return !!v; },
+    /* خلفية المخطط: بناء · إظهار · تحريك ومقياس ودوران ومنسوب وشفافية */
+    planBuild: d => buildPlan(d),
+    plan: v => { G.plan.visible = !!v && G.plan.children.length > 0; return G.plan.visible; },
+    planHas: () => G.plan.children.length > 0,
+    planXform: o => { Object.assign(planX, o || {}); applyPlanX(); return Object.assign({}, planX); },
+    /* يوسّط المخطط على المبنى تلقائياً بمطابقة مركز الأعمدة المكتشَفة بمركز الشبكة */
+    planAlign: (cx, cy) => {
+      planX.dx = -(cx - L / 2); planX.dy = (cy - B / 2);
+      applyPlanX(); return { dx: planX.dx, dy: planX.dy };
+    },
     /* يحدّد عنصراً بمفتاحه (col|i|j|k) ويقرّب عليه ويعرض تفاصيله */
     focus: gk => {
       let hit = null;

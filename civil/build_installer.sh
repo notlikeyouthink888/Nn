@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PAY=$(mktemp)
-tar czf "$PAY" *.py static README.md
+tar czf "$PAY" --exclude="static/vendor/libredwg/wasm/*.wasm.gz" *.py static README.md
 {
 cat <<'HDR'
 #!/usr/bin/env bash
@@ -29,6 +29,19 @@ cat <<'FTR'
 PAYLOAD_B64
 tar xzf /tmp/civil5819.tgz -C "$APP" && rm -f /tmp/civil5819.tgz
 chmod -R 755 "$APP"
+
+echo "==> [2b/6] جلب محرّك قراءة DWG (اختياري — 2.3 ميغا)"
+RAW=https://raw.githubusercontent.com/notlikeyouthink888/Nn/claude/civil-engineering-site-g9u9al/civil
+mkdir -p "$APP/static/vendor/libredwg/wasm"
+if command -v curl >/dev/null 2>&1 && \
+   curl -fsSL --max-time 180 -o "$APP/static/vendor/libredwg/wasm/libredwg-web.wasm.gz" \
+     "$RAW/static/vendor/libredwg/wasm/libredwg-web.wasm.gz" 2>/dev/null; then
+  echo "    ✓ محرّك DWG جاهز — تقدر ترفع مخططات .dwg مباشرة"
+else
+  rm -f "$APP/static/vendor/libredwg/wasm/libredwg-web.wasm.gz"
+  echo "    تعذّر جلب محرّك DWG — استيراد DXF يبقى شغّالاً"
+  echo "      (صدّر المخطط من الأوتوكاد بصيغة DXF، أو نزّل الملف يدوياً لاحقاً)"
+fi
 
 echo "==> [3/6] إنشاء خدمة التشغيل"
 pkill -f "/opt/civil5819/app.py" 2>/dev/null || true

@@ -941,7 +941,7 @@ async function replan(patch) {
   if (!PLR) return;
   const body = Object.assign({}, PLR, {
     roles: Object.fromEntries((PLD.layers || []).map(l => [l.name, l.role])),
-    scale: PLD.scale, plan_index: PLD.plan_index });
+    scale: PLD.scale, plan_index: PLD.plan_index, angle: PLD.angle });
   Object.assign(body, patch || {});
   const name = PLD.name;
   PLD = await post('plan/parse', body);
@@ -950,11 +950,32 @@ async function replan(patch) {
   drawPlan();
 }
 
+/* يدير نقاط العناصر −deg مثل rotate_ents ببايثون تماماً — المخطط المائل
+   حُلّل بعد تدويره لمحاور المبنى، فخلفيته لازم تُدار بنفس الزاوية وإلا
+   رُسمت مائلة فوق مبنى مستقيم. */
+function rotEnts(ents, deg) {
+  if (!deg) return ents;
+  const c = Math.cos(-deg * Math.PI / 180), s = Math.sin(-deg * Math.PI / 180);
+  return ents.map(e => {
+    const p = e.p, f = Object.assign({}, e);
+    if (e.t === 'C' || e.t === 'T') f.p = [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]];
+    else if (e.t === 'A') f.p = [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2], p[3] - deg, p[4] - deg];
+    else {
+      const q = [];
+      for (let i = 0; i + 1 < p.length; i += 2) q.push(p[i] * c - p[i + 1] * s, p[i] * s + p[i + 1] * c);
+      f.p = q;
+    }
+    return f;
+  });
+}
+
 function drawPlan() {
   if (!V3 || !PLR || !PLD) return;
   const roles = Object.fromEntries((PLD.layers || []).map(l => [l.name, l.role]));
   const cols = PLD.columns || [];
+  const ents = rotEnts(PLR.ents, PLD.angle || 0);
   // نصفّر المخطط على مركز الأعمدة المكتشَفة ليقع تحت المبنى مباشرة
+  // (الأعمدة بالفضاء المُدار، والعناصر أعلاه صارت فيه كذلك)
   let ox = 0, oy = 0;
   if (cols.length) {
     ox = (Math.min(...cols.map(c => c.x)) + Math.max(...cols.map(c => c.x))) / 2 / PLD.scale;
@@ -963,7 +984,7 @@ function drawPlan() {
     ox = (PLD.extents[0] + PLD.extents[2]) / 2 / PLD.scale;
     oy = (PLD.extents[1] + PLD.extents[3]) / 2 / PLD.scale;
   }
-  const st = V3.planBuild({ ents: PLR.ents, layers: PLR.layers, roles: roles,
+  const st = V3.planBuild({ ents: ents, layers: PLR.layers, roles: roles,
                             scale: PLD.scale, origin: [ox, oy] });
   V3.planXform({ level: +($('#pl_lvl') ? $('#pl_lvl').value : 0),
                  rot: +($('#pl_rot') ? $('#pl_rot').value : 0),
@@ -1007,6 +1028,11 @@ function renderPlan() {
             ${x.name} (1 وحدة = ${x.v} م)</option>`).join('')}
         </select>
         <span class="pdec-s">مصدره: <b style="color:${PLD.scale_src === 'الأبعاد المكتوبة' ? 'var(--ok)' : 'var(--mut)'}">${PLD.scale_src}</b></span>
+        <label>ميل المخطط</label>
+        <input type="number" id="pl_ang" value="${nf(PLD.angle || 0, 2)}" step="0.5" min="0" max="89.9"
+          style="width:78px;padding:5px 8px;font-size:11.5px"
+          onchange="replan({angle:+this.value})">
+        <span class="pdec-s">درجة</span>
         <span class="sp"></span>
         <label>بدّل الملف</label>
         <input type="file" id="pl_file" accept=".dwg,.dxf" onchange="loadPlanFile(this)"
@@ -1023,11 +1049,15 @@ function renderPlan() {
       ${kpi('أعمدة مكتشَفة', (PLD.columns || []).length, (PLD.columns || []).length >= 4 ? 'ok' : 'bad')}
       ${kpi('الجسور المستخرَجة', PLD.frame ? PLD.frame.n_beams : '—')}
       ${kpi('مساحة البناء', b ? nf(b.area, 1) + ' م²' : '—')}
-      ${kpi('مقطع العمود', s ? int(s.median) + ' مم' : '—')}
+      ${kpi('مقطع العمود الوسيط', (() => {      // من الأعمدة المكتشَفة لا من معايرة المقياس
+        const cs = (PLD.columns || []).map(c => (c.b + c.h) / 2).sort((a, b2) => a - b2);
+        return cs.length ? int(cs[cs.length >> 1]) + ' مم' : (s ? int(s.median) + ' مم' : '—');
+      })())}
       ${kpi('درج ومصاعد', (PLD.stairs || []).length + ' درج · ' + (PLD.shafts || []).length + ' مصعد')}
       ${kpi('المقياس', (PLD.dim_scale ? PLD.dim_scale.name : (s ? s.name : PLD.unit)),
             PLD.scale_src === 'الأبعاد المكتوبة' ? 'ok' : '')}
-      ${kpi('عناصر المخطط', int(PLD.n_ents))}
+      ${kpi('اتجاه المخطط', PLD.angle ? nf(PLD.angle, 1) + '° — دُوِّر للمحاور' : 'محاذٍ للمحاور',
+            PLD.angle ? 'warn' : 'ok')}
       ${kpi('مخططات بالملف', (PLD.plans || []).length, 'ok')}
     </div>
 

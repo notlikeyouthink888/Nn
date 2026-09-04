@@ -193,10 +193,76 @@ def _cluster(vals, tol):
             out.append([v])
     return out
 
+# -------------------- اتجاه المبنى: مخططات مرسومة مائلة --------------------
+def plan_angle(ents, roles, tol=1.5):
+    """زاوية محاور المبنى بالنسبة لمحاور الرسم.
+
+    كثير من المخططات — خاصةً المُسنَدة لإحداثيات مساحية (UTM) — مرسومة مائلة،
+    فالمبنى محاذٍ للشارع لا لمحوري الرسم. وكل الكشف هنا يعمل بصناديق محيطة
+    محاذية للمحاور، فمقطع عمود 35×70 سم مائل 54° يُقرأ 77×69 سم، وتصير المحاور
+    والبحور والشبكة بلا معنى.
+
+    الزاوية = قمة مدرّج زوايا أضلاع طبقات البنية بـ mod 90° موزوناً بالطول.
+    والمتوسط حول القمة **دائري** (89.5° و0.5° جاران لا طرفان)، وإلا انزلق
+    الناتج إلى منتصف المدى بمخطط محاذٍ أصلاً.
+    يرجع (الزاوية بالدرجات، حصة الطول التي تؤيدها)."""
+    hist = {}
+    for e in ents:
+        if roles.get(e['l']) not in ('col', 'wall'):
+            continue
+        if e['t'] not in ('L', 'P'):
+            continue
+        p = e['p']
+        for i in range(len(p) // 2 - 1):
+            x0, y0, x1, y1 = p[2 * i], p[2 * i + 1], p[2 * i + 2], p[2 * i + 3]
+            ln = math.hypot(x1 - x0, y1 - y0)
+            if ln < 1e-9:
+                continue
+            a = round((math.degrees(math.atan2(y1 - y0, x1 - x0)) % 90.0) * 2) / 2.0
+            hist[a] = hist.get(a, 0.0) + ln
+    if not hist:
+        return 0.0, 0.0
+    total = sum(hist.values())
+    peak = max(hist, key=hist.get)
+    sx = sy = w = 0.0
+    for a, ln in hist.items():
+        if abs((a - peak + 45.0) % 90.0 - 45.0) <= tol:
+            r = math.radians(4.0 * a)                  # ×4 لأن الدورة 90° لا 360°
+            sx += ln * math.cos(r); sy += ln * math.sin(r); w += ln
+    ang = (math.degrees(math.atan2(sy, sx)) / 4.0) % 90.0 if w else peak
+    if abs((ang - peak + 45.0) % 90.0 - 45.0) > 2.0:
+        ang = peak
+    return ang, (w / total if total else 0.0)
+
+def rotate_ents(ents, deg):
+    """يدير كل العناصر بـ −deg حول أصل الرسم، فتصير محاور المبنى محاور الرسم."""
+    c = math.cos(math.radians(-deg)); s = math.sin(math.radians(-deg))
+    out = []
+    for e in ents:
+        f = dict(e); p = e['p']
+        if e['t'] in ('C', 'T'):
+            f['p'] = [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2]]
+        elif e['t'] == 'A':
+            f['p'] = [p[0] * c - p[1] * s, p[0] * s + p[1] * c, p[2],
+                      p[3] - deg, p[4] - deg]
+        else:
+            q = []
+            for i in range(0, len(p) - 1, 2):
+                q += [p[i] * c - p[i + 1] * s, p[i] * s + p[i + 1] * c]
+            f['p'] = q
+        out.append(f)
+    return out
+
 # ---------------------------- كشف الأعمدة ----------------------------
 def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5):
     """يجمع عناصر طبقات الأعمدة إلى عناقيد متجاورة، وكل عنقود بحجم عمود = عمود.
-    يعمل سواء رُسم العمود كأربعة خطوط أو كخط متعدد مغلق أو كدائرة."""
+    يعمل سواء رُسم العمود كأربعة خطوط أو كخط متعدد مغلق أو كدائرة.
+
+    طبقات الأعمدة تحمل أحياناً خطوط إنشاء أو حدوداً بطول المبنى كله (طبقة
+    STR-COLUMNS مثلاً)، وهذه تتلامس مع كل الأعمدة فتلحمها بعنقود واحد بحجم
+    المبنى فيُرفض — فيخرج التحليل بصفر أعمدة. لذلك يُستبعد ما هو أكبر من مقطع
+    عمود قبل التعنقد أصلاً، وتُضيَّق سماحية التجاور، ويُرفض أي دمج ينتج عنقوداً
+    أكبر من مقطع عمود."""
     items = []
     for e in ents:
         if roles.get(e['l']) != 'col':
@@ -204,6 +270,9 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5):
         pts = _seg_points(e)
         if not pts:
             continue
+        x0, y0, x1, y1 = _bbox(pts)
+        if (x1 - x0) * scale > cmax * 1.05 or (y1 - y0) * scale > cmax * 1.05:
+            continue                                   # خط إنشاء/جدار طويل لا عمود
         if e['t'] == 'C' and e['p'][2] > 0:            # عمود دائري جاهز
             r = e['p'][2] * scale
             if cmin / 2 <= r <= cmax / 2:
@@ -212,8 +281,10 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5):
         items.append(dict(kind='poly', pts=pts, r=0.0))
     if not items:
         return []
-    # تعنقد بالتجاور: صندوق محيط لكل عنصر ثم دمج المتقاطعة/المتلامسة
-    tol = cmax / scale                                  # بوحدات الرسم
+    # تعنقد بالتجاور: صندوق محيط لكل عنصر ثم دمج المتقاطعة/المتلامسة.
+    # أضلاع العمود الواحد متلامسة فعلاً، فسماحية 5 سم تكفي — وسماحية بمقطع
+    # عمود كامل تلحم عمودين متجاورين ببعضهما.
+    tol = 0.05 / scale                                  # بوحدات الرسم
     boxes = [list(_bbox(it['pts'])) + [i] for i, it in enumerate(items)]
     boxes.sort(key=lambda b: (b[0], b[1]))
     used = [False] * len(boxes)
@@ -235,9 +306,13 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5):
                     break
                 if (c[0] <= cur[2] + tol and c[2] >= cur[0] - tol and
                         c[1] <= cur[3] + tol and c[3] >= cur[1] - tol):
+                    nx = [min(cur[0], c[0]), min(cur[1], c[1]),
+                          max(cur[2], c[2]), max(cur[3], c[3])]
+                    if ((nx[2] - nx[0]) * scale > cmax or
+                            (nx[3] - nx[1]) * scale > cmax):
+                        continue                        # الدمج يتجاوز مقطع عمود
                     used[j] = True; g.append(c); changed = True
-                    cur = [min(cur[0], c[0]), min(cur[1], c[1]),
-                           max(cur[2], c[2]), max(cur[3], c[3])]
+                    cur = nx
         groups.append((cur, [x[4] for x in g]))
     cols = []
     for (x0, y0, x1, y1), idx in groups:
@@ -282,10 +357,12 @@ def scale_from_dims(ents):
     if ratios:
         rs = sorted(ratios)
         lfac = rs[len(rs) // 2]
-    # ٢) اختيار الوحدة بالمدى الفيزيائي لأبعاد المساقط، لا بـ«التدوير» وحده:
-    #    أي مقياس كبير يجعل كل الأرقام «مدوّرة» فالتدوير وحده لا يميّز.
-    #    أبعاد المسقط الحقيقية تتراوح بين سماكة جدار (~8 سم) وأطول بحر (~15 م)،
-    #    ووسيطها قرابة متر واحد (عروض أبواب وفتحات وسماكات).
+    # ٢) اختيار الوحدة بثلاثة أدلة مرتّبة:
+    #    أولاً المدى الفيزيائي (بين سماكة جدار ~8 سم وأطول بحر ~15 م) — فهو يستبعد
+    #    المقاييس المستحيلة. ثم **تدوير الأرقام**: المصمم يكتب 4.50 و3.20 لا 1.372،
+    #    وهذا هو الدليل الحاسم بين وحدتين تفصل بينهما نسبة ثابتة (متر مقابل قدم).
+    #    وأخيراً قرب الوسيط من المتر، وهو مرجّح ضعيف لأنه مضبوط على المساقط
+    #    المعمارية (أبواب وسماكات) بينما وسيط المخطط الإنشائي بحر ≈ 4.5 م.
     LO, HI, MID = 80.0, 15000.0, 1200.0                    # مم
     best = None
     for sc, nm in SCALES:
@@ -298,7 +375,7 @@ def scale_from_dims(ents):
         share_rnd = rnd / float(len(good))
         med = sorted(good)[len(good) // 2]
         logd = abs(math.log(max(med, 1.0) / MID))          # قرب الوسيط من المتر (لوغاريتمياً)
-        score = (round(share_ok, 2), -round(logd, 2), round(share_rnd, 2))
+        score = (round(share_ok, 2), round(share_rnd, 2), -round(logd, 2))
         cand = dict(scale=sc * lfac, name=nm, n=len(dims), lfac=round(lfac, 4),
                     in_range=len(good), median=round(med, 0),
                     round_share=round(share_rnd, 2), ok_share=round(share_ok, 2))
@@ -307,7 +384,7 @@ def scale_from_dims(ents):
     if not best:
         return None
     c = best[1]
-    c['ok'] = c['round_share'] >= 0.6 and c['ok_share'] >= 0.35
+    c['ok'] = c['round_share'] >= 0.5 and c['ok_share'] >= 0.5
     c['why'] = ('عُرف المقياس من %d بُعد مكتوب بالمخطط — %d%% منها أرقام مدوّرة '
                 '(مضاعفات 5 سم) والوسيط %.2f م'
                 % (c['n'], int(c['round_share'] * 100), c['median'] / 1000.0))
@@ -364,6 +441,10 @@ def split_regions(ents, roles, scale, cell=2.5):
     التعنقد يكون على **طبقات البنية فقط** (جدران وأعمدة) — لأن طبقات الأبعاد والنصوص
     والتظليل وإطارات الورقة تمتد على الورقة كلها فتلحم المخططات ببعضها وتجعلها منطقة
     واحدة، وهذا بالضبط سبب ضياع بقية المخططات سابقاً.
+
+    وحجم الخلية يتكيّف مع نوع المخطط: المسقط المعماري جدرانه متصلة فتكفيه خلية 2.5 م،
+    أما المخطط الإنشائي فأعمدة متباعدة بحراً كاملاً بلا جدران تصلها — فلو بقيت الخلية
+    صغيرة لتفتّت المبنى الواحد إلى شرائح.
     """
     idx = [i for i, e in enumerate(ents) if roles.get(e['l']) in ('wall', 'col')]
     if not idx:
@@ -371,6 +452,10 @@ def split_regions(ents, roles, scale, cell=2.5):
                if roles.get(e['l']) not in ('off', 'frame', 'axis')]
     if not idx:
         return []
+    nw = sum(len(_seg_points(e)) for e in ents if roles.get(e['l']) == 'wall')
+    nc = sum(len(_seg_points(e)) for e in ents if roles.get(e['l']) == 'col')
+    if nw < 0.2 * (nw + nc):                              # مخطط إنشائي: أعمدة بلا جدران
+        cell = max(cell, 5.0)
     step = cell / scale                                   # حجم الخلية بوحدات الرسم
     occ = {}
     for i in idx:
@@ -741,6 +826,19 @@ def analyze(p):
                            suggested=suggest_role(name)))
     roles = {l['name']: l['role'] for l in layers}
     warn = []
+    # ---------- المخطط المائل يُدار لمحاور المبنى قبل أي كشف ----------
+    ang, ang_share = plan_angle(ents, roles)
+    off_axis = abs((ang + 45.0) % 90.0 - 45.0)         # بُعد الزاوية عن المحاور
+    if p.get('angle') is not None:
+        ang = float(p['angle']); off_axis = abs((ang + 45.0) % 90.0 - 45.0)
+        ang_share = 1.0
+    if ang_share >= 0.5 and off_axis > 1.0:
+        ents = rotate_ents(ents, ang)
+        warn.append('المخطط مرسوم مائلاً %.1f° عن محاور الرسم (%d%% من أطوال البنية '
+                    'على هذا الاتجاه) — دُوِّر لمحاور المبنى قبل التحليل، وإلا قُرئت '
+                    'مقاطع الأعمدة وبحورها خطأً.' % (ang, int(ang_share * 100)))
+    else:
+        ang = 0.0
     # ---------- المقياس: يدوي · ثم من الأبعاد المكتوبة · ثم من مقطع العمود ----------
     declared = units_scale(insunits)
     dimc = None if p.get('scale') else scale_from_dims(ents)
@@ -837,6 +935,7 @@ def analyze(p):
                 frame=frame, stairs=stairs, shafts=shafts, dim_spans=dspans,
                 insunits=insunits, unit=unit_name(insunits), scale=scale,
                 scale_src=src, dim_scale=dimc,
+                angle=round(ang, 3), angle_share=round(ang_share, 3),
                 declared_scale=declared, suggested=sug, plans=plans, plan_index=pick,
                 window=win, extents=ext, n_ents=len(ents), warnings=warn,
                 n_frames=len(frames),

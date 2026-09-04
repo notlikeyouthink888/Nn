@@ -10,6 +10,7 @@ import found as F
 import earth as W
 import detail as DT
 import slabs as SL
+import stairs as ST
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'projects')
 
@@ -25,6 +26,61 @@ def grid_from_area(area, ratio=1.25, target=5.0):
     nx, sx = split(L); ny, sy = split(B)
     return dict(L=L, B=B, nx=nx, ny=ny, sx=sx, sy=sy,
                 cols=(nx + 1) * (ny + 1), bays=nx * ny)
+
+def tributary_frame(nodes, boundary, step=0.25):
+    """مساحات مؤثرة لتوزيع أعمدة غير منتظم: كل نقطة داخل حدّ البناء تُنسب لأقرب عمود،
+    والمساحة = عدد النقاط × مساحة الخلية. مجموع المساحات = مساحة الحدّ بالضبط."""
+    if not nodes:
+        return []
+    poly = boundary if boundary and len(boundary) >= 3 else None
+    xs = [n['x'] for n in nodes]; ys = [n['y'] for n in nodes]
+    if poly:
+        xs += [p[0] for p in poly]; ys += [p[1] for p in poly]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    cnt = [0] * len(nodes)
+    cell = step * step
+    total = 0
+    ny = int(math.ceil((y1 - y0) / step)) + 1
+    nx = int(math.ceil((x1 - x0) / step)) + 1
+    for jy in range(ny):
+        py = y0 + jy * step
+        for ix in range(nx):
+            px = x0 + ix * step
+            if poly and not _in_poly(px, py, poly):
+                continue
+            k, bd = 0, 1e18
+            for m, n in enumerate(nodes):
+                d = (n['x'] - px) ** 2 + (n['y'] - py) ** 2
+                if d < bd:
+                    bd, k = d, m
+            cnt[k] += 1; total += 1
+    out = []
+    for k, n in enumerate(nodes):
+        # التصنيف من عدد الجسور الملتقية بالعمود يُضبط لاحقاً؛ هنا الموقع والمساحة
+        out.append(dict(i=n.get('i', k), j=n.get('j', 0), x=n['x'], y=n['y'],
+                        area=round(cnt[k] * cell, 3), kind='داخلي'))
+    return out
+
+def _poly_area(poly):
+    """مساحة مضلّع (صيغة الحذاء)."""
+    if not poly or len(poly) < 3:
+        return 0.0
+    a = 0.0
+    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+        a += x1 * y2 - x2 * y1
+    return abs(a) / 2.0
+
+def _in_poly(x, y, poly):
+    """اختبار وقوع نقطة داخل مضلّع (ray casting)."""
+    inside = False
+    n = len(poly)
+    for a in range(n):
+        x1, y1 = poly[a]; x2, y2 = poly[(a + 1) % n]
+        if (y1 > y) != (y2 > y):
+            xin = x1 + (y - y1) * (x2 - x1) / ((y2 - y1) or 1e-12)
+            if x < xin:
+                inside = not inside
+    return inside
 
 def tributary(g):
     """مساحة مؤثرة لكل عمود حسب موقعه."""
@@ -176,12 +232,17 @@ def design_special(kind, g, t_slab, wD_super, live, fc, fy, cb, chh, Pu, opts):
              why='اختيار المستخدم/التوصية: %s — %s' % (r['name'], SL.TYPE_MAP[kind][3]))
     return r
 
-def design_beam(span, nspan, trib, wD_floor, live, fc, fy, col_b):
-    """جسر مستمر نموذجي: مقطع + تسليح + أساور."""
+def design_beam(span, nspan, trib, wD_floor, live, fc, fy, col_b, spans=None):
+    """جسر مستمر: مقطع + تسليح + أساور.
+    spans = قائمة أطوال البحور الحقيقية من المخطط (إن وُجدت) بدل بحر واحد مكرَّر."""
+    lens = [float(x) for x in (spans or []) if float(x) > 0.5] or [span] * max(1, nspan)
+    span = max(lens)                                  # البحر الحاكم للمقطع
+    nspan = len(lens)
     bw = max(250.0, min(col_b, 400.0))
     hb = max(400.0, math.ceil(span * 1000.0 / 12.0 / 50.0) * 50.0)
     for _ in range(6):
-        r = E.beam_module(dict(spans=[dict(L=span, wD=wD_floor * trib, wL=live * trib)] * max(1, nspan),
+        r = E.beam_module(dict(spans=[dict(L=L, wD=wD_floor * trib, wL=live * trib)
+                                      for L in lens],
                                b=bw, h=hb, fc=fc, fy=fy))
         ok = all(d['flex']['ok'] and d['shear']['ok'] and d['defl_ok'] for d in r['design'])
         if ok: break
@@ -191,7 +252,8 @@ def design_beam(span, nspan, trib, wD_floor, live, fc, fy, col_b):
     bot = max(r['design'], key=lambda d: d['flex']['As_req'])['flex']
     sh = max(r['design'], key=lambda d: d['shear']['Vu'])['shear']
     cov = DT.cover('beam', 'interior', bot['bars']['db'])
-    r['section'] = dict(b=bw, h=hb, span=span, nspan=nspan, trib=trib)
+    r['section'] = dict(b=bw, h=hb, span=span, nspan=nspan, trib=trib,
+                        spans=[round(L, 3) for L in lens])
     r['rebar'] = dict(bottom=bot['bars'], top=top['bars'], stirrup=dict(db=sh['db_stirrup'],
                       s=sh['s'], legs=sh['legs'], label=sh['label']), cover=cov)
     return r
@@ -298,9 +360,23 @@ def wizard(p):
     slab_type = p.get('slab_type', 'auto')
     hordi_in = p.get('hordi') or {}
 
-    # شبكة مأخوذة من مخطط DWG/DXF إن وُجدت، وإلا تُولَّد من المساحة
+    # شبكة/هيكل مأخوذ من مخطط DWG/DXF إن وُجد، وإلا يُولَّد من المساحة
+    fo = p.get('frame_override')          # أعمدة وجسور بمواقعها الحقيقية من المخطط
     go = p.get('grid_override')
-    if go:
+    if fo and fo.get('nodes'):
+        ax, ay = fo.get('axes_x') or [], fo.get('axes_y') or []
+        xs = [n['x'] for n in fo['nodes']]; ys = [n['y'] for n in fo['nodes']]
+        Lp = (max(xs) - min(xs)) or 1.0; Bp = (max(ys) - min(ys)) or 1.0
+        nxp = max(1, len(ax) - 1); nyp = max(1, len(ay) - 1)
+        g = dict(L=round(Lp, 3), B=round(Bp, 3), nx=nxp, ny=nyp,
+                 sx=round(Lp / nxp, 4), sy=round(Bp / nyp, 4),
+                 cols=len(fo['nodes']), bays=nxp * nyp, source='frame',
+                 axes_x=ax, axes_y=ay,
+                 spans_x=fo.get('spans_x'), spans_y=fo.get('spans_y'))
+        bpoly = fo.get('boundary')
+        fp = float(p.get('footprint_override') or
+                   (_poly_area(bpoly) if bpoly else Lp * Bp))
+    elif go:
         g = dict(L=float(go['L']), B=float(go['B']), nx=int(go['nx']), ny=int(go['ny']),
                  sx=float(go['sx']), sy=float(go['sy']),
                  cols=(int(go['nx']) + 1) * (int(go['ny']) + 1),
@@ -310,7 +386,19 @@ def wizard(p):
         fp = float(p.get('footprint_override') or (g['L'] * g['B']))
     else:
         g = grid_from_area(fp)
-    trib = tributary(g)
+    if fo and fo.get('nodes'):
+        trib = tributary_frame(fo['nodes'], fo.get('boundary'))
+        # تصنيف العمود بعدد الجسور الملتقية به: 2 ركني · 3 حافة · 4 داخلي
+        deg = {}
+        for bm in (fo.get('beams') or []):
+            deg[bm['a']] = deg.get(bm['a'], 0) + 1
+            deg[bm['b']] = deg.get(bm['b'], 0) + 1
+        for k, t in enumerate(trib):
+            d0 = deg.get(k, 0)
+            t['kind'] = 'داخلي' if d0 >= 4 else ('حافة' if d0 == 3 else 'ركني')
+            t['i'] = fo['nodes'][k].get('i', 0); t['j'] = fo['nodes'][k].get('j', 0)
+    else:
+        trib = tributary(g)
 
     # ------------------------- الأحمال -------------------------
     live = dict(E.LIVE).get(use, 2.0)
@@ -363,8 +451,15 @@ def wizard(p):
     slab['recommend'] = rec_slab
     slab['types'] = [dict(kind=k, name=n, span=s2, note=w,
                           chosen=(k == slab_kind)) for k, n, s2, w in SL.TYPES]
-    bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb)
-    by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb)
+    # البحور الحقيقية من المخطط إن وُجدت — يُؤخذ أطول خط جسور بكل اتجاه
+    sx_real = sy_real = None
+    if fo:
+        lx = [s2['spans'] for s2 in (fo.get('lines') or []) if s2['dir'] == 'x']
+        ly = [s2['spans'] for s2 in (fo.get('lines') or []) if s2['dir'] == 'y']
+        sx_real = max(lx, key=lambda a: (len(a), sum(a))) if lx else None
+        sy_real = max(ly, key=lambda a: (len(a), sum(a))) if ly else None
+    bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb, spans=sx_real)
+    by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real)
     Mcol = 0.40 * max(abs(min(s['M'] for s in bx['supports'])),
                       abs(min(s['M'] for s in by['supports'])))
     col_rebar = design_column(cb, ch, Pumax, Mcol, fc, fy)
@@ -493,6 +588,15 @@ def wizard(p):
                           W=total, stories=[dict(name='طابق %d' % k, w=total / floors, h=hs * k)
                                             for k in range(1, floors + 1)]))
 
+    # ------------------- الدرج والمصاعد وفتحات السقف -------------------
+    stair_pkg = None
+    if p.get('stairs') or p.get('shafts'):
+        stair_pkg = ST.package(dict(stairs=p.get('stairs') or [], shafts=p.get('shafts') or [],
+                                    fc=fc, fy=fy, story_h=hs, floors=floors,
+                                    slab_h=slab['h'], span=span_max,
+                                    mesh=dict(db=slab['mesh']['short']['db'],
+                                              s=slab['mesh']['short']['s'])))
+
     # ------------------------- الكراسي والوصلات -------------------------
     cov_s = slab['cover']
     top_len = dict(x=2 * (g['sx'] / 4.0) + cb / 1000.0, y=2 * (g['sy'] / 4.0) + ch / 1000.0,
@@ -551,6 +655,8 @@ def wizard(p):
                              integrity=dict(n=2, db=slab['mesh']['short']['db']))),
         found=dict(mode=rec, chairs=ch_found),
         plan=p.get('plan_view'),
+        frame=(dict(fo, source='plan') if fo else None),
+        stairs=stair_pkg,
         detail=dict(covers=covers, chairs=dict(slab=ch_slab, found=ch_found, kind=chair_kind,
                                                types=[dict(k=a, name=b, note=c) for a, b, c in DT.CHAIRS]),
                     curtail=dict(x=dx, y=dy), dowels=dow, cols=col_kinds,
@@ -585,6 +691,7 @@ def wizard(p):
                 col=dict(b=cb, h=ch, sw=col_sw, rebar=col_rebar, Mu=Mcol, kinds=col_kinds,
                          dowels=dow),
                 slab=slab, beams=dict(x=bx, y=by), detail=model['detail'],
+                frame=fo, stairs=stair_pkg,
                 advisor=adv, alts=alts, recommended=rec, design=design, model=model,
                 punching=punch, chairs=dict(slab=ch_slab, found=ch_found), laps=laps,
                 earth=ew, boq=dict(rows=rows, total=grand), seismic=seis,

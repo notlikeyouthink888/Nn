@@ -8,8 +8,9 @@ const PlanIO = (() => {
   const GLUE = '/vendor/libredwg/dist/libredwg-web.js';
   let eng = null, loading = null;
 
-  /* أنواع لا تفيد التحليل الإنشائي وتضخّم الحمولة */
-  const SKIP = new Set(['HATCH', 'DIMENSION', 'VIEWPORT', 'XLINE', 'RAY',
+  /* أنواع لا تفيد التحليل الإنشائي وتضخّم الحمولة.
+     DIMENSION مستثناة عمداً: المسافات مكتوبة بالمخطط وهي أقوى دليل على المقياس. */
+  const SKIP = new Set(['HATCH', 'VIEWPORT', 'XLINE', 'RAY',
                         'SOLID', 'LEADER', 'MLEADER', 'SPLINE', 'IMAGE']);
 
   async function engine(onProgress) {
@@ -83,6 +84,14 @@ const PlanIO = (() => {
         case 'INSERT':
           if (e.insertionPoint) push('C', lay, [e.insertionPoint.x, e.insertionPoint.y, 0]);
           break;
+        case 'DIMENSION': {
+          // القياس المكتوب + طرفا المسافة المقيسة — منه يُعرف المقياس يقيناً
+          const a = e.subDefinitionPoint1, b2 = e.subDefinitionPoint2;
+          const m = e.measurement;
+          if (a && b2 && m > 0)
+            push('D', lay, [a.x, a.y, b2.x, b2.y], { m: m, s: String(e.text || '') });
+          break;
+        }
       }
     }
     return { source: source, insunits: db.header?.INSUNITS ?? 4, ents: ents,

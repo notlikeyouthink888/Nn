@@ -955,12 +955,25 @@ function renderPlan() {
       ${kpi('أعمدة مكتشَفة', (PLD.columns || []).length, (PLD.columns || []).length >= 4 ? 'ok' : 'bad')}
       ${kpi('مقطع العمود', s ? int(s.median) + ' مم' : '—')}
       ${kpi('مساحة البناء', b ? nf(b.area, 1) + ' م²' : '—')}
-      ${kpi('المقياس', (s ? s.name : PLD.unit) + ' (1 وحدة = ' + PLD.scale + ' م)')}
-      ${kpi('الشبكة المطابِقة', g ? g.nx + ' × ' + g.ny + ' بحر' : '—')}
-      ${kpi('البحر', g ? nf(g.sx, 2) + ' × ' + nf(g.sy, 2) + ' م' : '—')}
-      ${kpi('انحراف الأعمدة', g ? int(g.max_dev * 1000) + ' مم' : '—',
-            g && g.regular ? 'ok' : 'warn')}
+      ${kpi('المقياس', (PLD.dim_scale ? PLD.dim_scale.name : (s ? s.name : PLD.unit))
+            + ' — من ' + PLD.scale_src, PLD.scale_src === 'الأبعاد المكتوبة' ? 'ok' : '')}
+      ${kpi('مخططات بالملف', (PLD.plans || []).length, 'ok')}
+      ${kpi('الجسور المستخرَجة', PLD.frame ? PLD.frame.n_beams : '—')}
+      ${kpi('درج ومصاعد', (PLD.stairs || []).length + ' درج · ' + (PLD.shafts || []).length + ' مصعد')}
     </div>
+
+    <div class="card" style="margin-top:14px"><h3>المخططات الموجودة بالملف (${(PLD.plans || []).length})</h3>
+      ${table(['#', 'الاسم بالمخطط', 'الأعمدة', 'الأبعاد', 'العناصر', 'الطبقات', ''],
+        (PLD.plans || []).map(p => [p.i + 1, p.name || '—',
+          `<b style="color:${p.n >= 4 ? '#34d399' : 'var(--mut)'}">${p.n}</b>`,
+          nf(p.w, 1) + ' × ' + nf(p.h, 1) + ' م', int(p.nent),
+          (p.layers || []).map(l => l.name).slice(0, 3).join(' · '),
+          p.i === PLD.plan_index ? '<span class="tag t-ok">المختار ✓</span>'
+            : `<button class="btn gh" style="padding:3px 10px;font-size:11px"
+                 onclick="replan({plan_index:${p.i}})">اختره</button>`]))}
+      <div class="note">ملف الأوتوكاد الواحد يحوي عادةً عدة مخططات جنب بعض (طوابق ومقاطع).
+        فُصلت كلها بالتعنقد على طبقات الجدران والأعمدة — واختير تلقائياً صاحب أكثر أعمدة.
+        اضغط «اختره» لأي مخطط ليُعاد التحليل عليه.</div></div>
 
     <div class="v3bar" style="margin-top:14px">
       <b style="font-size:12px;color:var(--mut)">المقياس:</b>
@@ -1000,13 +1013,20 @@ function renderPlan() {
             <b>${nf(g.sx, 2)} × ${nf(g.sy, 2)} م</b> · ${g.cols} عمود</li>
         <li>انحراف أعمدتك عنها: أقصى <b style="color:${g.regular ? '#34d399' : '#fbbf24'}">${int(g.max_dev * 1000)} مم</b>
             · متوسط ${int(g.rms_dev * 1000)} مم —
-            ${g.regular ? 'الشبكة تمثّل مخططك تمثيلاً جيداً ✓'
-              : 'مخططك غير منتظم؛ التصميم سيُبنى على الشبكة المطابِقة أعلاه فراجع الفرق قبل الاعتماد'}</li>
+            ${g.regular ? 'أعمدتك منتظمة فعلاً ✓'
+              : 'أعمدتك غير منتظمة — ولهذا <b>لا يُبنى التصميم على هذه الشبكة</b> بل على '
+                + 'مواقع أعمدتك وبحورك الحقيقية أدناه. الشبكة معروضة للمقارنة فقط.'}</li>
       </ul>
+      ${PLD.frame ? `<li>الهيكل المستخرَج: <b>${PLD.frame.n_cols}</b> عمود بمواقعها الحقيقية
+        و<b>${PLD.frame.n_beams}</b> جسر على المحاور الحقيقية</li>` : ''}
+      ${(PLD.dim_spans && PLD.dim_spans.x.length) ? `<li>بحور مكتوبة بالمخطط —
+        X: ${PLD.dim_spans.x.slice(-6).map(v => nf(v, 2)).join(' · ')} ·
+        Y: ${PLD.dim_spans.y.slice(-6).map(v => nf(v, 2)).join(' · ')}</li>` : ''}
       <div class="row" style="margin-top:10px">
         <button class="btn" onclick="applyPlan()">✅ طبّق على المشروع</button>
         <button class="btn gh" onclick="togglePlan()">👁️ إظهار/إخفاء الخلفية</button>
-        ${window.__grid_override ? `<button class="btn gh" onclick="clearPlanGrid()">↩️ رجّع الشبكة التلقائية</button>` : ''}
+        ${(window.__grid_override || window.__frame_override)
+          ? `<button class="btn gh" onclick="clearPlanGrid()">↩️ رجّع الشبكة التلقائية</button>` : ''}
       </div></div>` : `<div class="note" style="margin-top:14px">
       ما قدرت أستخرج شبكة — حدّد طبقة الأعمدة الصحيحة من الجدول أدناه، أو صحّح المقياس.</div>`}
 
@@ -1021,6 +1041,18 @@ function renderPlan() {
         <div class="note">غيّر دور أي طبقة ثم سيُعاد التحليل تلقائياً. الأدوار المقترحة من أسماء
           الطبقات: <code>col</code> أعمدة · <code>wall</code> جدران · <code>axis</code> محاور.</div></div>
 
+      <div class="card"><h3>الدرج والمصاعد المكتشَفة</h3>
+        ${(PLD.stairs || []).length ? table(['#', 'الاتجاه', 'الدرجات', 'النائمة', 'عرض القلبة', 'طول القلبة', ''],
+          PLD.stairs.map((t, i) => [i + 1, t.dir === 'x' ? 'أفقي' : 'رأسي', t.steps,
+            int(t.tread * 100) + ' سم', nf(t.width, 2) + ' م', nf(t.run, 2) + ' م',
+            `<button class="btn gh" style="padding:3px 9px;font-size:11px"
+               onclick="dropStair(${i})">احذفه</button>`]))
+          : '<div class="note">ما لقيت درجاً — الكشف هندسي (تتابع درجات متوازية متساوية التباعد).</div>'}
+        ${(PLD.shafts || []).length ? table(['بئر مصعد', 'المقاس'],
+          PLD.shafts.map((v, i) => ['#' + (i + 1), nf(v.w, 2) + ' × ' + nf(v.h, 2) + ' م'])) : ''}
+        <div class="note">الدرج يُصمَّم كبلاطة مائلة، وتُفتح له فتحة بالسقف بحديد تطويق حولها،
+          وحمله ينتقل للجسور المحيطة. بئر المصعد يُعامل كجدران قص.</div></div>
+
       <div class="card"><h3>الأعمدة المكتشَفة (${(PLD.columns || []).length})</h3>
         <div style="max-height:400px;overflow:auto">${table(['#', 'X (م)', 'Y (م)', 'المقطع (مم)'],
           (PLD.columns || []).map((c, i) => [i + 1, nf(c.x - (g ? g.x0 : 0), 2),
@@ -1031,6 +1063,7 @@ function renderPlan() {
 
 async function clearPlanGrid() {
   window.__grid_override = null; window.__footprint_override = null;
+  window.__frame_override = null; window.__stairs = null; window.__shafts = null;
   await PAGES.wizard.run();
   setTimeout(() => { wtab('plan'); drawPlan(); }, 500);
 }
@@ -1041,15 +1074,23 @@ async function setRole(name, role) {
   await replan();
 }
 
+function dropStair(i) { PLD.stairs.splice(i, 1); renderPlan(); }
+
 async function applyPlan() {
-  const g = PLD && PLD.grid;
-  if (!g) return alert('ما في شبكة مستخرَجة — صحّح طبقة الأعمدة أو المقياس أولاً');
-  const area = (PLD.boundary && PLD.boundary.area) || (g.L * g.B);
+  const f = PLD && PLD.frame, g = PLD && PLD.grid;
+  if (!f && !g) return alert('ما في هيكل مستخرَج — صحّح طبقة الأعمدة أو المقياس أولاً');
+  const area = (PLD.boundary && PLD.boundary.area) || (g ? g.L * g.B : 0);
   $('#w_area').value = Math.round(area);
   $('#w_cov').value = 1;
-  window.__grid_override = { L: g.L, B: g.B, nx: g.nx, ny: g.ny, sx: g.sx, sy: g.sy,
+  // الهيكل الحقيقي: أعمدة وجسور بمواقعها من المخطط
+  window.__frame_override = f ? { nodes: f.nodes, beams: f.beams, lines: f.spans,
+    axes_x: f.axes_x, axes_y: f.axes_y,
+    boundary: (PLD.boundary && PLD.boundary.poly) || null } : null;
+  window.__grid_override = f ? null : { L: g.L, B: g.B, nx: g.nx, ny: g.ny, sx: g.sx, sy: g.sy,
     max_dev: g.max_dev, rms_dev: g.rms_dev, spans_x: g.spans_x, spans_y: g.spans_y };
-  window.__footprint_override = Math.round(g.L * g.B * 100) / 100;
+  window.__footprint_override = Math.round(area * 100) / 100;
+  window.__stairs = PLD.stairs || [];
+  window.__shafts = PLD.shafts || [];
   await PAGES.wizard.run();
   setTimeout(() => { wtab('plan'); drawPlan(); }, 500);
 }
@@ -1232,6 +1273,8 @@ PAGES.wizard = {
     hordi: { block_W: val('w_bw'), block_L: val('w_bl'), block_H: val('w_bh'),
       rib_w: val('w_rw'), topping: val('w_tp'), block_kg: val('w_bk') },
     grid_override: window.__grid_override || null,
+    frame_override: window.__frame_override || null,
+    stairs: window.__stairs || null, shafts: window.__shafts || null,
     footprint_override: window.__footprint_override || null }),
   dxf: async (kind) => {
     if (!WZ) return alert('شغّل المعالج أولاً');

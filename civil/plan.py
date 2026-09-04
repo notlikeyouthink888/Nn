@@ -147,18 +147,20 @@ def read_dxf_b64(b64):
 
 # --------------------------- أدوار الطبقات ---------------------------
 ROLES = [('col', 'أعمدة'), ('wall', 'جدران'), ('axis', 'محاور'),
-         ('other', 'عرض فقط'), ('off', 'تجاهل')]
+         ('frame', 'إطار ورقة'), ('other', 'عرض فقط'), ('off', 'تجاهل')]
 
 _COL_PAT = re.compile(r'(^|[^a-z])(col|column|عمود|اعمدة|أعمدة)', re.I)
 _WALL_PAT = re.compile(r'(wall|جدار|جدران|حائط|block|brick)', re.I)
 _AXIS_PAT = re.compile(r'(axis|axes|grid|محور|محاور|شبكة)', re.I)
-_NOISE_PAT = re.compile(r'(hatch|dim|text|txt|defpoints|title|frame|جداول|numbers)', re.I)
+_NOISE_PAT = re.compile(r'(hatch|dim|text|txt|defpoints|title|جداول|numbers)', re.I)
+_FRAME_PAT = re.compile(r'(frame|border|sheet|s\.lines|إطار|برواز)', re.I)
 
 def suggest_role(name):
     """دور مقترح لكل طبقة بالاسم — قابل للتغيير من الواجهة."""
     n = (name or '').strip()
     if _COL_PAT.search(n): return 'col'
     if _AXIS_PAT.search(n): return 'axis'
+    if _FRAME_PAT.search(n): return 'frame'
     if _WALL_PAT.search(n): return 'wall'
     if _NOISE_PAT.search(n): return 'off'
     return 'other'
@@ -255,6 +257,62 @@ STD_COL = [200, 250, 300, 350, 400, 450, 500, 550, 600, 700, 800, 900, 1000]
 SCALES = [(0.001, 'مليمتر'), (0.01, 'سنتيمتر'), (0.1, 'ديسيمتر'), (1.0, 'متر'),
           (0.0254, 'إنش'), (0.3048, 'قدم')]
 
+def scale_from_dims(ents):
+    """المقياس من الأبعاد المكتوبة بالمخطط — أقوى دليل وأكثره عدداً.
+
+    كل بُعد يحمل: القيمة المكتوبة (measurement) وطرفَي المسافة المقيسة.
+      ١) إن اختلفت القيمة المكتوبة عن المسافة الهندسية فنسبتهما (DIMLFAC)
+         تعطي الوحدة يقيناً بلا تخمين.
+      ٢) وإن تساوتا (الشائع) فالحكم بتوزيع القيم: الوحدة الصحيحة هي التي تجعل
+         أغلب الأبعاد مضاعفات 5 سم وضمن مدى معماري معقول (0.3 – 20 م).
+    """
+    dims = [e for e in ents if e['t'] == 'D' and e.get('m', 0) > 0]
+    if len(dims) < 5:
+        return None
+    ratios, vals = [], []
+    for e in dims:
+        p = e['p']
+        geo = math.hypot(p[2] - p[0], p[3] - p[1])
+        m = float(e['m'])
+        vals.append(m)
+        if geo > 1e-9:
+            ratios.append(m / geo)
+    # ١) معامل الطول بأنماط القياس
+    lfac = 1.0
+    if ratios:
+        rs = sorted(ratios)
+        lfac = rs[len(rs) // 2]
+    # ٢) اختيار الوحدة بالمدى الفيزيائي لأبعاد المساقط، لا بـ«التدوير» وحده:
+    #    أي مقياس كبير يجعل كل الأرقام «مدوّرة» فالتدوير وحده لا يميّز.
+    #    أبعاد المسقط الحقيقية تتراوح بين سماكة جدار (~8 سم) وأطول بحر (~15 م)،
+    #    ووسيطها قرابة متر واحد (عروض أبواب وفتحات وسماكات).
+    LO, HI, MID = 80.0, 15000.0, 1200.0                    # مم
+    best = None
+    for sc, nm in SCALES:
+        mm = [v * lfac * sc * 1000.0 for v in vals]
+        good = [x for x in mm if LO <= x <= HI]
+        if len(good) < max(5, 0.30 * len(mm)):
+            continue
+        rnd = sum(1 for x in good if abs(x - round(x / 10.0) * 10.0) <= 1.0)
+        share_ok = len(good) / float(len(mm))
+        share_rnd = rnd / float(len(good))
+        med = sorted(good)[len(good) // 2]
+        logd = abs(math.log(max(med, 1.0) / MID))          # قرب الوسيط من المتر (لوغاريتمياً)
+        score = (round(share_ok, 2), -round(logd, 2), round(share_rnd, 2))
+        cand = dict(scale=sc * lfac, name=nm, n=len(dims), lfac=round(lfac, 4),
+                    in_range=len(good), median=round(med, 0),
+                    round_share=round(share_rnd, 2), ok_share=round(share_ok, 2))
+        if best is None or score > best[0]:
+            best = (score, cand)
+    if not best:
+        return None
+    c = best[1]
+    c['ok'] = c['round_share'] >= 0.6 and c['ok_share'] >= 0.35
+    c['why'] = ('عُرف المقياس من %d بُعد مكتوب بالمخطط — %d%% منها أرقام مدوّرة '
+                '(مضاعفات 5 سم) والوسيط %.2f م'
+                % (c['n'], int(c['round_share'] * 100), c['median'] / 1000.0))
+    return c
+
 def suggest_scale(ents, roles, lo=200.0, hi=1000.0):
     """كثير من المخططات تُخزَّن بوحدات مخالفة لما تصرّح به $INSUNITS
     (ملفات كثيرة تقول «مليمتر» وهي مرسومة بالسنتيمتر).
@@ -291,34 +349,105 @@ def suggest_scale(ents, roles, lo=200.0, hi=1000.0):
     return best[1] if best else None
 
 # ------------------ فصل المخططات المتجاورة بنفس الملف ------------------
-def split_plans(cols):
-    """ملف DWG واحد يحوي عادةً عدة مخططات جنب بعض (طوابق وواجهات).
-    نفصل الأعمدة إلى مجموعات متباعدة، وكل مجموعة = مخطط مستقل."""
-    if len(cols) < 2:
-        return [list(range(len(cols)))] if cols else []
-    d = []
-    for i, a in enumerate(cols):
-        m = min((math.hypot(a['x'] - b['x'], a['y'] - b['y'])
-                 for j, b in enumerate(cols) if j != i), default=0.0)
-        d.append(m)
-    typ = sorted(d)[len(d) // 2] or 1.0
-    gap = max(2.5 * typ, 12.0)
-    parent = list(range(len(cols)))
-    def find(a):
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]; a = parent[a]
-        return a
-    for i, a in enumerate(cols):
-        for j in range(i + 1, len(cols)):
-            b = cols[j]
-            if math.hypot(a['x'] - b['x'], a['y'] - b['y']) <= gap:
-                ra, rb = find(i), find(j)
-                if ra != rb:
-                    parent[ra] = rb
-    gr = {}
-    for i in range(len(cols)):
-        gr.setdefault(find(i), []).append(i)
-    out = sorted(gr.values(), key=lambda g: -len(g))
+_MTEXT_FMT = re.compile(r'\\[A-Za-z][^;\\]*;|\{|\}|\\[PL]|\\~')
+
+def clean_text(s):
+    """يزيل رموز تنسيق MTEXT ({\\fArial|b0;...}) ويترك النص المقروء."""
+    return _MTEXT_FMT.sub('', str(s or '')).strip()
+
+_TITLE_PAT = re.compile(r'(مسقط|مخطط|طابق|أرضي|ارضي|أول|اول|ثاني|سطح|أساس|اساس|تسليح|'
+                        r'plan|floor|ground|first|second|roof|found|layout|section|elev)', re.I)
+
+def split_regions(ents, roles, scale, cell=2.5):
+    """ملف DWG واحد يحوي عادةً عدة مخططات جنب بعض (طوابق ومقاطع وواجهات).
+
+    التعنقد يكون على **طبقات البنية فقط** (جدران وأعمدة) — لأن طبقات الأبعاد والنصوص
+    والتظليل وإطارات الورقة تمتد على الورقة كلها فتلحم المخططات ببعضها وتجعلها منطقة
+    واحدة، وهذا بالضبط سبب ضياع بقية المخططات سابقاً.
+    """
+    idx = [i for i, e in enumerate(ents) if roles.get(e['l']) in ('wall', 'col')]
+    if not idx:
+        idx = [i for i, e in enumerate(ents)
+               if roles.get(e['l']) not in ('off', 'frame', 'axis')]
+    if not idx:
+        return []
+    step = cell / scale                                   # حجم الخلية بوحدات الرسم
+    occ = {}
+    for i in idx:
+        for x, y in _seg_points(ents[i]):
+            occ.setdefault((int(math.floor(x / step)), int(math.floor(y / step))), []).append(i)
+    seen, groups = set(), []
+    for k in list(occ):
+        if k in seen:
+            continue
+        stack, cells = [k], []
+        seen.add(k)
+        while stack:
+            c = stack.pop(); cells.append(c)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    n = (c[0] + dx, c[1] + dy)
+                    if n in occ and n not in seen:
+                        seen.add(n); stack.append(n)
+        members = set()
+        for c in cells:
+            members.update(occ[c])
+        groups.append(sorted(members))
+    groups.sort(key=lambda g: -len(g))
+    return groups
+
+def region_info(ents, group, scale, texts=None):
+    """وصف منطقة: أبعادها وطبقاتها واسمها المقترح من أقرب نص عنوان."""
+    pts = []
+    lay = {}
+    for i in group:
+        pts += _seg_points(ents[i])
+        lay[ents[i]['l']] = lay.get(ents[i]['l'], 0) + 1
+    if not pts:
+        return None
+    x0, y0, x1, y1 = _bbox(pts)
+    bb = [x0 * scale, y0 * scale, x1 * scale, y1 * scale]
+    name = ''
+    if texts:
+        best, bd = None, 1e18
+        cx, cy = (bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2
+        for t in texts:
+            tx, ty = t['p'][0] * scale, t['p'][1] * scale
+            if not (bb[0] - 12 <= tx <= bb[2] + 12 and bb[1] - 12 <= ty <= bb[3] + 12):
+                continue
+            d = math.hypot(tx - cx, ty - cy)
+            if d < bd:
+                bd, best = d, t
+        if best:
+            name = clean_text(best.get('s'))[:40]
+    return dict(n=len(group), bbox=[round(v, 2) for v in bb],
+                w=round(bb[2] - bb[0], 2), h=round(bb[3] - bb[1], 2),
+                name=name, layers=sorted(lay.items(), key=lambda a: -a[1])[:5])
+
+def detect_frames(ents, roles, scale, regions):
+    """إطارات الورقة والمربعات الكبيرة: ما كان أوسع من أكبر منطقة بمرّتين، أو يشمل
+    صندوقه أكثر من منطقة → ليس عنصراً من المبنى بل إطار/برواز، فيُستبعد."""
+    if not regions:
+        return set()
+    areas = [r['w'] * r['h'] for r in regions if r]
+    big = max(areas) if areas else 0.0
+    boxes = [r['bbox'] for r in regions if r]
+    out = set()
+    for i, e in enumerate(ents):
+        if roles.get(e['l']) in ('off',):
+            continue
+        pts = _seg_points(e)
+        if len(pts) < 2:
+            continue
+        x0, y0, x1, y1 = _bbox(pts)
+        w = (x1 - x0) * scale; h = (y1 - y0) * scale
+        if w * h > 2.0 * big and w > 3 and h > 3:
+            out.add(i); continue
+        covered = sum(1 for b in boxes
+                      if x0 * scale <= b[0] + 1 and x1 * scale >= b[2] - 1
+                      and y0 * scale <= b[1] + 1 and y1 * scale >= b[3] - 1)
+        if covered >= 2:
+            out.add(i)
     return out
 
 # ---------------------------- كشف المحاور ----------------------------
@@ -405,6 +534,143 @@ def _rbox(poly):
     xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
     return [round(min(xs), 3), round(min(ys), 3), round(max(xs), 3), round(max(ys), 3)]
 
+# ---------------------- كشف الدرج وآبار المصاعد ----------------------
+_LIFT_PAT = re.compile(r'(lift|elev|مصعد|المصعد)', re.I)
+
+def _segments(ents, roles, win=None, scale=1.0):
+    """كل القطع المستقيمة (من الخطوط والخطوط المتعددة) داخل نافذة المخطط."""
+    out = []
+    for e in ents:
+        if roles.get(e['l']) in ('off', 'frame'):
+            continue
+        p = e['p']
+        segs = []
+        if e['t'] == 'L':
+            segs = [(p[0], p[1], p[2], p[3])]
+        elif e['t'] == 'P':
+            segs = [(p[i], p[i + 1], p[i + 2], p[i + 3]) for i in range(0, len(p) - 3, 2)]
+        for s in segs:
+            if win:
+                mx = (s[0] + s[2]) / 2 * scale; my = (s[1] + s[3]) / 2 * scale
+                if not (win[0] - 2 <= mx <= win[2] + 2 and win[1] - 2 <= my <= win[3] + 2):
+                    continue
+            out.append(s)
+    return out
+
+def detect_stairs(ents, roles, scale, win=None, wmin=0.7, wmax=2.6,
+                  rise_lo=0.08, rise_hi=0.45, nmin=5):
+    """قلبة الدرج = تتابع قطع متوازية متساوية الطول ومتساوية التباعد (الدرجات).
+    الكشف هندسي لأن أغلب المخططات ما تسمّي طبقة للدرج."""
+    segs = _segments(ents, roles, win, scale)
+    found = []
+    for horiz in (True, False):
+        buckets = {}
+        for x1, y1, x2, y2 in segs:
+            dx, dy = x2 - x1, y2 - y1
+            L = math.hypot(dx, dy) * scale
+            if not (wmin <= L <= wmax):
+                continue
+            isH = abs(dy) * scale < L * 0.06
+            isV = abs(dx) * scale < L * 0.06
+            if horiz != isH or (horiz and not isH) or (not horiz and not isV):
+                continue
+            along = ((x1 + x2) / 2 if horiz else (y1 + y2) / 2) * scale   # موضع مركز الدرجة
+            across = ((y1 + y2) / 2 if horiz else (x1 + x2) / 2) * scale  # اتجاه الصعود
+            key = (round(L, 1), round(along, 1))
+            buckets.setdefault(key, []).append(across)
+        for (L, along), arr in buckets.items():
+            if len(arr) < nmin:
+                continue
+            v = sorted(arr)
+            gaps = [b - a for a, b in zip(v, v[1:]) if rise_lo <= b - a <= rise_hi]
+            if len(gaps) < nmin - 1:
+                continue
+            med = sorted(gaps)[len(gaps) // 2]
+            ok = [g for g in gaps if abs(g - med) <= 0.25 * med]
+            if len(ok) < nmin - 1:
+                continue
+            n = len(ok) + 1
+            run = n * med
+            cx = along if horiz else v[0] + run / 2
+            cy = v[0] + run / 2 if horiz else along
+            found.append(dict(dir='x' if horiz else 'y', steps=n,
+                              tread=round(med, 3), width=round(L, 2), run=round(run, 2),
+                              x=round(cx, 2), y=round(cy, 2),
+                              bbox=[round(cx - (L / 2 if horiz else run / 2), 2),
+                                    round(cy - (run / 2 if horiz else L / 2), 2),
+                                    round(cx + (L / 2 if horiz else run / 2), 2),
+                                    round(cy + (run / 2 if horiz else L / 2), 2)]))
+    # إزالة المكرر (نفس القلبة قد تُلتقط مرتين)
+    uniq = []
+    for f in sorted(found, key=lambda a: -a['steps']):
+        if not any(abs(f['x'] - u['x']) < 1.0 and abs(f['y'] - u['y']) < 1.0 for u in uniq):
+            uniq.append(f)
+    return uniq
+
+def detect_shafts(ents, roles, scale, win=None, lo=1.2, hi=4.0):
+    """بئر مصعد: مستطيل مغلق صغير على طبقة جدران، يفضّل ما جاوره نص lift/مصعد."""
+    labels = [e for e in ents if e['t'] == 'T' and _LIFT_PAT.search(e.get('s') or '')]
+    out = []
+    for e in ents:
+        if e['t'] != 'P' or not e.get('closed'):
+            continue
+        if roles.get(e['l']) not in ('wall', 'other'):
+            continue
+        pts = _seg_points(e)
+        if len(pts) < 4:
+            continue
+        x0, y0, x1, y1 = _bbox(pts)
+        w = (x1 - x0) * scale; h = (y1 - y0) * scale
+        if not (lo <= w <= hi and lo <= h <= hi):
+            continue
+        cx = (x0 + x1) / 2 * scale; cy = (y0 + y1) / 2 * scale
+        if win and not (win[0] <= cx <= win[2] and win[1] <= cy <= win[3]):
+            continue
+        near = any(math.hypot(t['p'][0] * scale - cx, t['p'][1] * scale - cy) < max(w, h)
+                   for t in labels)
+        out.append(dict(x=round(cx, 2), y=round(cy, 2), w=round(w, 2), h=round(h, 2),
+                        labelled=near))
+    out.sort(key=lambda s: (not s['labelled'], -s['w'] * s['h']))
+    return [s for s in out if s['labelled']] or out[:1]
+
+# ------------- الهيكل الحقيقي: أعمدة بمواقعها وجسور على محاورها -------------
+def build_frame(cols, tol=0.6):
+    """يبني الهيكل من مواقع الأعمدة الحقيقية:
+    تُجمَّع الأعمدة بمحاور X ثم Y، ويُوصَل كل عمودين متجاورين على المحور بجسر."""
+    if len(cols) < 2:
+        return None
+    def axes(vals):
+        return [sum(c) / len(c) for c in _cluster(vals, tol)]
+    ax = axes([c['x'] for c in cols])
+    ay = axes([c['y'] for c in cols])
+    snap = lambda v, arr: min(range(len(arr)), key=lambda i: abs(arr[i] - v))
+    nodes = []
+    for k, c in enumerate(cols):
+        nodes.append(dict(k=k, x=round(c['x'], 3), y=round(c['y'], 3),
+                          b=c['b'], h=c['h'], i=snap(c['x'], ax), j=snap(c['y'], ay)))
+    beams = []
+    for key, other in (('j', 'i'), ('i', 'j')):
+        rows = {}
+        for n in nodes:
+            rows.setdefault(n[key], []).append(n)
+        for r, arr in rows.items():
+            arr.sort(key=lambda n: n[other])
+            for a, b in zip(arr, arr[1:]):
+                L = math.hypot(b['x'] - a['x'], b['y'] - a['y'])
+                if L < 1.0 or L > 14.0:
+                    continue
+                beams.append(dict(dir='x' if key == 'j' else 'y', a=a['k'], b=b['k'],
+                                  x1=a['x'], y1=a['y'], x2=b['x'], y2=b['y'],
+                                  span=round(L, 3)))
+    lines = {}
+    for bm in beams:
+        lines.setdefault((bm['dir'], round(bm['y1'] if bm['dir'] == 'x' else bm['x1'], 2)),
+                         []).append(bm['span'])
+    return dict(nodes=nodes, beams=beams, axes_x=[round(v, 3) for v in ax],
+                axes_y=[round(v, 3) for v in ay],
+                spans=[dict(dir=k[0], at=k[1], spans=v) for k, v in sorted(lines.items())],
+                n_cols=len(nodes), n_beams=len(beams))
+
 # ------------------- أقرب شبكة منتظمة تطابق الأعمدة -------------------
 def fit_grid(cols, axes=None, tol=1.0):
     """يعنقد إحداثيات الأعمدة إلى محاور ثم يبني شبكة منتظمة مكافئة،
@@ -438,6 +704,28 @@ def fit_grid(cols, axes=None, tol=1.0):
                 n_detected=len(cols), n_grid=(nx + 1) * (ny + 1))
 
 # ------------------------------ التحليل ------------------------------
+def dim_spans(ents, scale, win=None, tol=0.12):
+    """البحور كما كتبها المصمم: الأبعاد الموازية للمحاور داخل المخطط المختار."""
+    out = {'x': [], 'y': []}
+    for e in ents:
+        if e['t'] != 'D' or not e.get('m'):
+            continue
+        p = e['p']
+        mx = (p[0] + p[2]) / 2 * scale; my = (p[1] + p[3]) / 2 * scale
+        if win and not (win[0] - 3 <= mx <= win[2] + 3 and win[1] - 3 <= my <= win[3] + 3):
+            continue
+        dx = abs(p[2] - p[0]) * scale; dy = abs(p[3] - p[1]) * scale
+        L = float(e['m']) * scale
+        if L < 0.5 or L > 25.0:
+            continue
+        if dy < tol and dx > tol:
+            out['x'].append(round(L, 3))
+        elif dx < tol and dy > tol:
+            out['y'].append(round(L, 3))
+    for k in out:
+        out[k].sort()
+    return out
+
 def analyze(p):
     """p = {ents, layers, insunits, roles?, scale?, ...} من المتصفح أو من read_dxf."""
     ents = p.get('ents') or []
@@ -453,41 +741,78 @@ def analyze(p):
                            suggested=suggest_role(name)))
     roles = {l['name']: l['role'] for l in layers}
     warn = []
-    # المقياس: يدوي إن أُعطي، وإلا معايرة من مقطع العمود، وإلا $INSUNITS
+    # ---------- المقياس: يدوي · ثم من الأبعاد المكتوبة · ثم من مقطع العمود ----------
     declared = units_scale(insunits)
-    sug = None if p.get('scale') else suggest_scale(ents, roles)
+    dimc = None if p.get('scale') else scale_from_dims(ents)
+    sug = None
     if p.get('scale'):
-        scale = float(p['scale'])
-    elif sug and sug['ok']:
-        scale = sug['scale']
-        if abs(scale - declared) > 1e-9:
-            warn.append('وحدات الملف المصرّحة «%s» لا تطابق الرسم — عُوير المقياس من مقطع '
-                        'العمود الوسيط (%.0f مم) فصار %s. غيّره يدوياً إن كان خطأ.'
-                        % (unit_name(insunits), sug['median'], sug['name']))
+        scale = float(p['scale']); src = 'يدوي'
+    elif dimc and dimc['ok']:
+        scale = dimc['scale']; src = 'الأبعاد المكتوبة'
+        warn.append(dimc['why'] + (' — ووحدات الملف المصرّحة «%s» مخالفة فأُهملت.'
+                                   % unit_name(insunits)
+                                   if abs(scale - declared) > 1e-9 else '.'))
     else:
-        scale = declared
-    # فصل المخططات المتجاورة واختيار واحد
+        sug = suggest_scale(ents, roles)
+        if sug and sug['ok']:
+            scale = sug['scale']; src = 'مقطع العمود'
+            if abs(scale - declared) > 1e-9:
+                warn.append('ما لقيت أبعاداً مكتوبة كافية — عُوير المقياس من مقطع العمود '
+                            'الوسيط (%.0f مم) فصار %s.' % (sug['median'], sug['name']))
+        else:
+            scale = declared; src = 'وحدات الملف'
+    # ---------- كل المخططات بالملف (تعنقد على طبقات البنية) ----------
+    texts = [e for e in ents if e['t'] == 'T'
+             and _TITLE_PAT.search(clean_text(e.get('s')))]
+    groups = split_regions(ents, roles, scale)
+    regions = []
+    for gi, gidx in enumerate(groups):
+        info = region_info(ents, gidx, scale, texts)
+        if not info or info['w'] < 2.0 or info['h'] < 2.0:
+            continue
+        info['i'] = len(regions); info['idx'] = gidx
+        regions.append(info)
+    # إطارات الورقة والمربعات الكبيرة تُستبعد
+    frames = detect_frames(ents, roles, scale, regions)
+    if frames:
+        for i in frames:
+            roles.setdefault(ents[i]['l'], 'other')
+        regions = [r for r in regions
+                   if not set(r['idx']).issubset(frames)]
+        for k, r in enumerate(regions):
+            r['i'] = k
     all_cols = detect_columns(ents, roles, scale)
-    groups = split_plans(all_cols)
-    plans = []
-    for gi, idx in enumerate(groups):
-        gc = [all_cols[i] for i in idx]
-        bb = [min(c['x'] for c in gc), min(c['y'] for c in gc),
-              max(c['x'] for c in gc), max(c['y'] for c in gc)]
-        plans.append(dict(i=gi, n=len(gc), bbox=[round(v, 2) for v in bb],
-                          w=round(bb[2] - bb[0], 2), h=round(bb[3] - bb[1], 2)))
+    for r in regions:
+        b = r['bbox']
+        r['cols'] = [c for c in all_cols
+                     if b[0] - 1 <= c['x'] <= b[2] + 1 and b[1] - 1 <= c['y'] <= b[3] + 1]
+        r['ncol'] = len(r['cols'])
+    regions.sort(key=lambda r: (-r['ncol'], -(r['w'] * r['h'])))
+    for k, r in enumerate(regions):
+        r['i'] = k
     pick = int(p.get('plan_index', 0))
-    if pick >= len(groups):
+    if pick >= len(regions):
         pick = 0
-    cols = [all_cols[i] for i in groups[pick]] if groups else []
-    win = plans[pick]['bbox'] if plans else None
+    cols = regions[pick]['cols'] if regions else []
+    win = regions[pick]['bbox'] if regions else None
+    plans = [dict(i=r['i'], n=r['ncol'], nent=r['n'], name=r['name'], bbox=r['bbox'],
+                  w=r['w'], h=r['h'],
+                  layers=[dict(name=a, n=b2) for a, b2 in r['layers']]) for r in regions]
     if len(plans) > 1:
-        warn.append('الملف يحوي %d مخططاً منفصلاً — اختير المخطط رقم %d (%d عمود · %.1f × %.1f م). '
-                    'بدّله من القائمة إن أردت غيره.'
-                    % (len(plans), pick + 1, plans[pick]['n'], plans[pick]['w'], plans[pick]['h']))
+        warn.append('الملف يحوي %d مخططاً منفصلاً — معروضة كلها بالجدول. المختار حالياً '
+                    'رقم %d (%d عمود · %.1f × %.1f م%s).'
+                    % (len(plans), pick + 1, plans[pick]['n'], plans[pick]['w'],
+                       plans[pick]['h'],
+                       ' · ' + plans[pick]['name'] if plans[pick]['name'] else ''))
+    if frames:
+        warn.append('استُبعد %d عنصراً كإطارات ورقة/مربعات كبيرة لا تخص المبنى.' % len(frames))
     axes = detect_axes(ents, roles, scale, within=win)
     bnd = detect_boundary(ents, roles, scale, win)
     grid = fit_grid(cols)
+    frame = build_frame(cols)
+    stairs = detect_stairs(ents, roles, scale, win)
+    shafts = detect_shafts(ents, roles, scale, win)
+    dspans = dim_spans(ents, scale, win)
     if not any(l['role'] == 'col' for l in layers):
         warn.append('ما تعرّفت على طبقة أعمدة — اختر الطبقة الصحيحة من الجدول ثم أعد التحليل')
     elif len(cols) < 4:
@@ -509,9 +834,12 @@ def analyze(p):
             ext = [round(x0 * scale, 3), round(y0 * scale, 3),
                    round(x1 * scale, 3), round(y1 * scale, 3)]
     return dict(layers=layers, columns=cols, axes=axes, boundary=bnd, grid=grid,
+                frame=frame, stairs=stairs, shafts=shafts, dim_spans=dspans,
                 insunits=insunits, unit=unit_name(insunits), scale=scale,
+                scale_src=src, dim_scale=dimc,
                 declared_scale=declared, suggested=sug, plans=plans, plan_index=pick,
                 window=win, extents=ext, n_ents=len(ents), warnings=warn,
+                n_frames=len(frames),
                 scales=[dict(v=a, name=b) for a, b in SCALES],
                 roles=[dict(k=a, name=b) for a, b in ROLES],
                 note='الأعمدة تُستخرج بتجميع عناصر طبقة الأعمدة إلى عناقيد متجاورة '

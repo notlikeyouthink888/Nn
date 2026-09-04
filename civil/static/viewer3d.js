@@ -265,9 +265,95 @@ function Viewer3D(el, M, onPick) {
         }
       }
     }
+    /* ---- هيكل مأخوذ من مخطط DWG: أعمدة وجسور بمواقعها الحقيقية ---- */
+    const FR = md.frame;
+    function buildFrameReal() {
+      const cb2 = md.col.b / 1000, ch2 = md.col.h / 1000;
+      const bw = md.beams.x.b / 1000, bh = md.beams.x.h / 1000;
+      const ox = (Math.min(...FR.nodes.map(n => n.x)) + Math.max(...FR.nodes.map(n => n.x))) / 2;
+      const oy = (Math.min(...FR.nodes.map(n => n.y)) + Math.max(...FR.nodes.map(n => n.y))) / 2;
+      const PX = v => v - ox, PZ = v => -(v - oy);
+      for (let s = 1; s <= nf; s++) {
+        const z = s * hs;
+        FR.nodes.forEach((n, k) => {
+          const z0 = s === 1 ? ft : (s - 1) * hs;
+          box(G.columns, n.b / 1000 || cb2, z - z0, n.h / 1000 || ch2,
+            PX(n.x), (z0 + z) / 2, PZ(n.y), 0x8ea6c4, 1,
+            { title: 'عمود C' + (k + 1) + ' — طابق ' + s, kind: 'column', grp: 'columns',
+              floor: s, gk: 'col|' + (n.i || 0) + '|' + (n.j || 0) + '|' + s,
+              rows: [['المصدر', 'موقعه الحقيقي من المخطط'],
+                ['الإحداثي', n.x.toFixed(2) + ' , ' + n.y.toFixed(2) + ' م'],
+                ['المقطع', Math.round(n.b || md.col.b) + ' × ' + Math.round(n.h || md.col.h) + ' مم'],
+                ['التسليح', md.col.rebar.label], ['الأتاري', md.col.rebar.tie_label]] });
+        });
+        (FR.beams || []).forEach((b2, k) => {
+          const dx = b2.x2 - b2.x1, dy = b2.y2 - b2.y1;
+          const len = Math.hypot(dx, dy), horiz = Math.abs(dx) >= Math.abs(dy);
+          const bm2 = horiz ? md.beams.x : md.beams.y;
+          const hB = bm2.h / 1000, wB = bm2.b / 1000;
+          box(G.beams, horiz ? len - cb2 : wB, hB, horiz ? wB : len - ch2,
+            PX((b2.x1 + b2.x2) / 2), z - hB / 2, PZ((b2.y1 + b2.y2) / 2), 0x7f97b8, 1,
+            { title: 'جسر ' + (horiz ? 'X' : 'Y') + ' — طابق ' + s, kind: 'beam',
+              grp: 'beams', floor: s, gk: (horiz ? 'bx|' : 'by|') + k + '|0|' + s,
+              rows: [['المصدر', 'محور حقيقي من المخطط'],
+                ['البحر', len.toFixed(2) + ' م'],
+                ['المقطع', bm2.b + ' × ' + bm2.h + ' مم'],
+                ['سفلي', bm2.rebar.bottom.label], ['علوي', bm2.rebar.top.label],
+                ['الأساور', bm2.rebar.stirrup.label]] });
+        });
+        slabGeom(z, s);
+        box(G.slabs, L, th, B, 0, z - th / 2, 0, 0xa8bcd4, 1,
+          { title: md.slab.name + ' — سقف طابق ' + s, kind: 'slab', grp: 'slabs', floor: s,
+            rows: [['السماكة', md.slab.h + ' مم'], ['النوع', md.slab.name],
+              ['المصدر', 'حدّ البناء من المخطط'],
+              ['فرش', (md.slab.mesh.short || md.slab.mesh.bottom).label],
+              ['غطاء', (md.slab.mesh.long || md.slab.mesh.bottom).label]] });
+        buildStairs(z, s, PX, PZ);
+      }
+    }
+    /* ---- الدرج والمصاعد وفتحات السقف ---- */
+    function buildStairs(z, s, PX, PZ) {
+      const SP = md.stairs;
+      if (!SP) return;
+      (SP.flights || []).forEach((f, k) => {
+        if (!f.bbox) return;
+        const b2 = f.bbox, cx = PX((b2[0] + b2[2]) / 2), cz = PZ((b2[1] + b2[3]) / 2);
+        const w = Math.abs(b2[2] - b2[0]), d = Math.abs(b2[3] - b2[1]);
+        const along = f.dir === 'x' ? w : d;
+        const rise = f.rise, tread = f.tread;
+        const inf = k ? null : { title: 'قلبة درج', kind: 'stair', grp: 'slabs', floor: s,
+          rows: f.rows.map(r => [r[0], r[1]]) };
+        for (let i = 0; i < f.steps; i++) {
+          const t = (i + 0.5) / f.steps - 0.5;
+          const y = z - hs + rise * (i + 1);
+          box(G.slabs, f.dir === 'x' ? tread : f.width, rise,
+            f.dir === 'x' ? f.width : tread,
+            cx + (f.dir === 'x' ? t * along : 0), y - rise / 2,
+            cz + (f.dir === 'x' ? 0 : t * along), 0xb9c9dc, 1, i ? null : inf);
+        }
+      });
+      // فتحات السقف تُعلَّم بإطار ملوّن (البلاطة نفسها تُخصم بالكميات)
+      (SP.openings || []).forEach((o, k) => {
+        if (o.x === null || o.x === undefined) return;
+        box(G.extra, o.w, .05, o.h, PX(o.x), z - th + .03, PZ(o.y), 0xf59e0b, .5,
+          k ? null : { title: 'فتحة بالسقف — ' + o.kind, kind: 'opening', grp: 'extra',
+            floor: s, rows: o.rows.map(r => [r[0], r[1]]) });
+      });
+      (SP.shafts || []).forEach((sh, k) => {
+        if (sh.x === null || sh.x === undefined) return;
+        const t2 = sh.t / 1000;
+        [[sh.w, t2, 0, -sh.h / 2], [sh.w, t2, 0, sh.h / 2],
+         [t2, sh.h, -sh.w / 2, 0], [t2, sh.h, sh.w / 2, 0]].forEach(([ww, dd, ax, az]) =>
+          box(G.walls, ww, hs, dd, PX(sh.x) + ax, z - hs / 2, PZ(sh.y) + az, 0x9aa8bd, 1,
+            k ? null : { title: 'بئر مصعد — جدران قص', kind: 'shaft', grp: 'walls',
+              floor: s, rows: sh.rows.map(r => [r[0], r[1]]) }));
+      });
+    }
     const bxs = md.beams.x, bys = md.beams.y;
     const edgeOnly = !!((md.slab.geom || {}).edge_beams_only);
-    for (let s = 1; s <= nf; s++) {
+    // هيكل المخطط الحقيقي إن وُجد، وإلا مولّد الشبكة المنتظمة كما هو
+    if (FR && FR.nodes && FR.nodes.length) buildFrameReal();
+    else for (let s = 1; s <= nf; s++) {
       const z = s * hs;
       for (let j = 0; j <= g.ny; j++) for (let i = 0; i < g.nx; i++) {
         if (edgeOnly && j !== 0 && j !== g.ny) continue;   // فلات سلاب: جسور محيطية فقط

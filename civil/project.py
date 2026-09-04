@@ -24,7 +24,8 @@ def grid_from_area(area, ratio=1.25, target=5.0):
         while n > 1 and d / n < 3.2: n -= 1
         return n, d / n
     nx, sx = split(L); ny, sy = split(B)
-    return dict(L=L, B=B, nx=nx, ny=ny, sx=sx, sy=sy,
+    return dict(L=L, B=B, nx=nx, ny=ny, sx=sx, sy=sy, source='auto',
+                spans_x=[round(sx, 3)] * nx, spans_y=[round(sy, 3)] * ny,
                 cols=(nx + 1) * (ny + 1), bays=nx * ny)
 
 def tributary_frame(nodes, boundary, step=0.25):
@@ -368,11 +369,13 @@ def wizard(p):
         xs = [n['x'] for n in fo['nodes']]; ys = [n['y'] for n in fo['nodes']]
         Lp = (max(xs) - min(xs)) or 1.0; Bp = (max(ys) - min(ys)) or 1.0
         nxp = max(1, len(ax) - 1); nyp = max(1, len(ay) - 1)
+        # البحور الحقيقية = الفروق بين المحاور المستخرَجة من المخطط
+        spx = fo.get('spans_x') or [round(b - a, 3) for a, b in zip(ax, ax[1:])]
+        spy = fo.get('spans_y') or [round(b - a, 3) for a, b in zip(ay, ay[1:])]
         g = dict(L=round(Lp, 3), B=round(Bp, 3), nx=nxp, ny=nyp,
                  sx=round(Lp / nxp, 4), sy=round(Bp / nyp, 4),
                  cols=len(fo['nodes']), bays=nxp * nyp, source='frame',
-                 axes_x=ax, axes_y=ay,
-                 spans_x=fo.get('spans_x'), spans_y=fo.get('spans_y'))
+                 axes_x=ax, axes_y=ay, spans_x=spx, spans_y=spy)
         bpoly = fo.get('boundary')
         fp = float(p.get('footprint_override') or
                    (_poly_area(bpoly) if bpoly else Lp * Bp))

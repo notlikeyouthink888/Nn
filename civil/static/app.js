@@ -687,11 +687,14 @@ function detailPanel(r) {
           ['وزن كراسي السقوف', nf(r.chairs.slab.weight * r.model.floors, 2) + ' طن'],
           ['كراسي الأساس', r.chairs.found.label + ' — عدد ' + int(r.chairs.found.n)],
           ['بسكويت الغطاء السفلي', int(r.chairs.slab.spacers * r.model.floors) + ' قطعة'],
-          ['طول السيخ بالسوق', nf(r.model.stock, 0) + ' م — كل ما زاد يُقطّع ويُوصل']].concat(
+          ['طول السيخ بالسوق', nf(r.model.stock, 0) + ' م — كل ما زاد يُقطّع ويُوصل'],
+          ['عكفة بداية السيخ', '<b>20 سم</b> — تُثنى ببداية كل سيخ مستقيم ومضافة لطول القطع بالجدول']].concat(
           Object.entries(r.laps).map(([db, v]) => ['وصلة Ø' + db,
             '<b>' + nf(v.bottom, 2) + ' م</b> — كودية ' + nf(v.code, 2) + ' م · 60·db = ' + nf(v.site, 2) + ' م'])))}
         <div class="note">القاعدة المعتمدة: <b>${r.detail.lap.label}</b> ·
-          الكودية = صنف B (1.3·ld) وفق ACI 25.5.2.1 · وصلات الأعمدة فوق كل سقف ومتبادلة 50%.</div></div>
+          الكودية = صنف B (1.3·ld) وفق ACI 25.5.2.1 · وصلات الأعمدة فوق كل سقف ومتبادلة 50% ·
+          <b>عكفة البداية 20 سم</b> مضافة لكل سيخ مستقيم بجدول التقطيع (الأساور والكراسي
+          والحلزون شكلها المغلق يحوي عكفاته أصلاً فلا تُضاف لها).</div></div>
     </div>
 
     <div class="grid g2" style="margin-top:16px">
@@ -1053,7 +1056,16 @@ function renderPlan() {
         const cs = (PLD.columns || []).map(c => (c.b + c.h) / 2).sort((a, b2) => a - b2);
         return cs.length ? int(cs[cs.length >> 1]) + ' مم' : (s ? int(s.median) + ' مم' : '—');
       })())}
-      ${kpi('درج ومصاعد', (PLD.stairs || []).length + ' درج · ' + (PLD.shafts || []).length + ' مصعد')}
+      ${kpi('درج ونوى مصاعد', (PLD.stairs || []).length + ' درج · ' + (PLD.shafts || []).length
+            + ((PLD.shafts || []).some(v => v.kind === 'C') ? ' نواة C' : ' مصعد'))}
+      ${kpi('أشكال الأعمدة', (() => {
+        const m = {}; (PLD.columns || []).forEach(c => m[c.shape || 'rect'] = (m[c.shape || 'rect'] || 0) + 1);
+        const AR = { rect: 'مستطيل', circ: 'دائري', L: 'زاوية L', T: 'تي T' };
+        const k = Object.keys(m).sort((a, b2) => m[b2] - m[a]);
+        return k.length ? k.map(x => m[x] + ' ' + (AR[x] || x)).join(' · ') : '—';
+      })(), (PLD.columns || []).some(c => c.shape === 'circ') ? 'ok' : '')}
+      ${kpi('مساحة القطعة', PLD.plot ? nf(PLD.plot.area, 0) + ' م² = ' + nf(PLD.plot.L, 2)
+            + ' × ' + nf(PLD.plot.B, 2) : '—')}
       ${kpi('المقياس', (PLD.dim_scale ? PLD.dim_scale.name : (s ? s.name : PLD.unit)),
             PLD.scale_src === 'الأبعاد المكتوبة' ? 'ok' : '')}
       ${kpi('اتجاه المخطط', PLD.angle ? nf(PLD.angle, 1) + '° — دُوِّر للمحاور' : 'محاذٍ للمحاور',
@@ -1127,8 +1139,11 @@ function renderPlan() {
           `<button class="btn gh" style="padding:3px 9px;font-size:11px"
              onclick="dropStair(${i})">احذفه</button>`]))
         : '<div class="note">ما لقيت درجاً — الكشف هندسي (تتابع درجات متوازية متساوية التباعد).</div>'}
-      ${(PLD.shafts || []).length ? table(['بئر مصعد', 'المقاس'],
-        PLD.shafts.map((v, i) => ['#' + (i + 1), nf(v.w, 2) + ' × ' + nf(v.h, 2) + ' م'])) : ''}
+      ${(PLD.shafts || []).length ? table(['النواة', 'الشكل', 'المقاس', 'سماكة الجدار'],
+        PLD.shafts.map((v, i) => ['#' + (i + 1),
+          v.kind === 'C' ? 'حرف C (مفتوحة عند الباب)' : 'مستطيلة مغلقة',
+          nf(v.w, 2) + ' × ' + nf(v.h, 2) + ' م',
+          v.wall ? int(v.wall * 1000) + ' مم — مقروءة من المخطط' : 'مفترضة 200 مم'])) : ''}
       <div class="note">الدرج يُصمَّم كبلاطة مائلة، وتُفتح له فتحة بالسقف بحديد تطويق حولها،
         وحمله ينتقل للجسور المحيطة. بئر المصعد يُعامل كجدران قص.</div></details>
 
@@ -1496,13 +1511,21 @@ PAGES.wizard = {
           ['خرسانة السقف الواحد', nf(r.footprint * r.slab.h / 1000, 1) + ' م³']].concat(
           (r.slab.rows || []).map(x => [x[0], x[1]])))}</div>
       <div class="card"><h3>الأعمدة</h3>
-        ${table(['البند', 'القيمة'], [['المقطع', r.col.b + ' × ' + r.col.h + ' مم'],
+        ${table(['البند', 'القيمة'], [
+          ['الشكل', ({ rect: 'مستطيل', circ: 'دائري (O)', L: 'زاوية (L)', T: 'تي (T)' })[r.col.rebar.shape] || 'مستطيل'],
+          ['المقطع', r.col.rebar.spiral ? ('Ø' + int(r.col.rebar.D) + ' مم')
+            : (r.col.b + ' × ' + r.col.h + ' مم')],
           ['التسليح الطولي', r.col.rebar.label + ' (ρ = ' + nf(r.col.rebar.rho * 100, 2) + '%)'],
-          ['الأتاري بالوسط', r.col.rebar.tie_label],
+          [r.col.rebar.spiral ? 'الحلزون' : 'الأتاري بالوسط', r.col.rebar.tie_label],
           ['التطويق عند الأطراف', r.col.rebar.conf_label],
           ['Pu المصمم', nf(r.Pumax, 0) + ' kN'], ['Mu التقديري', nf(r.col.Mu, 1) + ' kN·m'],
           ['φMn عند Pu', nf(r.col.rebar.phiMn, 1) + ' kN·m'],
-          ['نسبة الاستغلال', nf(r.col.rebar.ratio, 2) + (r.col.rebar.ok ? ' ✓' : ' ✗')]])}</div>
+          ['نسبة الاستغلال', nf(r.col.rebar.ratio, 2) + (r.col.rebar.ok ? ' ✓' : ' ✗')]].concat(
+          r.col.rebar.mix ? [['أشكال أعمدة المخطط', Object.entries(r.col.rebar.mix)
+            .sort((a, b2) => b2[1] - a[1])
+            .map(([k, v]) => v + ' ' + (({ rect: 'مستطيل', circ: 'دائري', L: 'زاوية L', T: 'تي T' })[k] || k))
+            .join(' · ')]] : []).concat(
+          r.col.rebar.from_plan ? [['المقطع مقابل المخطط', r.col.rebar.from_plan]] : []))}</div>
       ${['x', 'y'].map(d => { const bm = r.beams[d], sc2 = bm.section; return `
       <div class="card"><h3>جسور الاتجاه ${d.toUpperCase()} — ${nf(sc2.span, 2)} م × ${sc2.nspan} فضاء</h3>
         ${table(['البند', 'القيمة'], [['المقطع', int(sc2.b) + ' × ' + int(sc2.h) + ' مم'],

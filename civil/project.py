@@ -277,30 +277,79 @@ def beam_detail(bm, col_w, fc, fy, bent=True, lap_mode='code'):
                 lap_bottom=round(lap, 3), lap_top=round(lap_t, 3),
                 run=round(run, 2), cover=reb['cover'], rows=ct['rows'])
 
-def design_column(b, h, Pu, Mu, fc, fy):
-    """تسليح العمود بمنحني التفاعل + الأتاري."""
+def design_column(b, h, Pu, Mu, fc, fy, shape='rect', D=None):
+    """تسليح العمود بمنحني التفاعل + تركيب الأتاري حسب **شكل المقطع**.
+
+    المخططات ترسم أعمدة بأشكال مختلفة، ولكل شكل تركيب أساور مختلف:
+      * دائري (O): أسياخ موزّعة على دائرة و**حلزون** أو أساور دائرية —
+        ρs من ACI 25.7.3.3 و18.7.5.4، والخطوة بخلوص 25–75 مم.
+      * مستطيل/مربع: أساور مستطيلة + **أتاري داخلية (crossties)** كلما زاد
+        عدد الأسياخ بالوجه عن ثلاثة (ACI 25.7.2.3: كل سيخ بديل مسنود بركن).
+      * زاوية L وتي T: أساور مغلقة متداخلة تتبع الشكل — كل ساق بأسوارها.
+    """
+    circ = (shape == 'circ' and D)
+    if circ:
+        b = h = float(D)
     best = None
-    for nb, db in ((3, 16), (3, 20), (4, 20), (3, 25), (4, 25), (5, 25), (4, 32), (5, 32), (6, 32)):
-        layers = E.col_layers(b, h, nb, nb, db)
-        pts, P0, Ast = E.col_interaction(b, h, fc, fy, layers)
+    trials = ((6, 16), (6, 20), (8, 20), (8, 25), (10, 25), (12, 25), (12, 32), (16, 32)) if circ \
+        else ((3, 16), (3, 20), (4, 20), (3, 25), (4, 25), (5, 25), (4, 32), (5, 32), (6, 32))
+    Ag = (math.pi * D * D / 4.0) if circ else (b * h)
+    for nb, db in trials:
+        if circ:
+            layers = E.circ_layers(D, nb, db)
+            pts, P0, Ast = E.col_interaction(0, 0, fc, fy, layers, shape='circ', D=D)
+            nbar = nb
+        else:
+            layers = E.col_layers(b, h, nb, nb, db)
+            pts, P0, Ast = E.col_interaction(b, h, fc, fy, layers)
+            nbar = 4 * nb - 4
         phiMn, ratio = E.col_check(Pu, Mu, pts)
-        rho = Ast / (b * h)
-        cand = dict(nb=nb, db=db, n=4 * nb - 4, Ast=Ast, rho=rho, ratio=ratio,
-                    phiMn=phiMn, phiPn_max=pts[0]['P'], ok=(ratio <= 1.0 and 0.01 <= rho <= 0.06))
+        rho = Ast / Ag
+        rho_min = 0.01
+        cand = dict(nb=nb, db=db, n=nbar, Ast=Ast, rho=rho, ratio=ratio,
+                    phiMn=phiMn, phiPn_max=pts[0]['P'],
+                    ok=(ratio <= 1.0 and rho_min <= rho <= 0.06))
         if best is None or (cand['ok'] and not best['ok']) or \
            (cand['ok'] == best['ok'] and cand['ratio'] < best['ratio'] and not best['ok']):
             best = cand
         if cand['ok']:
             best = cand; break
     dbt = 10 if best['db'] <= 32 else 12
+    lo = max(max(b, h), 3200.0 / 6.0, 450.0)
+    if circ:
+        # حلزون: ACI 25.7.3.3 و18.7.5.4 (زلزالي) ثم الخطوة من نسبة الحجم
+        cov = 40.0
+        Dch = D - 2 * cov                                   # قطر النواة (خارج الحلزون)
+        Ach = math.pi * Dch * Dch / 4.0
+        rho_s = max(0.45 * (Ag / Ach - 1.0) * fc / fy, 0.12 * fc / fy)
+        asp = E.ab(dbt)
+        pitch = 4.0 * asp / (Dch * rho_s)
+        pitch = max(dbt + 25.0, min(pitch, dbt + 75.0, 75.0))
+        best.update(tie_db=dbt, tie_s=round(pitch, 0), tie_s_conf=round(pitch, 0),
+                    conf_len=lo, cover=cov, shape='circ', D=D,
+                    spiral=True, rho_s=round(rho_s, 4), core_D=round(Dch, 0),
+                    crossties=0,
+                    label="%dØ%d موزّعة على الدائرة" % (best['n'], best['db']),
+                    tie_label="حلزون Ø%d بخطوة %d مم (ρs = %.4f)" % (dbt, int(pitch), rho_s),
+                    conf_label="الحلزون مستمر بكامل الارتفاع — لا تطويق منفصل (ACI 25.7.3)")
+        return best
     # التباعد العادي (ACI 25.7.2.1) بحد أقصى عملي 300 مم
     st = min(math.floor(min(16 * best['db'], 48 * dbt, min(b, h)) / 25.0) * 25.0, 300.0)
     # منطقة التطويق عند طرفي العمود (ACI 18.7.5) — مناطق زلزالية
     sc = math.floor(min(min(b, h) / 4.0, 6 * best['db'], 150.0) / 25.0) * 25.0
-    lo = max(max(b, h), 3200.0 / 6.0, 450.0)
+    # أتاري داخلية: كل سيخ بديل مسنود بركن أسوار (ACI 25.7.2.3) وخلوص ≤ 150 مم
+    ct_x = max(0, best['nb'] - 2) if best['nb'] > 3 else 0
+    ct_y = ct_x
+    tie_txt = "أتاري Ø%d @ %d مم" % (dbt, int(st))
+    if ct_x:
+        tie_txt += " + %d أتاري داخلية بكل اتجاه (ACI 25.7.2.3)" % ct_x
+    shp = shape if shape in ('L', 'T') else 'rect'
+    if shp in ('L', 'T'):
+        tie_txt += " — أساور مغلقة متداخلة تتبع شكل %s" % ('L' if shp == 'L' else 'T')
     best.update(tie_db=dbt, tie_s=st, tie_s_conf=sc, conf_len=lo, cover=40.0,
+                shape=shp, D=None, spiral=False, crossties=ct_x + ct_y,
                 label="%dØ%d" % (best['n'], best['db']),
-                tie_label="أتاري Ø%d @ %d مم" % (dbt, int(st)),
+                tie_label=tie_txt,
                 conf_label="تطويق Ø%d @ %d مم على مسافة %d مم من كل طرف" % (dbt, int(sc), int(lo)))
     return best
 
@@ -430,7 +479,42 @@ def wizard(p):
     Ag = 1.35 * P_serv_max * 1000.0 / (0.35 * fc)
     cb = max(300.0, math.ceil(math.sqrt(Ag / 1.25) / 50.0) * 50.0)
     ch = max(300.0, math.ceil(cb * 1.25 / 50.0) * 50.0)
-    col_sw = cb * ch / 1e6 * 24.0 * hs * floors
+    # مقطع العمود وشكله كما رسمهما المصمم بالمخطط: يُحترم ويُفحص، ولا يُفرض
+    # مقطع أصغر مما يتطلبه الحمل. الأشكال: مستطيل · دائري (O) · زاوية L · تي T.
+    col_shape, col_D, col_mix, col_note = 'rect', None, {}, ''
+    if fo and fo.get('nodes'):
+        for n in fo['nodes']:
+            k = n.get('shape') or 'rect'
+            col_mix[k] = col_mix.get(k, 0) + 1
+        col_shape = max(col_mix, key=col_mix.get)
+        bs = sorted(float(n['b']) for n in fo['nodes'] if n.get('b'))
+        hh = sorted(float(n['h']) for n in fo['nodes'] if n.get('h'))
+        if bs and hh:
+            db_ = bs[len(bs) // 2]; dh_ = hh[len(hh) // 2]
+            if col_shape == 'circ':
+                Ds = sorted(float(n['D'] or n['b']) for n in fo['nodes']
+                            if n.get('shape') == 'circ' and (n.get('D') or n.get('b')))
+                col_D = Ds[len(Ds) // 2] if Ds else db_
+                Ag_dr = math.pi * col_D * col_D / 4.0
+            else:
+                Ag_dr = db_ * dh_
+            if Ag_dr >= Ag:
+                if col_shape == 'circ':
+                    cb = ch = col_D
+                else:
+                    cb, ch = db_, dh_
+                col_note = ('المقطع من مخططك: %s — ومساحته %.0f مم² تكفي الحمل '
+                            '(المطلوب %.0f مم²).'
+                            % (('دائري Ø%d مم' % col_D) if col_shape == 'circ'
+                               else ('%d × %d مم' % (db_, dh_)), Ag_dr, Ag))
+            else:
+                col_note = ('⚠️ المقطع المرسوم بمخططك (%s · %.0f مم²) أصغر مما يتطلبه '
+                            'الحمل (%.0f مم²) — صُمّم على %d × %d مم. راجع الأحمال أو كبّر المقطع.'
+                            % (('دائري Ø%d' % col_D) if col_shape == 'circ'
+                               else ('%d × %d' % (db_, dh_)), Ag_dr, Ag, cb, ch))
+                col_shape, col_D = 'rect', None
+    col_sw = ((math.pi * cb * cb / 4.0) if col_shape == 'circ' else cb * ch) \
+        / 1e6 * 24.0 * hs * floors
 
     loads = []
     for t in trib:
@@ -465,7 +549,10 @@ def wizard(p):
     by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real)
     Mcol = 0.40 * max(abs(min(s['M'] for s in bx['supports'])),
                       abs(min(s['M'] for s in by['supports'])))
-    col_rebar = design_column(cb, ch, Pumax, Mcol, fc, fy)
+    col_rebar = design_column(cb, ch, Pumax, Mcol, fc, fy,
+                              shape=col_shape, D=(col_D if col_shape == 'circ' else None))
+    col_rebar['from_plan'] = col_note or None
+    col_rebar['mix'] = col_mix or None
     dx = beam_detail(bx, ch, fc, fy, bent, lap_mode)
     dy = beam_detail(by, cb, fc, fy, bent, lap_mode)
     dow = DT.dowels(cb, ch, col_rebar['db'], fc, fy, mode=dowel_mode)

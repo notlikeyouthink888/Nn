@@ -399,9 +399,44 @@ def col_layers(b, h, nb, nh, db, cover=40, ds=10):
             layers.append([d1 + sp * k, 2 * ab(db)])
     return layers
 
-def col_interaction(b, h, fc, fy, layers, npts=40):
+def circ_layers(D, n, db, cover=40, ds=10):
+    """أسياخ عمود دائري: موزّعة بالتساوي على دائرة، وعمق كل سيخ من ليف الضغط
+    الأقصى d = R − r·cos φ. تُدمج الأسياخ المتساوية العمق بطبقة واحدة."""
+    R = D / 2.0
+    r = max(R - cover - ds - db / 2.0, 1.0)
+    acc = {}
+    for k in range(max(4, int(n))):
+        phi = 2.0 * math.pi * k / max(4, int(n))
+        d = R - r * math.cos(phi)
+        key = round(d, 1)
+        acc[key] = acc.get(key, 0.0) + ab(db)
+    return sorted([[d, a] for d, a in acc.items()], key=lambda t: t[0])
+
+def _circ_block(D, a):
+    """قطعة الضغط بمقطع دائري: مساحتها وذراعها عن مركز الدائرة (a عمق الكتلة)."""
+    R = D / 2.0
+    a = max(0.0, min(a, D))
+    if a <= 0:
+        return 0.0, 0.0
+    if a >= D:
+        return math.pi * R * R, 0.0
+    th = math.acos(max(-1.0, min(1.0, (R - a) / R)))       # نصف الزاوية المركزية
+    A = R * R * (th - math.sin(th) * math.cos(th))
+    if A <= 1e-9:
+        return 0.0, 0.0
+    ybar = (2.0 * R ** 3 * math.sin(th) ** 3) / (3.0 * A)  # عن مركز الدائرة
+    return A, ybar
+
+def col_interaction(b, h, fc, fy, layers, npts=40, shape='rect', D=None):
+    """منحني التفاعل P–M. shape='circ' يستعمل هندسة القطعة الدائرية الحقيقية
+    (مساحة القطعة الدائرية وذراعها) بدل كتلة مستطيلة — فالعمود الدائري يُصمَّم
+    على مقطعه لا على مربع مكافئ."""
     b1 = beta1(fc)
-    Ast = sum(l[1] for l in layers); Ag = b * h
+    circ = (shape == 'circ' and D)
+    if circ:
+        h = float(D)
+    Ast = sum(l[1] for l in layers)
+    Ag = (math.pi * D * D / 4.0) if circ else (b * h)
     P0 = 0.85 * fc * (Ag - Ast) + fy * Ast
     dmax = max(l[0] for l in layers)
     pts = []
@@ -411,8 +446,13 @@ def col_interaction(b, h, fc, fy, layers, npts=40):
     cs = [dmax * (3.0 - 2.9 * i / (npts - 1.0)) for i in range(npts)]
     for c in cs:
         a = min(b1 * c, h)
-        Cc = 0.85 * fc * a * b
-        Pn = Cc; Mn = Cc * (h / 2 - a / 2)
+        if circ:
+            Ac, ybar = _circ_block(D, a)
+            Cc = 0.85 * fc * Ac
+            Pn = Cc; Mn = Cc * ybar
+        else:
+            Cc = 0.85 * fc * a * b
+            Pn = Cc; Mn = Cc * (h / 2 - a / 2)
         for d_i, As_i in layers:
             e = 0.003 * (c - d_i) / c
             fs = max(-fy, min(fy, ES * e))

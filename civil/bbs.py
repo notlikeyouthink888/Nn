@@ -10,19 +10,32 @@ import detail as D
 
 DENS = 7850.0            # كغم/م³
 
+# عكفة بداية السيخ: قاعدة موقع ثابتة — كل سيخ مستقيم يُثنى 20 سم عند بدايته.
+# تُضاف إلى طول القطع وتظهر بشكل السيخ وبملاحظته، فلا تُنسى بالتنفيذ ولا بالكمية.
+SITE_HOOK = 0.20         # م
+
 def w_per_m(db):
     return E.ab(db) / 1e6 * DENS          # كغم/م
 
-def _mkrow(mark, elem, db, shape, run, count, fc, fy, top=False, note='', mode='code', extra=0.0):
+def _mkrow(mark, elem, db, shape, run, count, fc, fy, top=False, note='', mode='code',
+           extra=0.0, hook0=None):
     """run = الطول الكامل للسيخ الواحد (م) قبل التقطيع · count = عدد الأسياخ.
-    extra = زيادة طول لكل سيخ (ثنيات/عكفات) بالمتر."""
+    extra = زيادة طول لكل سيخ (ثنيات/عكفات) بالمتر.
+    hook0 = عكفة البداية (م): تلقائياً 20 سم لكل سيخ مستقيم، وصفر للأساور
+            والكراسي والحلزون (شكلها المغلق يحوي عكفاته أصلاً)."""
+    if hook0 is None:
+        hook0 = SITE_HOOK if str(shape).startswith('مستقيم') else 0.0
+    if hook0:
+        shape = '%s + عكفة بداية %d سم' % (shape, int(hook0 * 100))
+        note = (note + ' · ' if note else '') + \
+               'عكفة بداية %d سم مضافة لطول القطع' % int(hook0 * 100)
     lap = E.lap_length(db, fc, fy, top=top, mode=mode)
-    c = E.cut_run(run + extra, lap)
+    c = E.cut_run(run + extra + hook0, lap)
     steel = c['total_steel'] * count
     return dict(mark=mark, elem=elem, db=int(db), shape=shape,
-                run=round(run + extra, 2), pieces=c['n'], piece=round(c['piece'], 2),
+                run=round(run + extra + hook0, 2), pieces=c['n'], piece=round(c['piece'], 2),
                 count=count, laps=c['laps'] * count, lap_len=round(c['lap'], 2),
-                waste=round(c['waste'] * count, 1),
+                hook0=round(hook0, 2), waste=round(c['waste'] * count, 1),
                 total_len=round(steel, 1), weight=round(steel * w_per_m(db), 1), note=note)
 
 def schedule(R):

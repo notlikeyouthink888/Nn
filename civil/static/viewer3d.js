@@ -42,6 +42,7 @@ function Viewer3D(el, M, onPick) {
   const on = {}; GN.forEach(k => on[k] = 1);
   const picks = [];
   const px = v => v - L / 2, pz = v => -(v - B / 2);
+  const SHAPE_AR = { rect: 'مستطيل', circ: 'دائري (O)', L: 'زاوية (L)', T: 'تي (T)' };
   const xs = [], ys = [];
   for (let i = 0; i <= g.nx; i++) xs.push(i * g.sx);
   for (let j = 0; j <= g.ny; j++) ys.push(j * g.sy);
@@ -50,6 +51,16 @@ function Viewer3D(el, M, onPick) {
     clippingPlanes: [clip], side: T.DoubleSide, depthWrite: o > .6 });
   function box(grp, w, h, d, x, y, z, col, op, info) {
     const m = new T.Mesh(new T.BoxGeometry(w, h, d), mat(col, op));
+    m.position.set(x, y, z); m.userData = info || {}; grp.add(m);
+    const e = new T.LineSegments(new T.EdgesGeometry(m.geometry),
+      new T.LineBasicMaterial({ color: 0x08101f, transparent: true, opacity: .45, clippingPlanes: [clip] }));
+    e.position.copy(m.position); grp.add(e);
+    if (info) picks.push(m);
+    return m;
+  }
+  /* عمود دائري (O): أسطوانة بقطره الحقيقي — لا صندوق */
+  function cyl(grp, D, h, x, y, z, col, op, info) {
+    const m = new T.Mesh(new T.CylinderGeometry(D / 2, D / 2, h, 20), mat(col, op));
     m.position.set(x, y, z); m.userData = info || {}; grp.add(m);
     const e = new T.LineSegments(new T.EdgesGeometry(m.geometry),
       new T.LineBasicMaterial({ color: 0x08101f, transparent: true, opacity: .45, clippingPlanes: [clip] }));
@@ -277,14 +288,21 @@ function Viewer3D(el, M, onPick) {
         const z = s * hs;
         FR.nodes.forEach((n, k) => {
           const z0 = s === 1 ? ft : (s - 1) * hs;
-          box(G.columns, n.b / 1000 || cb2, z - z0, n.h / 1000 || ch2,
-            PX(n.x), (z0 + z) / 2, PZ(n.y), 0x8ea6c4, 1,
-            { title: 'عمود C' + (k + 1) + ' — طابق ' + s, kind: 'column', grp: 'columns',
+          const rnd = n.shape === 'circ';
+          const info = { title: 'عمود C' + (k + 1) + ' — طابق ' + s, kind: 'column', grp: 'columns',
               floor: s, gk: 'col|' + (n.i || 0) + '|' + (n.j || 0) + '|' + s,
-              rows: [['المصدر', 'موقعه الحقيقي من المخطط'],
+              rows: [['المصدر', 'موقعه وشكله الحقيقيان من المخطط'],
+                ['الشكل', SHAPE_AR[n.shape] || 'مستطيل'],
                 ['الإحداثي', n.x.toFixed(2) + ' , ' + n.y.toFixed(2) + ' م'],
-                ['المقطع', Math.round(n.b || md.col.b) + ' × ' + Math.round(n.h || md.col.h) + ' مم'],
-                ['التسليح', md.col.rebar.label], ['الأتاري', md.col.rebar.tie_label]] });
+                ['المقطع', rnd ? ('Ø' + Math.round(n.D || n.b) + ' مم')
+                  : (Math.round(n.b || md.col.b) + ' × ' + Math.round(n.h || md.col.h) + ' مم')],
+                ['التسليح', md.col.rebar.label], ['الأتاري', md.col.rebar.tie_label]] };
+          if (rnd)
+            cyl(G.columns, (n.D || n.b) / 1000, z - z0,
+              PX(n.x), (z0 + z) / 2, PZ(n.y), 0x8ea6c4, 1, info);
+          else
+            box(G.columns, n.b / 1000 || cb2, z - z0, n.h / 1000 || ch2,
+              PX(n.x), (z0 + z) / 2, PZ(n.y), 0x8ea6c4, 1, info);
         });
         (FR.beams || []).forEach((b2, k) => {
           const dx = b2.x2 - b2.x1, dy = b2.y2 - b2.y1;

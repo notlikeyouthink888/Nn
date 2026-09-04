@@ -9,9 +9,11 @@ const PlanIO = (() => {
   let eng = null, loading = null;
 
   /* أنواع لا تفيد التحليل الإنشائي وتضخّم الحمولة.
-     DIMENSION مستثناة عمداً: المسافات مكتوبة بالمخطط وهي أقوى دليل على المقياس. */
-  const SKIP = new Set(['HATCH', 'VIEWPORT', 'XLINE', 'RAY',
-                        'SOLID', 'LEADER', 'MLEADER', 'SPLINE', 'IMAGE']);
+     DIMENSION مستثناة عمداً: المسافات مكتوبة بالمخطط وهي أقوى دليل على المقياس.
+     HATCH كذلك مستثناة: المساحات المظلَّلة هي كيف تُرسم الأعمدة والجدران
+     بالمخططات الإنشائية، وحدودها تعطي مقطع العمود بالضبط. */
+  const SKIP = new Set(['VIEWPORT', 'XLINE', 'RAY',
+                        'LEADER', 'MLEADER', 'SPLINE', 'IMAGE']);
 
   async function engine(onProgress) {
     if (eng) return eng;
@@ -84,6 +86,21 @@ const PlanIO = (() => {
         case 'INSERT':
           if (e.insertionPoint) push('C', lay, [e.insertionPoint.x, e.insertionPoint.y, 0]);
           break;
+        case 'HATCH': case 'SOLID': {
+          // حدود المساحة المظلَّلة = محيط العنصر المصمت (عمود · جدار · نواة)
+          for (const bp of (e.boundaryPaths || e.paths || [])) {
+            const p = [];
+            for (const ed of (bp.edges || [])) {
+              if (ed.start) p.push(ed.start.x, ed.start.y);
+              else if (ed.center && ed.radius) {          // حافة قوسية
+                p.push(ed.center.x + ed.radius, ed.center.y);
+              }
+            }
+            if (bp.vertices) for (const v of bp.vertices) p.push(v.x, v.y);
+            if (p.length >= 6) push('P', lay, p, { closed: true, hatch: 1 });
+          }
+          break;
+        }
         case 'DIMENSION': {
           // القياس المكتوب + طرفا المسافة المقيسة — منه يُعرف المقياس يقيناً
           const a = e.subDefinitionPoint1, b2 = e.subDefinitionPoint2;

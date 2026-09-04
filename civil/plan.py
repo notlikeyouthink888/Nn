@@ -153,6 +153,12 @@ _COL_PAT = re.compile(r'(^|[^a-z])(col|column|عمود|اعمدة|أعمدة)', 
 _WALL_PAT = re.compile(r'(wall|جدار|جدران|حائط|block|brick)', re.I)
 _AXIS_PAT = re.compile(r'(axis|axes|grid|محور|محاور|شبكة)', re.I)
 _NOISE_PAT = re.compile(r'(hatch|dim|text|txt|defpoints|title|جداول|numbers)', re.I)
+# طبقات تشكيلية أو تشطيبية: أشكالها بمقاس عمود أحياناً لكنها ليست بنية —
+# تُمنع من الترقية التلقائية إلى «أعمدة» مهما كانت هندستها
+_NONSTRUCT_PAT = re.compile(
+    r'(win|window|door|glass|furn|furniture|sanit|kitchen|stair.?rail|hand.?rail'
+    r'|ston|stone|tile|ceram|marbl|finish|iksa|اكساء|إكساء|شباك|شبابيك|باب|أبواب'
+    r'|اثاث|أثاث|صحي|مطبخ|بلاط|رخام|تشطيب|حجر)', re.I)
 _FRAME_PAT = re.compile(r'(frame|border|sheet|s\.lines|إطار|برواز)', re.I)
 
 def suggest_role(name):
@@ -191,6 +197,108 @@ def _cluster(vals, tol):
             out[-1].append(v)
         else:
             out.append([v])
+    return out
+
+# --------------------- شكل العنصر: مربع · دائرة · L · T · C ---------------------
+def _verts(e):
+    """رؤوس الخط المتعدد بلا تكرار الرأس الأخير ولا رؤوس متطابقة."""
+    p = e['p']
+    v = [(p[i], p[i + 1]) for i in range(0, len(p) - 1, 2)]
+    out = []
+    for q in v:
+        if not out or math.hypot(q[0] - out[-1][0], q[1] - out[-1][1]) > 1e-7:
+            out.append(q)
+    if len(out) > 1 and math.hypot(out[0][0] - out[-1][0], out[0][1] - out[-1][1]) < 1e-7:
+        out.pop()
+    return out
+
+def shape_of(e, scale, cmin=0.15, cmax=1.6, ring_lo=1.0, ring_hi=5.0, ar_max=4.0):
+    """يصنّف عنصراً واحداً إلى شكل إنشائي معروف، أو None إن لم يكن عموداً/نواة.
+
+    المخططات ترسم الأعمدة بأشكال كثيرة لا مستطيلات فقط: دائري (O) · مستطيل ·
+    زاوية (L) · تي (T) · وأنوية المصاعد بشكل حرف C (جدار مفتوح من جهة الباب).
+    التمييز بعدد الرؤوس ونسبة المساحة الحقيقية إلى صندوقها المحيط:
+    المستطيل يملأ صندوقه، وL نصفه تقريباً، وحلقة المصعد ثلثه.
+    """
+    t = e['t']
+    if t == 'C':                                   # عمود دائري
+        d = 2.0 * e['p'][2] * scale
+        if cmin <= d <= cmax:
+            return dict(shape='circ', b=d, h=d, D=d, area=math.pi * d * d / 4.0, n=1)
+        return None
+    if t != 'P':
+        return None
+    v = _verts(e)
+    n = len(v)
+    if n < 4 or n > 24:
+        return None
+    x0, y0, x1, y1 = _bbox(v)
+    w = (x1 - x0) * scale; h = (y1 - y0) * scale
+    if w <= 0 or h <= 0:
+        return None
+    ar = abs(_shoelace(v)) * scale * scale
+    fill = ar / (w * h)
+    # نواة مصعد/درج: حلقة مفتوحة بجدار رفيع — صندوق متر إلى خمسة وامتلاء ثلث إلى ثلثين
+    if ring_lo <= w <= ring_hi and ring_lo <= h <= ring_hi and n >= 8 and 0.15 <= fill <= 0.75:
+        t_wall = ar / max(_perimeter(v) * scale / 2.0, 1e-6)   # المساحة ÷ نصف المحيط
+        if 0.10 <= t_wall <= 0.45:
+            return dict(shape='C', b=w, h=h, area=ar, n=n, wall=round(t_wall, 3))
+    if not (cmin <= w <= cmax and cmin <= h <= cmax):
+        return None
+    # ACI 318-19: عنصر ضغط طوله ≥ 4 × عرضه يُصمَّم **جداراً** لا عموداً —
+    # وهذا يمنع قراءة قطع الجدران وأكتافه على أنها أعمدة.
+    if max(w, h) / min(w, h) > ar_max:
+        return None
+    if n <= 5 and fill >= 0.85:
+        return dict(shape='rect', b=w, h=h, area=ar, n=n)
+    if n == 6 and 0.35 <= fill <= 0.85:
+        return dict(shape='L', b=w, h=h, area=ar, n=n)
+    if n in (8, 9) and 0.30 <= fill <= 0.85:
+        return dict(shape='T', b=w, h=h, area=ar, n=n)
+    if fill >= 0.85:
+        return dict(shape='rect', b=w, h=h, area=ar, n=n)
+    return None
+
+def _perimeter(v):
+    return sum(math.hypot(b[0] - a[0], b[1] - a[1])
+               for a, b in zip(v, v[1:] + v[:1]))
+
+def promote_column_layers(ents, roles, scale, need=4, gap_min=2.0):
+    """كثير من الملفات لا تسمّي طبقة للأعمدة أصلاً وترسمها على الطبقة «0».
+
+    فبدل الاعتماد على اسم الطبقة وحده، تُرقّى الطبقة إلى دور «أعمدة» بدليلين معاً:
+      ١) تحمل **٤ أشكال أعمدة فأكثر** (مستطيل · دائرة · L · T بمقاس عمود)، و
+      ٢) **تباعد أقرب جار بينها بحرٌ حقيقي** (٢ م فأكثر).
+
+    الشرط الثاني هو الفاصل: الشبابيك والإكساء والأثاث تُرسم بمقاسات تشبه مقطع
+    العمود لكنها متلاصقة على خط الجدار — تباعدها الوسيط 0.3 م لا 3.5 م.
+    الطبقات المستبعدة صراحةً (تجاهل · إطار ورقة · محاور) لا تُرقّى."""
+    per = {}
+    for e in ents:
+        lay = e['l']
+        if roles.get(lay) in ('off', 'frame', 'axis', 'col'):
+            continue
+        if _NONSTRUCT_PAT.search(lay or ''):          # شبابيك · أبواب · إكساء · أثاث
+            continue
+        s = shape_of(e, scale)
+        if not s or s['shape'] == 'C':
+            continue
+        x0, y0, x1, y1 = _bbox(_seg_points(e))
+        per.setdefault(lay, []).append(dict(x=(x0 + x1) / 2 * scale, y=(y0 + y1) / 2 * scale,
+                                            b=s['b'] * 1000, h=s['h'] * 1000))
+    out = {}
+    for lay, v in per.items():
+        v = _dedupe_cols(v)
+        if len(v) < need:
+            continue
+        nn = []
+        for i, a in enumerate(v):
+            m = min((math.hypot(a['x'] - b['x'], a['y'] - b['y'])
+                     for j, b in enumerate(v) if j != i), default=0.0)
+            if m > 0:
+                nn.append(m)
+        if nn and sorted(nn)[len(nn) // 2] >= gap_min:
+            out[lay] = len(v)
     return out
 
 # -------------------- اتجاه المبنى: مخططات مرسومة مائلة --------------------
@@ -254,18 +362,32 @@ def rotate_ents(ents, deg):
     return out
 
 # ---------------------------- كشف الأعمدة ----------------------------
-def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5):
-    """يجمع عناصر طبقات الأعمدة إلى عناقيد متجاورة، وكل عنقود بحجم عمود = عمود.
-    يعمل سواء رُسم العمود كأربعة خطوط أو كخط متعدد مغلق أو كدائرة.
+def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5, col_layers=None):
+    """كل أشكال الأعمدة: دائري (O) · مستطيل · مربع · زاوية (L) · تي (T)،
+    سواء رُسم العمود شكلاً واحداً مغلقاً أو أربعة خطوط منفصلة.
+
+    مرحلتان: أولاً الأشكال التي تُعرَف بذاتها (`shape_of`) فتؤخذ عموداً كاملاً
+    بشكلها ومساحتها الحقيقية، وثانياً بقية هندسة طبقات الأعمدة تُعنقد بالتجاور.
 
     طبقات الأعمدة تحمل أحياناً خطوط إنشاء أو حدوداً بطول المبنى كله (طبقة
     STR-COLUMNS مثلاً)، وهذه تتلامس مع كل الأعمدة فتلحمها بعنقود واحد بحجم
     المبنى فيُرفض — فيخرج التحليل بصفر أعمدة. لذلك يُستبعد ما هو أكبر من مقطع
     عمود قبل التعنقد أصلاً، وتُضيَّق سماحية التجاور، ويُرفض أي دمج ينتج عنقوداً
     أكبر من مقطع عمود."""
-    items = []
+    lays = set(col_layers or ())
+    lays |= {k for k, v in roles.items() if v == 'col'}
+    shaped, items = [], []
     for e in ents:
-        if roles.get(e['l']) != 'col':
+        if e['l'] not in lays:
+            continue
+        s = shape_of(e, scale, cmin, cmax)
+        if s and s['shape'] != 'C':                    # شكل عمود يُعرف بذاته
+            pts = _seg_points(e)
+            x0, y0, x1, y1 = _bbox(pts)
+            shaped.append(dict(x=(x0 + x1) / 2.0 * scale, y=(y0 + y1) / 2.0 * scale,
+                               b=round(s['b'] * 1000, 0), h=round(s['h'] * 1000, 0),
+                               shape=s['shape'], area=round(s['area'], 4),
+                               D=round(s.get('D', 0) * 1000, 0) or None, n=1))
             continue
         pts = _seg_points(e)
         if not pts:
@@ -273,14 +395,9 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5):
         x0, y0, x1, y1 = _bbox(pts)
         if (x1 - x0) * scale > cmax * 1.05 or (y1 - y0) * scale > cmax * 1.05:
             continue                                   # خط إنشاء/جدار طويل لا عمود
-        if e['t'] == 'C' and e['p'][2] > 0:            # عمود دائري جاهز
-            r = e['p'][2] * scale
-            if cmin / 2 <= r <= cmax / 2:
-                items.append(dict(kind='circle', pts=pts, r=r))
-                continue
         items.append(dict(kind='poly', pts=pts, r=0.0))
     if not items:
-        return []
+        return _dedupe_cols(shaped)
     # تعنقد بالتجاور: صندوق محيط لكل عنصر ثم دمج المتقاطعة/المتلامسة.
     # أضلاع العمود الواحد متلامسة فعلاً، فسماحية 5 سم تكفي — وسماحية بمقطع
     # عمود كامل تلحم عمودين متجاورين ببعضهما.
@@ -314,16 +431,30 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5):
                     used[j] = True; g.append(c); changed = True
                     cur = nx
         groups.append((cur, [x[4] for x in g]))
-    cols = []
+    cols = list(shaped)
     for (x0, y0, x1, y1), idx in groups:
         b = (x1 - x0) * scale
         h = (y1 - y0) * scale
         if not (cmin <= b <= cmax and cmin <= h <= cmax):
             continue
+        if max(b, h) / min(b, h) > 4.0:            # جدار قص لا عمود (ACI)
+            continue
         cols.append(dict(x=(x0 + x1) / 2.0 * scale, y=(y0 + y1) / 2.0 * scale,
-                         b=round(b * 1000, 0), h=round(h * 1000, 0), n=len(idx)))
-    cols.sort(key=lambda c: (c['y'], c['x']))
-    return cols
+                         b=round(b * 1000, 0), h=round(h * 1000, 0),
+                         shape='rect', area=round(b * h, 4), D=None, n=len(idx)))
+    return _dedupe_cols(cols)
+
+def _dedupe_cols(cols, tol=0.25):
+    """العمود الواحد يُرسم أحياناً مرتين (خط فوق خط) أو بحدّ وتظليل معاً —
+    فتُدمج المراكز المتقاربة ويبقى أكبر مقطع."""
+    cols.sort(key=lambda c: (-(c['b'] * c['h']), c['y'], c['x']))
+    out = []
+    for c in cols:
+        if any(abs(c['x'] - o['x']) < tol and abs(c['y'] - o['y']) < tol for o in out):
+            continue
+        out.append(c)
+    out.sort(key=lambda c: (c['y'], c['x']))
+    return out
 
 # --------------------- معايرة المقياس من مقطع العمود ---------------------
 # مقاطع الأعمدة القياسية بالتنفيذ المتري (مم)
@@ -566,6 +697,81 @@ def detect_axes(ents, roles, scale, minlen=3.0, within=None):
     return dict(x=[round(v, 3) for v in ax], y=[round(v, 3) for v in ay])
 
 # --------------------------- حدّ البناء ---------------------------
+def _hull(pts):
+    """غلاف محدّب (Andrew monotone chain) — يرجع المضلّع بترتيب عكس عقارب الساعة."""
+    p = sorted(set((round(x, 6), round(y, 6)) for x, y in pts))
+    if len(p) < 3:
+        return p
+    def half(seq):
+        out = []
+        for q in seq:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (q[1] - out[-2][1]) -
+                                     (out[-1][1] - out[-2][1]) * (q[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(q)
+        return out
+    return half(p)[:-1] + half(reversed(p))[:-1]
+
+def _offset_poly(poly, d):
+    """يوسّع مضلّعاً محدّباً للخارج مسافة d بإزاحة كل رأس بعيداً عن مركزه."""
+    if not poly or d <= 0:
+        return poly
+    cx = sum(q[0] for q in poly) / len(poly); cy = sum(q[1] for q in poly) / len(poly)
+    out = []
+    for x, y in poly:
+        L = math.hypot(x - cx, y - cy) or 1.0
+        out.append((x + (x - cx) / L * d, y + (y - cy) / L * d))
+    return out
+
+def boundary_from_columns(cols, spans, cover=0.5):
+    """حدّ البناء من الأعمدة نفسها: الغلاف المحدّب لمراكزها موسَّعاً نصف بحر طرفي.
+
+    الصندوق المحيط بكل ما رُسم يشمل الأرصفة والشوارع وأسهم الشمال فيعطي مساحة
+    أكبر من المبنى بكثير. أما مركز أبعد عمود + نصف البحر الطرفي فهو حدّ البناء
+    الذي يحمله الهيكل فعلاً."""
+    if len(cols) < 3:
+        return None
+    pts = [(c['x'], c['y']) for c in cols]
+    hull = _hull(pts)
+    if len(hull) < 3:
+        return None
+    sp = [s for s in (spans or []) if s and s > 0]
+    d = (sorted(sp)[len(sp) // 2] if sp else 4.0) * cover
+    poly = _offset_poly(hull, max(0.5, min(d, 6.0)))
+    a = abs(_shoelace(poly))
+    if a <= 4.0:
+        return None
+    return dict(kind='columns', poly=[[round(x, 3), round(y, 3)] for x, y in poly],
+                area=round(a, 2), bbox=_rbox(poly))
+
+def plot_from_dims(ents, scale, win=None, lo=15.0):
+    """مساحة **القطعة** من أطول بُعدين مكتوبين متعامدين بالمخطط (مثل 45.30 × 92.45).
+
+    هذه مساحة الأرض لا مساحة البناء — تُعرض على حدة، وتُستعمل سقفاً لمساحة البناء
+    (فالمبنى لا يتجاوز قطعته) وحدّاً احتياطياً إن تعذّر استخراج حدّ المبنى.
+    الأبعاد الأكبر من امتداد المخطط نفسه تُهمل: هذه أبعاد برواز الورقة والجداول."""
+    # سقف واحد لا سقف لكل محور: القطعة قد تكون مائلة أو أطول من عرض المخطط
+    hix = hiy = 400.0
+    if win:
+        hix = hiy = max(win[2] - win[0], win[3] - win[1]) * 1.25
+    xs, ys = [], []
+    for e in ents:
+        if e['t'] != 'D' or not e.get('m'):
+            continue
+        p = e['p']
+        v = float(e['m']) * scale
+        if v < lo:
+            continue
+        if abs(p[2] - p[0]) >= abs(p[3] - p[1]):
+            if v <= hix: xs.append(v)
+        elif v <= hiy:
+            ys.append(v)
+    if not xs or not ys:
+        return None
+    L, B = max(xs), max(ys)
+    return dict(L=round(L, 2), B=round(B, 2), area=round(L * B, 1),
+                note='أطول بُعدين مكتوبين متعامدين — مساحة القطعة لا مساحة البناء')
+
 def detect_boundary(ents, roles, scale, win=None, margin=6.0):
     """أكبر خط متعدد مغلق على طبقات الجدران، وإلا صندوق محيط بعناصر الجدران/الأعمدة.
     win = نافذة المخطط المختار (م) لاستبعاد المخططات المجاورة بنفس الملف."""
@@ -693,13 +899,19 @@ def detect_stairs(ents, roles, scale, win=None, wmin=0.7, wmax=2.6,
     return uniq
 
 def detect_shafts(ents, roles, scale, win=None, lo=1.2, hi=4.0):
-    """بئر مصعد: مستطيل مغلق صغير على طبقة جدران، يفضّل ما جاوره نص lift/مصعد."""
+    """نواة المصعد/الدرج: تُرسم بالمخططات الإنشائية **حرفَ C** — جدار قص محيط
+    مفتوح من جهة الباب — لا مستطيلاً مغلقاً. فيُكشف الشكلان معاً:
+
+    * حلقة حرف C: خط متعدد بثمانية رؤوس فأكثر، صندوقه بين متر وخمسة، وسماكة
+      جداره (المساحة ÷ نصف المحيط) بين 10 و45 سم — وتُقرأ منه سماكة الجدار
+      الحقيقية فتدخل التصميم بدل قيمة مفترضة.
+    * مستطيل مغلق بسيط، كما بالمساقط المعمارية.
+
+    ووجود نص «مصعد/lift» قريباً يرفع الثقة ولا يُشترط: أغلب المخططات لا تسمّيها."""
     labels = [e for e in ents if e['t'] == 'T' and _LIFT_PAT.search(e.get('s') or '')]
     out = []
     for e in ents:
-        if e['t'] != 'P' or not e.get('closed'):
-            continue
-        if roles.get(e['l']) not in ('wall', 'other'):
+        if e['t'] != 'P' or roles.get(e['l']) in ('off', 'frame', 'axis'):
             continue
         pts = _seg_points(e)
         if len(pts) < 4:
@@ -708,15 +920,31 @@ def detect_shafts(ents, roles, scale, win=None, lo=1.2, hi=4.0):
         w = (x1 - x0) * scale; h = (y1 - y0) * scale
         if not (lo <= w <= hi and lo <= h <= hi):
             continue
+        s = shape_of(e, scale, ring_lo=lo, ring_hi=hi)
+        wall = None
+        if s and s['shape'] == 'C':
+            wall = s['wall']                       # حلقة C — سماكة الجدار مقروءة
+        elif not e.get('closed') or len(_verts(e)) > 6:
+            continue                               # ليس مستطيلاً مغلقاً ولا حلقة
         cx = (x0 + x1) / 2 * scale; cy = (y0 + y1) / 2 * scale
         if win and not (win[0] <= cx <= win[2] and win[1] <= cy <= win[3]):
             continue
         near = any(math.hypot(t['p'][0] * scale - cx, t['p'][1] * scale - cy) < max(w, h)
                    for t in labels)
         out.append(dict(x=round(cx, 2), y=round(cy, 2), w=round(w, 2), h=round(h, 2),
-                        labelled=near))
-    out.sort(key=lambda s: (not s['labelled'], -s['w'] * s['h']))
-    return [s for s in out if s['labelled']] or out[:1]
+                        kind=('C' if wall else 'box'), wall=wall, labelled=near))
+    # تُدمج النوى المتكررة (جدار خارجي وداخلي لنفس البئر)
+    out.sort(key=lambda s: (not s['labelled'], s['kind'] != 'C', -s['w'] * s['h']))
+    uniq = []
+    for s in out:
+        if any(abs(s['x'] - o['x']) < max(o['w'], o['h']) * 0.6 and
+               abs(s['y'] - o['y']) < max(o['w'], o['h']) * 0.6 for o in uniq):
+            continue
+        uniq.append(s)
+    ring = [s for s in uniq if s['kind'] == 'C']
+    if ring:
+        return ring
+    return [s for s in uniq if s['labelled']] or uniq[:1]
 
 # ------------- الهيكل الحقيقي: أعمدة بمواقعها وجسور على محاورها -------------
 def build_frame(cols, tol=0.6):
@@ -732,7 +960,8 @@ def build_frame(cols, tol=0.6):
     nodes = []
     for k, c in enumerate(cols):
         nodes.append(dict(k=k, x=round(c['x'], 3), y=round(c['y'], 3),
-                          b=c['b'], h=c['h'], i=snap(c['x'], ax), j=snap(c['y'], ay)))
+                          b=c['b'], h=c['h'], shape=c.get('shape', 'rect'),
+                          D=c.get('D'), i=snap(c['x'], ax), j=snap(c['y'], ay)))
     beams = []
     for key, other in (('j', 'i'), ('i', 'j')):
         rows = {}
@@ -754,6 +983,7 @@ def build_frame(cols, tol=0.6):
     return dict(nodes=nodes, beams=beams, axes_x=[round(v, 3) for v in ax],
                 axes_y=[round(v, 3) for v in ay],
                 spans=[dict(dir=k[0], at=k[1], spans=v) for k, v in sorted(lines.items())],
+                spans_all=[b['span'] for b in beams],
                 n_cols=len(nodes), n_beams=len(beams))
 
 # ------------------- أقرب شبكة منتظمة تطابق الأعمدة -------------------
@@ -879,7 +1109,13 @@ def analyze(p):
                    if not set(r['idx']).issubset(frames)]
         for k, r in enumerate(regions):
             r['i'] = k
-    all_cols = detect_columns(ents, roles, scale)
+    # طبقات تحمل أشكال أعمدة ولا تسمّي نفسها «أعمدة» (الطبقة «0» غالباً) تُرقّى
+    promoted = promote_column_layers(ents, roles, scale)
+    if promoted:
+        warn.append('طبقات ما سمّت نفسها «أعمدة» لكنها تحمل أشكال أعمدة فأُخذت: '
+                    + ' · '.join('«%s» %d شكل' % (k, v)
+                                 for k, v in sorted(promoted.items(), key=lambda t: -t[1])[:4]))
+    all_cols = detect_columns(ents, roles, scale, col_layers=promoted.keys())
     for r in regions:
         b = r['bbox']
         r['cols'] = [c for c in all_cols
@@ -908,6 +1144,26 @@ def analyze(p):
     bnd = detect_boundary(ents, roles, scale, win)
     grid = fit_grid(cols)
     frame = build_frame(cols)
+    plot = plot_from_dims(ents, scale, win)
+    # مساحة البناء لا تتجاوز مساحة القطعة. فإن جاء الصندوق المحيط أكبر من القطعة
+    # فهو يشمل ما حول المبنى (أرصفة · حدود · أسهم شمال) — عندها يُؤخذ حدّ البناء
+    # من غلاف الأعمدة نفسها، وهو ما يحمله الهيكل فعلاً.
+    if plot and bnd and bnd['kind'] == 'bbox' and bnd['area'] > plot['area'] * 1.02:
+        cb = (boundary_from_columns(cols, (frame or {}).get('spans_all'), cover=0.12)
+              if len(cols) >= 3 else None)
+        if cb and cb['area'] < bnd['area']:
+            warn.append('الصندوق المحيط (%.0f م²) أكبر من القطعة نفسها (%.0f م² = '
+                        '%.2f × %.2f) — فمساحة البناء أُخذت من غلاف الأعمدة: %.0f م².'
+                        % (bnd['area'], plot['area'], plot['L'], plot['B'], cb['area']))
+            bnd = cb
+        else:
+            warn.append('الصندوق المحيط أكبر من القطعة (%.0f م²) — راجع المخطط المختار.'
+                        % plot['area'])
+    if plot and bnd and bnd['area'] > plot['area'] * 1.02:
+        warn.append('مساحة البناء المستخرَجة (%.0f م²) ما زالت أكبر من القطعة (%.0f م²) — '
+                    'غالباً المخطط المختار يضم أكثر من كتلة أو يشمل أعمال موقع؛ '
+                    'اختر المخطط الصحيح من القائمة أو صحّح دور الطبقات.'
+                    % (bnd['area'], plot['area']))
     stairs = detect_stairs(ents, roles, scale, win)
     shafts = detect_shafts(ents, roles, scale, win)
     dspans = dim_spans(ents, scale, win)
@@ -933,6 +1189,7 @@ def analyze(p):
                    round(x1 * scale, 3), round(y1 * scale, 3)]
     return dict(layers=layers, columns=cols, axes=axes, boundary=bnd, grid=grid,
                 frame=frame, stairs=stairs, shafts=shafts, dim_spans=dspans,
+                plot=plot,
                 insunits=insunits, unit=unit_name(insunits), scale=scale,
                 scale_src=src, dim_scale=dimc,
                 angle=round(ang, 3), angle_share=round(ang_share, 3),

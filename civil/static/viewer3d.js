@@ -1093,34 +1093,76 @@ function Viewer3D(el, M, onPick) {
         G.soil.add(wm); picks.push(wm);
       }
     }
-    // حبيبات الردم: الجلمود خشن والسبيس ناعم — نسخ مُنمذجة (InstancedMesh)
-    st.forEach(sl => {
+    // ---- الردم المدكوك يُنفَّذ **طبقات** بسماكة معلومة، فيُرسم طبقات ----
+    // لا شيء عشوائي: الحبيبات على شبكة منتظمة بخطوة = قطر الحبيبة، مُزاحة
+    // نصف خطوة بين الصفوف (رصّ مُتداخل كما يحصل بالدكّ الحقيقي)، وأي تفاوت
+    // بالحجم والدوران يأتي من **دالة تجزئة على رقم الحبيبة** لا من عشوائية —
+    // فالمشهد يتكرر بالضبط في كل مرة، وكل حبيبة موقعها محسوب.
+    const hash01 = (i, k) => {           // مولّد حتمي في [0,1) — لا Math.random
+      let x = Math.sin(i * 127.1 + k * 311.7) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    st.forEach((sl, si) => {
       if (sl.kind !== 'boulder' && sl.kind !== 'subbase') return;
       const coarse = sl.kind === 'boulder';
-      const r0 = coarse ? .055 : .018;
-      const per = coarse ? 26 : 46;                     // حبيبة لكل متر مربع
-      const n = Math.min(2200, Math.round((L + .4) * (B + .4) * per * Math.max(1, sl.t / .25)));
-      const geo = new T.SphereGeometry(r0, coarse ? 7 : 5, coarse ? 5 : 4);
+      const dg = coarse ? .07 : .02;                    // قطر الحبيبة الاسمي (م)
+      const step = dg * 1.25;                           // خطوة الرصّ
+      const wx = L + .3, wz = B + .3;
+      const nx = Math.max(1, Math.floor(wx / step));
+      const nz = Math.max(1, Math.floor(wz / step));
+      const nl = Math.max(1, sl.layers || Math.max(1, Math.round(sl.t / (sl.layer_t || .25))));
+      const tl = sl.t / nl;                             // سماكة الطبقة الواحدة
+      const cap = 26000;
+      let per = nx * nz;
+      let stride = Math.max(1, Math.ceil(per * nl / cap));
+      const total = Math.floor(per * nl / stride);
+      const geo = new T.SphereGeometry(dg / 2, coarse ? 8 : 6, coarse ? 6 : 4);
       const im = new T.InstancedMesh(geo, new T.MeshLambertMaterial({
-        color: new T.Color(sl.color).multiplyScalar(coarse ? .8 : 1.05),
-        clippingPlanes: [clip] }), n);
+        color: new T.Color(sl.color).multiplyScalar(coarse ? .82 : 1.06),
+        clippingPlanes: [clip] }), total);
       const m4 = new T.Matrix4(), q = new T.Quaternion(), sc3 = new T.Vector3();
-      for (let i = 0; i < n; i++) {
-        const rx = (Math.random() - .5) * (L + .3), rz = (Math.random() - .5) * (B + .3);
-        const ry = sl.bottom + Math.random() * sl.t;
-        const k2 = .7 + Math.random() * .9;
-        sc3.set(k2, k2 * (.65 + Math.random() * .5), k2);
-        q.setFromEuler(new T.Euler(Math.random() * 3, Math.random() * 3, Math.random() * 3));
-        m4.compose(new T.Vector3(rx, ry, rz), q, sc3);
-        im.setMatrixAt(i, m4);
+      let c = 0;
+      for (let li = 0; li < nl && c < total; li++) {
+        const yl = sl.bottom + (li + .5) * tl;          // مركز الطبقة المدكوكة
+        const off = (li % 2) * step / 2;                // تداخل بين الطبقات
+        for (let ix = 0; ix < nx && c < total; ix++) {
+          for (let iz = 0; iz < nz && c < total; iz++) {
+            if ((ix * nz + iz + li) % stride) continue;
+            const id = si * 1e6 + li * 1e4 + ix * 100 + iz;
+            const px2 = -wx / 2 + (ix + .5) * step + off + (iz % 2) * step / 2;
+            const pz2 = -wz / 2 + (iz + .5) * step;
+            if (px2 > wx / 2 || pz2 > wz / 2) continue;
+            const k2 = .82 + hash01(id, 1) * .30;       // تفاوت حجم حتمي ±15%
+            sc3.set(k2, k2 * (.80 + hash01(id, 2) * .30), k2);
+            q.setFromEuler(new T.Euler(hash01(id, 3) * 3.1, hash01(id, 4) * 3.1,
+                                       hash01(id, 5) * 3.1));
+            m4.compose(new T.Vector3(px2, yl + (hash01(id, 6) - .5) * tl * .5, pz2), q, sc3);
+            im.setMatrixAt(c++, m4);
+          }
+        }
       }
-      im.userData = { title: sl.name + ' — حبيبات بحجمها الحقيقي', kind: 'grain', grp: 'soil',
-        rows: [['نوع الحبيبة', coarse ? 'جلمود/حصى خشن 4–10 سم' : 'سبيس ناعم 1–3 سم'],
-          ['السماكة', sl.t.toFixed(2) + ' م'],
-          ['عدد الطبقات', sl.layers ? sl.layers + ' × ' + (sl.layer_t * 100).toFixed(0) + ' سم' : '—'],
+      im.count = c;
+      im.userData = { title: sl.name + ' — مرصوصة طبقات بحبيبات بحجمها الحقيقي',
+        kind: 'grain', grp: 'soil',
+        rows: [['نوع الحبيبة', coarse ? 'جلمود/حصى خشن — قطر اسمي 7 سم'
+                                      : 'سبيس ناعم — قطر اسمي 2 سم'],
+          ['السماكة الكلية', sl.t.toFixed(2) + ' م'],
+          ['طبقات الدكّ', nl + ' × ' + (tl * 100).toFixed(0) + ' سم'],
+          ['خطوة الرصّ', (step * 100).toFixed(1) + ' سم (رصّ متداخل بين الصفوف)'],
+          ['حبيبات معروضة', c + ' من ' + (nx * nz * nl)],
           ['الحجم', sl.volume.toFixed(1) + ' م³'],
-          ['المشترى سائباً', sl.buy ? sl.buy.toFixed(1) + ' م³' : '—']] };
+          ['المشترى سائباً', sl.buy ? sl.buy.toFixed(1) + ' م³' : '—'],
+          ['التوزيع', 'شبكة منتظمة محسوبة — لا عشوائية: المشهد يتكرر بالضبط']] };
       G.soil.add(im); picks.push(im);
+      // خط فاصل رفيع عند كل مستوى دكّ ليُرى عدد الطبقات بالعين
+      for (let li = 1; li < nl; li++) {
+        const y2 = sl.bottom + li * tl;
+        const ln = new T.Mesh(new T.BoxGeometry(wx, .012, wz),
+          new T.MeshBasicMaterial({ color: 0x1b2436, transparent: true, opacity: .55,
+            clippingPlanes: [clip] }));
+        ln.position.set(0, y2, 0);
+        G.soil.add(ln);
+      }
     });
   }
 

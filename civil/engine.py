@@ -171,26 +171,54 @@ def phi_flex(et, fy=420.0):
 def as_min(fc, fy, b, d):
     return max(0.25 * math.sqrt(fc) / fy, 1.4 / fy) * b * d
 
-def pick_bars(As_req, dbs=(12, 16, 20, 25), nmin=2, nmax=10, width=None):
-    """يختار عدد وقطر الأسياخ — أقل عدد أسياخ ضمن 15% من أقل مساحة كافية،
-    مع مراعاة ما يتسع بعرض المقطع (25 مم خلوص) إن أُعطي العرض."""
+def bars_per_layer(width, db, cover=40.0, ds=10.0, dagg=20.0):
+    """كم سيخاً يتسع بصفّ واحد — ACI 318-19 المادة 25.2.1:
+    الخلوص الصافي بين الأسياخ لا يقل عن الأكبر من [ 25 مم , db , (4/3)·dagg ].
+    كان هذا الحدّ غائباً عن اختيار الأسياخ فكانت تُرصف أكثر مما يتسع فعلاً."""
+    clear = max(25.0, db, 4.0 * dagg / 3.0)
+    avail = width - 2.0 * cover - 2.0 * ds
+    n = int(math.floor((avail + clear) / (db + clear)))
+    return max(2, n), clear
+
+def pick_bars(As_req, dbs=(12, 16, 20, 25, 32), nmin=2, nmax=24, width=None,
+              cover=40.0, ds=10.0, dagg=20.0, max_layers=3, h=None):
+    """يختار عدد وقطر الأسياخ بحيث **تتسع فعلاً** بعرض المقطع.
+
+    يرجع مع الاختيار: عدد الطبقات · عدد الأسياخ بكل طبقة · الخلوص الصافي ·
+    وانزياح مركز ثقل الحديد `dy` لتُصحَّح به d عند تعدّد الطبقات — وبدونه
+    كان العمق الفعّال يُحسب أكبر من الحقيقي فيخرج الحديد ناقصاً."""
     cands = []
     for db in dbs:
-        n = max(nmin, math.ceil(As_req / ab(db)))
-        if width:
-            per = max(2, int((width - 2 * 40 - 2 * 10 + max(25.0, db)) // (db + max(25.0, db))))
-            if n > 2 * per:
-                continue
+        n = max(nmin, int(math.ceil(As_req / ab(db) - 1e-9)))
         if n > nmax:
             continue
-        cands.append(dict(n=n, db=db, As=n * ab(db)))
-    if not cands:
-        db = dbs[-1]; n = max(nmin, math.ceil(As_req / ab(db)))
-        cands = [dict(n=n, db=db, As=n * ab(db))]
+        if width:
+            per, clear = bars_per_layer(width, db, cover, ds, dagg)
+            lay = int(math.ceil(n / float(per)))
+            if lay > max_layers:
+                continue
+            # المسافة بين الطبقات ≥ 25 مم (ACI 25.2.2)
+            gap = max(25.0, db)
+            dy = 0.0 if lay <= 1 else (gap + db) * (lay - 1) / 2.0
+        else:
+            per, clear, lay, dy = n, max(25.0, db), 1, 0.0
+        cands.append(dict(n=n, db=db, As=n * ab(db), per_layer=per, layers=lay,
+                          clear=clear, dy=dy))
+    if not cands:                       # لا شيء يتسع: أكبر قطر بثلاث طبقات وتنبيه
+        db = dbs[-1]; n = max(nmin, int(math.ceil(As_req / ab(db))))
+        per, clear = bars_per_layer(width or 300.0, db, cover, ds, dagg)
+        lay = int(math.ceil(n / float(per)))
+        cands = [dict(n=n, db=db, As=n * ab(db), per_layer=per, layers=lay,
+                      clear=clear, dy=(max(25.0, db) + db) * (lay - 1) / 2.0,
+                      crowded=True)]
     mn = min(c['As'] for c in cands)
     ok = [c for c in cands if c['As'] <= mn * 1.15]
-    best = min(ok, key=lambda c: (c['n'], c['As']))
-    best['label'] = "%dØ%d" % (best['n'], best['db'])
+    # الأفضل: أقل طبقات ثم أقل عدد أسياخ ثم أقل حديد
+    best = min(ok, key=lambda c: (c['layers'], c['n'], c['As']))
+    best['label'] = "%dØ%d%s" % (best['n'], best['db'],
+                                 '' if best['layers'] <= 1 else
+                                 ' على %d طبقات' % best['layers'])
+    best['clause'] = 'ACI 318-19 25.2.1 (الخلوص) و25.2.2 (بين الطبقات)'
     return best
 
 def bar_spacing(As, dbs=(10, 12, 16, 20, 25, 32), smin=100.0, smax=300.0, target=200.0):
@@ -224,7 +252,7 @@ def flexure(Mu, b, d, fc, fy, h=None, min_rule='beam'):
         As = _min(b, d)
         r.update(As_req=As, As_min=As, doubly=False, phi=0.9, et=0.05,
                  ok=True, note="أقل حديد (عزم مهمل)")
-        r['bars'] = pick_bars(As); r['phiMn'] = 0.0; r['ratio'] = 0.0
+        r['bars'] = pick_bars(As, width=b); r['phiMn'] = 0.0; r['ratio'] = 0.0
         return r
     Mn_u = Mu * 1e6  # N.mm  (phi applied by iteration)
     b1 = beta1(fc)
@@ -262,7 +290,17 @@ def flexure(Mu, b, d, fc, fy, h=None, min_rule='beam'):
     Asmin = _min(b, d)
     As = max(As, Asmin)
     r['As_req'] = As; r['As_min'] = Asmin
-    r['bars'] = pick_bars(As)
+    r['bars'] = pick_bars(As, width=b)
+    # تعدّد الطبقات ينزل بمركز ثقل الحديد فيقلّ العمق الفعّال — يُعاد الحساب عليه
+    if r['bars'].get('dy', 0.0) > 0.1:
+        d = max(0.5 * d, d - r['bars']['dy'])
+        r['d_eff'] = d
+        r['layers_note'] = ('الحديد على %d طبقات — العمق الفعّال نزل %d مم '
+                            'وأُعيد الحساب عليه (ACI 25.2.2)'
+                            % (r['bars']['layers'], int(r['bars']['dy'])))
+        As = max(As, Mu * 1e6 / (0.9 * fy * 0.9 * d))
+        r['As_req'] = As
+        r['bars'] = pick_bars(As, width=b)
     Asp = r['bars']['As']
     a = min(Asp, 0.85 * fc * b1 * (0.003 * d / 0.003) * b / fy) * fy / (0.85 * fc * b)
     c = a / beta1(fc); et = 0.003 * (d - c) / c
@@ -277,12 +315,35 @@ def flexure(Mu, b, d, fc, fy, h=None, min_rule='beam'):
                  else "مقطع مفرد التسليح")
     return r
 
-def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0):
-    """Vu kN. ACI 318-19 ch.22 (simplified Vc, Av>=Av,min)."""
+def lambda_s(d):
+    """معامل أثر الحجم λs — ACI 318-19 المادة 22.5.5.1.3:
+        λs = √( 2 / (1 + d/250) ) ≤ 1.0
+    يُطبَّق حين تكون الأساور أقل من الحد الأدنى (بلاطات وأسس غالباً).
+    كان مفقوداً، فكانت مقاومة قص البلاطات والأسس السميكة تُحسب أعلى من الكودية."""
+    return min(1.0, math.sqrt(2.0 / (1.0 + d / 250.0)))
+
+def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0,
+          rho_w=None, Nu=0.0, Ag=None, min_stirrups=True):
+    """قص باتجاه واحد — ACI 318-19 جدول 22.5.5.1.
+
+    مع أساور بالحد الأدنى فأكثر:  Vc = [0.17·λ·√f'c + Nu/(6Ag)]·bw·d
+    وبدونها (بلاطة أو أساس):      Vc = [0.66·λs·λ·ρw^(1/3)·√f'c + Nu/(6Ag)]·bw·d
+    مع λs معامل أثر الحجم و Vc ≤ 0.42·λ·√f'c·bw·d (حدّ 22.5.5.1.1)."""
     Vu = abs(Vu); phi = 0.75
-    Vc = 0.17 * lam * math.sqrt(fc) * bw * d / 1000.0          # kN
+    axial = (Nu / (6.0 * Ag)) if (Ag and Ag > 0) else 0.0      # MPa (+ ضغط)
+    axial = max(axial, -0.17 * lam * math.sqrt(fc))            # لا يتجاوز الشدّ الإلغاء
+    if min_stirrups:
+        vc = 0.17 * lam * math.sqrt(fc) + axial
+        ls = 1.0
+    else:
+        ls = lambda_s(d)
+        rw = max(0.0025, min(0.02, rho_w if rho_w else 0.01))
+        vc = 0.66 * ls * lam * (rw ** (1.0 / 3.0)) * math.sqrt(fc) + axial
+    vc = max(0.0, min(vc, 0.42 * lam * math.sqrt(fc)))         # ACI 22.5.5.1.1
+    Vc = vc * bw * d / 1000.0                                  # kN
     Vsmax = 0.66 * math.sqrt(fc) * bw * d / 1000.0
-    r = dict(Vu=Vu, Vc=Vc, phiVc=phi * Vc, ok=True)
+    r = dict(Vu=Vu, Vc=Vc, phiVc=phi * Vc, ok=True, lambda_s=ls, vc=vc,
+             clause='ACI 318-19 جدول 22.5.5.1' + ('' if min_stirrups else ' (بلا أساور — بأثر الحجم λs)'))
     Av = legs * ab(db_stirrup)
     if Vu <= 0.5 * phi * Vc:
         r.update(case="لا يحتاج أساور (يوضع الحد الأدنى)", Vs=0.0)
@@ -378,12 +439,87 @@ def punching(Vu, c1, c2, d, fc, pos='interior', lam=1.0):
                 Vu=Vu, ratio=r, ok=r <= 1.0, rec=rec,
                 govern=('0.33√f\'c' if vc == v1 else ('0.17(1+2/β)√f\'c' if vc == v2 else '0.083(2+αs·d/b0)√f\'c')))
 
-def dev_length(db, fc, fy, top=False, epoxy=False, lam=1.0):
-    pt = 1.3 if top else 1.0; pe = 1.5 if epoxy else 1.0
-    ps = 0.8 if db <= 20 else 1.0
-    cb_ktr = 1.5
-    ld = (fy * pt * pe * ps / (1.1 * lam * math.sqrt(fc) * cb_ktr)) * db
-    return max(ld, 300.0)
+def psi_g(fy):
+    """معامل الإجهاد ψg — ACI 318-19 جدول 25.4.2.5.
+    كان مفقوداً فكان الحديد عالي الإجهاد (520 · 550 · 690) يُنشر أقصر مما يجب."""
+    if fy <= 420.0:
+        return 1.0
+    if fy <= 550.0:
+        return 1.15
+    return 1.3
+
+def dev_length(db, fc, fy, top=False, epoxy=False, lam=1.0,
+               cover=40.0, spacing=None, Atr=0.0, s_tr=0.0, n_bars_tr=1,
+               excess=1.0, detail=False):
+    """طول النشر بالشدّ ld — ACI 318-19 المعادلة 25.4.2.4(a):
+
+        ld = [ fy·ψt·ψe·ψs·ψg / (1.1·λ·√f'c·((cb+Ktr)/db)) ] · db   ≥ 300 مم
+
+    المعاملات كلها من جدول 25.4.2.5:
+      ψt = 1.3 إذا صُبّ تحت السيخ أكثر من 300 مم خرسانة طازجة (حديد علوي)
+      ψe = 1.5 مطلي إيبوكسي بغطاء < 3db أو خلوص < 6db · 1.2 مطلي غير ذلك · 1.0 غير مطلي
+      حاصل ψt·ψe ≤ 1.7 (حدّ 25.4.2.5) — كان مفقوداً
+      ψs = 0.8 لـ Ø20 فأصغر · 1.0 لما فوقها
+      ψg = من psi_g أعلاه — كان مفقوداً كلياً
+      (cb+Ktr)/db ≤ 2.5 (حدّ 25.4.2.4) — وتُحسب cb وKtr فعلاً لا تُفترض
+    و`excess` = As المطلوب ÷ As المنفَّذ (25.4.10.1) ولا يُستعمل بالوصلات (25.5.2.1)."""
+    pt = 1.3 if top else 1.0
+    pe = 1.5 if epoxy else 1.0
+    if pt * pe > 1.7:                                   # ACI 25.4.2.5
+        pe = 1.7 / pt
+    ps = 0.8 if db <= 20.0 else 1.0
+    pg = psi_g(fy)
+    # cb = الأصغر من: الغطاء لمركز السيخ · نصف المسافة بين مركزي سيخين
+    cb = cover + db / 2.0
+    if spacing:
+        cb = min(cb, spacing / 2.0)
+    Ktr = (40.0 * Atr / (s_tr * n_bars_tr)) if (s_tr > 0 and n_bars_tr > 0) else 0.0
+    conf = min(2.5, (cb + Ktr) / db)                    # ACI 25.4.2.4
+    ld = (fy * pt * pe * ps * pg / (1.1 * lam * math.sqrt(fc) * conf)) * db
+    ld = max(ld * max(0.0, min(1.0, excess)), 300.0)
+    if not detail:
+        return ld
+    return dict(ld=ld, psi_t=pt, psi_e=pe, psi_s=ps, psi_g=pg, cb=cb, Ktr=Ktr,
+                conf=conf, ratio_db=ld / db, clause='ACI 318-19 (25.4.2.4a)',
+                note='(cb+Ktr)/db = %.2f (بحدّ 2.5) · ψt·ψe = %.2f (بحدّ 1.7)' % (conf, pt * pe))
+
+def hook_dev(db, fc, fy, epoxy=False, lam=1.0, confined=False, inside_col=False,
+             excess=1.0, detail=False):
+    """طول نشر السيخ **المعكوف** ldh — كان مفقوداً كلياً، وهو الحاكم عند
+    المسند الطرفي حيث لا يوجد طول مستقيم كافٍ لنشر حديد الجسر داخل العمود.
+
+    ACI 318-19 المعادلة 25.4.3.1(a):
+        ldh = [ fy·ψe·ψr·ψo·ψc / (23·λ·√f'c) ] · db^1.5   ≥ max(8db , 150 مم)
+      ψe = 1.2 مطلي · 1.0 غير مطلي
+      ψr = 1.0 مع حديد تطويق وفق 25.4.3.2 · 1.6 بدونه
+      ψo = 1.0 داخل العمود بغطاء جانبي ≥ 65 مم · 1.25 غير ذلك
+
+    ويُحسب معه طول 318-14 (0.24·fy·db/(λ√f'c)) ويُؤخذ **الأكبر** تحفّظاً،
+    لأن معادلة 2019 تعطي أقصر للأقطار الصغيرة وأطول للكبيرة، والفرق بينهما
+    ليس بالمهمل — والتحفّظ هنا سلامة لا كلفة تُذكر."""
+    pe = 1.2 if epoxy else 1.0
+    pr = 1.0 if confined else 1.6
+    po = 1.0 if inside_col else 1.25
+    l19 = (fy * pe * pr * po / (23.0 * lam * math.sqrt(fc))) * (db ** 1.5)
+    l14 = 0.24 * fy * pe * db / (lam * math.sqrt(fc))
+    ldh = max(l19, l14) * max(0.0, min(1.0, excess))
+    ldh = max(ldh, 8.0 * db, 150.0)
+    if not detail:
+        return ldh
+    return dict(ldh=ldh, aci19=l19, aci14=l14, psi_e=pe, psi_r=pr, psi_o=po,
+                govern='ACI 318-19 (25.4.3.1a)' if l19 >= l14 else 'ACI 318-14 (12.5.2) — أكبر فأُخذ',
+                clause='ACI 318-19 25.4.3.1', ratio_db=ldh / db,
+                note='الحدّ الأدنى max(8db , 150 مم) = %d مم' % int(max(8 * db, 150.0)))
+
+def dev_compression(db, fc, fy, lam=1.0, detail=False):
+    """طول النشر بالضغط ldc — ACI 318-19 المادة 25.4.9.2:
+        ldc = الأكبر من [ 0.24·fy·ψr·db/(λ√f'c) , 0.043·fy·ψr·db ] ≥ 200 مم"""
+    a = 0.24 * fy * db / (lam * math.sqrt(fc))
+    b = 0.043 * fy * db
+    ldc = max(a, b, 200.0)
+    if not detail:
+        return ldc
+    return dict(ldc=ldc, a=a, b=b, clause='ACI 318-19 25.4.9.2', ratio_db=ldc / db)
 
 # --------------------------- column interaction ----------------------------
 def col_layers(b, h, nb, nh, db, cover=40, ds=10):

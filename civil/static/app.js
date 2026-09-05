@@ -1054,6 +1054,35 @@ const TABS = {
   },
   /* ---------- الإنشائيات والتجربة: اختيار بالضغط على المجسم ---------- */
   lab: () => { LAB_SEL = null; LAB_MULTI = []; renderLab(null); },
+  /* ---------- تقرير مطابقة ACI 318-19 ---------- */
+  aci: async () => {
+    const r = await post('aci', WZ);
+    const IC = { ok: '✓', warn: '⚠', fail: '✗', na: '—', review: '?' };
+    const CL = { ok: 'var(--ok)', warn: '#fbbf24', fail: '#f87171',
+                 na: 'var(--mut)', review: '#c084fc' };
+    $('#wp_aci').innerHTML = `
+      <div class="grid g4">
+        ${kpi('بنود مفحوصة', r.total)}
+        ${kpi('مطابق', r.counts.ok, 'ok')}
+        ${kpi('قريب من الحدّ', r.counts.warn, r.counts.warn ? 'warn' : 'ok')}
+        ${kpi('مخالف', r.counts.fail, r.counts.fail ? 'bad' : 'ok')}
+      </div>
+      <div class="rec" style="margin-top:12px"><h3>📕 ${r.code} — ${r.verdict}</h3>
+        <div style="font-size:12.5px;color:var(--mut);line-height:1.8">${r.note}</div></div>
+      ${r.sections.map(s2 => `
+        <div class="card" style="margin-top:12px"><h3>${s2.name} (${s2.rows.length} بند)</h3>
+          ${table(['', 'البند', 'الفحص', 'القيمة المحسوبة', 'الحدّ الكودي', 'ملاحظة'],
+            s2.rows.map(x => [
+              `<b style="color:${CL[x.state]};font-size:15px">${IC[x.state]}</b>`,
+              `<code style="color:var(--acc2)">${x.clause}</code>`,
+              x.title,
+              `<b style="color:${CL[x.state]}">${x.value}</b>`,
+              x.limit,
+              `<span style="font-size:11.5px;color:var(--mut)">${x.note || ''}</span>`]))}
+        </div>`).join('')}
+      <div class="note">الخريطة الكاملة لتطبيق الكود — أي بند مطبَّق وأين بالشيفرة
+        وبأي معادلة وما لم يُطبَّق بعد — بملف <code>ACI318.md</code> بجذر المشروع.</div>`;
+  },
   /* ---------- مخطط DWG/DXF ---------- */
   plan: () => renderPlan(),
 };
@@ -1672,12 +1701,14 @@ PAGES.wizard = {
         ويتنقل معك بين الطوابق من قائمة الطوابق.</div>
 
       <div class="wtabs" id="wtabs">
-        ${[['detail', '🧵 التسليح والتفاصيل'], ['xr', '🩻 الأشعة الإنشائية'],
+        ${[['detail', '🧵 التسليح والتفاصيل'], ['aci', '📕 مطابقة ACI 318-19'],
+           ['xr', '🩻 الأشعة الإنشائية'],
            ['slabs', '🧱 نوع السقف'], ['lab', '🧪 الإنشائيات والتجربة'],
            ['plan', '📐 المخطط (DWG)'], ['boq', '📋 الكميات والحديد']].map(([k, t], i) =>
           `<button data-t="${k}" class="${i ? '' : 'on'}" onclick="wtab('${k}')">${t}</button>`).join('')}
       </div>
       <div class="wpanel" data-t="detail">${detailPanel(r)}</div>
+      <div class="wpanel" data-t="aci" hidden><div id="wp_aci" class="note">جارٍ الفحص…</div></div>
       <div class="wpanel" data-t="xr" hidden><div id="wp_xr" class="note">جارٍ التحليل…</div></div>
       <div class="wpanel" data-t="slabs" hidden><div id="wp_slabs" class="note">جارٍ التحميل…</div></div>
       <div class="wpanel" data-t="lab" hidden><div id="wp_lab"></div></div>

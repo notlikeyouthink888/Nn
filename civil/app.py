@@ -13,6 +13,7 @@ import bbs as BBS
 import detail as DT
 import slabs as SL
 import plan as PL
+import aci as ACI
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, 'static')
@@ -70,6 +71,7 @@ ROUTES = {
     'project/delete': PJ.delete,
     'room': RM.room,
     'bbs': lambda p: BBS.schedule(p if 'model' in p else PJ.wizard(p)),
+    'aci': lambda p: ACI.report(p if 'model' in p else PJ.wizard(p)),
     # --- التفاصيل والتجربة وأنواع السقوف ---
     'lab': PJ.lab,
     'plan/parse': PL.analyze,

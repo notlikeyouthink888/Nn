@@ -64,9 +64,20 @@ def build(sp, removed=None):
         k = int(lat['floor'])
         if 1 <= k <= nf:
             f.load(nid[(ic, jc, k)], Fx=float(lat.get('Fx', 0.0)), Fy=float(lat.get('Fy', 0.0)))
-    if removed and tuple(removed) in ids:
-        f.members[ids[tuple(removed)]]['alive'] = False
+    # يقبل عنصراً واحداً أو قائمة عناصر — حذف عدة أعمدة معاً هو السيناريو
+    # الحقيقي (انفجار · اصطدام مركبة · حريق موضعي يطال أكثر من عمود)
+    for rm in _as_list(removed):
+        if tuple(rm) in ids:
+            f.members[ids[tuple(rm)]]['alive'] = False
     return f, ids, nid
+
+def _as_list(removed):
+    """يوحّد الشكل: عنصر واحد ['col',i,j,k] أو قائمة عناصر [[...],[...]]."""
+    if not removed:
+        return []
+    if isinstance(removed[0], (list, tuple)):
+        return [list(r) for r in removed if r]
+    return [list(removed)]
 
 # ---------------------------- فحوص المقاومة ----------------------------
 def capacities(sp):
@@ -177,8 +188,17 @@ def compare(sp):
             worst = row
     rows.sort(key=lambda r: -r['after'])
     fails = [r for r in rows if r['fail']]
-    kind = {'col': 'عمود', 'bx': 'جسر باتجاه X', 'by': 'جسر باتجاه Y'}.get(removed[0], removed[0])
-    summary = ['تم حذف %s عند المحور (%d, %d) بالطابق %d' % (kind, removed[1], removed[2], removed[3])]
+    KA = {'col': 'عمود', 'bx': 'جسر باتجاه X', 'by': 'جسر باتجاه Y'}
+    rml = _as_list(removed)
+    if len(rml) == 1:
+        r0 = rml[0]
+        summary = ['تم حذف %s عند المحور (%d, %d) بالطابق %d'
+                   % (KA.get(r0[0], r0[0]), r0[1], r0[2], r0[3])]
+    else:
+        summary = ['تم حذف %d عنصراً معاً: %s'
+                   % (len(rml), ' · '.join('%s (%d, %d) ط%d'
+                                           % (KA.get(r[0], r[0]), r[1], r[2], r[3])
+                                           for r in rml))]
     if not fails:
         summary.append('✓ المنشأ نجا: لا يوجد عنصر تجاوز مقاومته التصميمية — يوجد مسار بديل للأحمال')
     else:
@@ -194,7 +214,7 @@ def compare(sp):
     dmax = max([abs(x) for x in aft['drift']] or [0])
     summary.append('أقصى انزياح جانبي بعد الحذف %.1f مم (قبله %.1f مم)' % (
         dmax, max([abs(x) for x in base['drift']] or [0])))
-    return dict(base=base['res'], after=aft['res'], removed=list(removed), rows=rows[:60],
+    return dict(base=base['res'], after=aft['res'], removed=_as_list(removed), rows=rows[:60],
                 fails=len(fails), summary=summary, drift=aft['drift'], drift_before=base['drift'],
                 neq=aft['neq'], modes=[dict(k=a, name=b) for a, b in MODES],
                 note='المنهجية: حذف عنصر رئيسي وإعادة التحليل الفراغي لدراسة المسار البديل للأحمال '

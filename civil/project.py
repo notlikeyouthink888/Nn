@@ -11,6 +11,7 @@ import earth as W
 import detail as DT
 import slabs as SL
 import stairs as ST
+import plan as PL
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'projects')
 
@@ -413,6 +414,37 @@ def wizard(p):
     # شبكة/هيكل مأخوذ من مخطط DWG/DXF إن وُجد، وإلا يُولَّد من المساحة
     fo = p.get('frame_override')          # أعمدة وجسور بمواقعها الحقيقية من المخطط
     go = p.get('grid_override')
+    # أعمدة يضيفها المستخدم بيده من المجسم: تُدمج مع أعمدة المخطط (أو مع الشبكة
+    # التلقائية إن لم يكن هناك مخطط) ويُعاد بناء الهيكل كله — محاور وجسوراً —
+    # على المجموعة الجديدة، فالعمود المضاف يحمل فعلاً لا يُرسم فقط.
+    added = [a for a in (p.get('added_cols') or []) if a and a.get('x') is not None]
+    if added:
+        if fo and fo.get('nodes'):
+            base_cols = [dict(x=float(n['x']), y=float(n['y']),
+                              b=float(n.get('b') or 400), h=float(n.get('h') or 400),
+                              shape=n.get('shape') or 'rect', D=n.get('D'))
+                         for n in fo['nodes']]
+        else:
+            g0 = grid_from_area(fp)
+            base_cols = [dict(x=i * g0['sx'], y=j * g0['sy'], b=400.0, h=400.0,
+                              shape='rect', D=None)
+                         for i in range(g0['nx'] + 1) for j in range(g0['ny'] + 1)]
+        for a in added:
+            sh = a.get('shape') or 'rect'
+            bb_ = float(a.get('b') or a.get('D') or 400)
+            hh_ = float(a.get('h') or a.get('D') or bb_)
+            base_cols.append(dict(x=float(a['x']), y=float(a['y']), b=bb_, h=hh_,
+                                  shape=sh, D=(float(a['D']) if a.get('D') else None),
+                                  added=True))
+        base_cols.sort(key=lambda c: (c['y'], c['x']))
+        nf2 = PL.build_frame(base_cols)
+        if nf2:
+            for n in nf2['nodes']:
+                n['added'] = bool(base_cols[n['k']].get('added'))
+            fo = dict(nodes=nf2['nodes'], beams=nf2['beams'], lines=nf2['spans'],
+                      axes_x=nf2['axes_x'], axes_y=nf2['axes_y'],
+                      spans_x=None, spans_y=None,
+                      boundary=(fo or {}).get('boundary'))
     if fo and fo.get('nodes'):
         ax, ay = fo.get('axes_x') or [], fo.get('axes_y') or []
         xs = [n['x'] for n in fo['nodes']]; ys = [n['y'] for n in fo['nodes']]
@@ -482,10 +514,27 @@ def wizard(p):
     # مقطع العمود وشكله كما رسمهما المصمم بالمخطط: يُحترم ويُفحص، ولا يُفرض
     # مقطع أصغر مما يتطلبه الحمل. الأشكال: مستطيل · دائري (O) · زاوية L · تي T.
     col_shape, col_D, col_mix, col_note = 'rect', None, {}, ''
-    if fo and fo.get('nodes'):
+    if fo and fo.get('nodes'):                    # مزيج الأشكال بالمخطط للعرض دائماً
         for n in fo['nodes']:
             k = n.get('shape') or 'rect'
             col_mix[k] = col_mix.get(k, 0) + 1
+    # اختيار المستخدم لشكل العمود يسبق ما يُستنتج من المخطط
+    want = p.get('col_shape') or 'auto'
+    if want in ('circ', 'L', 'T', 'sq', 'rect'):
+        col_shape = 'rect' if want in ('sq', 'rect') else want
+        if want == 'sq':
+            cb = ch = max(cb, ch)
+        if want == 'circ':
+            # القطر الذي يعطي مساحة المستطيل نفسها، مقرَّباً لأعلى 50 مم
+            col_D = float(p.get('col_D') or 0) or \
+                math.ceil(math.sqrt(4.0 * cb * ch / math.pi) / 50.0) * 50.0
+            col_D = max(col_D, math.ceil(math.sqrt(4.0 * Ag / math.pi) / 50.0) * 50.0)
+            cb = ch = col_D
+            col_note = 'شكل العمود «دائري» باختيارك — القطر Ø%d مم يعطي مساحة تكفي الحمل.' % col_D
+        else:
+            col_note = 'شكل العمود «%s» باختيارك.' % ({'rect': 'مستطيل', 'sq': 'مربع',
+                                                       'L': 'زاوية L', 'T': 'تي T'}[want])
+    elif col_mix:
         col_shape = max(col_mix, key=col_mix.get)
         bs = sorted(float(n['b']) for n in fo['nodes'] if n.get('b'))
         hh = sorted(float(n['h']) for n in fo['nodes'] if n.get('h'))
@@ -727,7 +776,7 @@ def wizard(p):
     model = dict(
         floors=floors, story_h=hs, levels=[k * hs for k in range(floors + 1)],
         stock=E.BAR_STOCK, laps=laps,
-        col=dict(b=cb, h=ch, rebar=col_rebar),
+        col=dict(b=cb, h=ch, shape=col_shape, D=col_D, rebar=col_rebar),
         beams=dict(x=dict(b=bx['section']['b'], h=bx['section']['h'], rebar=bx['rebar'],
                           env=envelope(bx), span=g['sx'], n=g['nx'], detail=dx,
                           d_long=min(d['d_long'] for d in bx['design']),
@@ -778,16 +827,51 @@ def wizard(p):
                 grid=g, footprint=fp, loads=loads, total=total, Pmax=Pmax, Pumax=Pumax,
                 floor=dict(D=D, L=live, Droof=Droof, slab=t_slab, items=fl['items'],
                            beams=beams_allow, slab_sw=slab_sw, slab_type=slab_kind),
-                col=dict(b=cb, h=ch, sw=col_sw, rebar=col_rebar, Mu=Mcol, kinds=col_kinds,
+                col=dict(b=cb, h=ch, shape=col_shape, D=col_D, sw=col_sw,
+                         rebar=col_rebar, Mu=Mcol, kinds=col_kinds,
                          dowels=dow),
                 slab=slab, beams=dict(x=bx, y=by), detail=model['detail'],
                 frame=fo, stairs=stair_pkg,
                 advisor=adv, alts=alts, recommended=rec, design=design, model=model,
                 punching=punch, chairs=dict(slab=ch_slab, found=ch_found), laps=laps,
-                earth=ew, boq=dict(rows=rows, total=grand), seismic=seis,
+                earth=ew, soil=soil_profile(soil_name, qa, soil_kind, ew['levels'],
+                                            Df, p.get('gwt')),
+                boq=dict(rows=rows, total=grand), seismic=seis,
                 summary=summary, span_max=span_max, span_min=span_min)
 
 # -------------------- مواصفات المختبر (الإنشائيات والتجربة) --------------------
+SOIL_LOOK = {                       # لون وملمس تقريبي لكل صنف تربة بالمجسم
+    'rock':  ('#6b7280', 'صخر', 'كتل صخرية متماسكة — أعلى تحمّل وأصعب حفر'),
+    'sand':  ('#c9a86a', 'رملية', 'حبيبات مفكّكة — تصريف جيد وهبوط فوري'),
+    'clay':  ('#8d6b52', 'طينية', 'متماسكة — هبوط بالزمن (تضاغط) وتنتفخ بالماء'),
+    'fill':  ('#7a6a5c', 'ردم', 'غير صالحة للتأسيس قبل الإزالة أو الدك الهندسي'),
+}
+
+def soil_profile(soil_name, qa, kind, levels, Df, gwt=None):
+    """مقطع التربة تحت الحفر كما يُرسم بالمجسم: الطبقة الحاملة تحت الأساس،
+    وطبقة أضعف فوقها إن وُجد ردم قديم، ومنسوب الماء الجوفي إن أُدخل.
+
+    الغاية عرضية-هندسية: يرى المستخدم على أي طبقة يجلس أساسه وكم عمق الردم
+    (الجلمود والسبيس) فوقها — لا رسم جيولوجي دقيق."""
+    col, nm, note = SOIL_LOOK.get(kind, SOIL_LOOK['clay'])
+    fb = levels['found_bot']; gr = levels['ground']; ex = levels['existing']
+    beds = []
+    if ex < gr - 1e-6:                       # ردم قديم مزال — يُعرض كطبقة ضعيفة
+        beds.append(dict(name='ردم قديم مُزال (غير صالح للتأسيس)', top=gr, bottom=ex,
+                         color='#6f6152', kind='fill', qa=0.0,
+                         note='يُزال بالكامل ويُستبدل بردم هندسي مدكوك'))
+    bearing_top = min(ex, fb)
+    beds.append(dict(name='التربة الحاملة — %s (%s)' % (soil_name, nm),
+                     top=bearing_top, bottom=fb - max(2.0 * Df, 3.0),
+                     color=col, kind=kind, qa=qa, note=note))
+    beds.append(dict(name='طبقة أعمق (للاستئناس)', top=fb - max(2.0 * Df, 3.0),
+                     bottom=fb - max(2.0 * Df, 3.0) - 2.5,
+                     color='#5f5344', kind=kind, qa=qa * 1.2,
+                     note='تُفحص بالجسّات إن كان الحمل كبيراً أو الأساس حصيرة'))
+    return dict(name=soil_name, kind=kind, kind_ar=nm, qa=qa, color=col, note=note,
+                beds=beds, gwt=(float(gwt) if gwt not in (None, '', 0) else None),
+                found_bot=fb, ground=gr, existing=ex, Df=Df)
+
 def lab_spec(R):
     """يحوّل ناتج المعالج إلى مواصفات النموذج الفراغي في lab.build."""
     g = R['grid']; m = R['model']; inp = R['input']
@@ -812,9 +896,11 @@ def lab(p):
     import lab as LAB
     R = p if 'model' in p else wizard(p)
     sp = lab_spec(R)
-    rm = p.get('remove')
+    rm = p.get('removes') or p.get('remove')
     if rm:
-        sp['remove'] = [rm[0], int(rm[1]), int(rm[2]), int(rm[3])]
+        one = not isinstance(rm[0], (list, tuple))
+        lst = [rm] if one else [r for r in rm if r]
+        sp['remove'] = [[r[0], int(r[1]), int(r[2]), int(r[3])] for r in lst]
     out = LAB.compare(sp)
     bm = max((v['ratio'] for v in out['base'].values()), default=0.0)
     # المفاتيح tuples — تُحوَّل لنصوص لتصلح بالـ JSON

@@ -34,15 +34,19 @@ function Viewer3D(el, M, onPick) {
   gh.position.y = ROOM ? fb - 0.2 : lv.existing - 0.02; sc.add(gh);
 
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
-  const GN = ['layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
+  const GN = ['ghost', 'soil', 'stress', 'layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
               'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl', 'human', 'plan'];
   const G = {}; GN.forEach(k => { G[k] = new T.Group(); G[k].name = k; sc.add(G[k]); });
   G.moments.visible = G.punch.visible = G.defl.visible = G.rebar.visible = G.extra.visible =
-    G.chairs.visible = G.human.visible = G.plan.visible = false;
+    G.chairs.visible = G.human.visible = G.plan.visible = G.ghost.visible =
+    G.soil.visible = G.stress.visible = false;
   const on = {}; GN.forEach(k => on[k] = 1);
   const picks = [];
   const px = v => v - L / 2, pz = v => -(v - B / 2);
   const SHAPE_AR = { rect: 'مستطيل', circ: 'دائري (O)', L: 'زاوية (L)', T: 'تي (T)' };
+  /* تحويل إحداثيات المشروع إلى المشهد: بالشبكة التلقائية px/pz، وبهيكل المخطط
+     يُصفَّر على مركز الأعمدة — وشبح العمود المضاف يستعمل التحويل الجاري نفسه. */
+  let MAPX = px, MAPZ = pz;
   const xs = [], ys = [];
   for (let i = 0; i <= g.nx; i++) xs.push(i * g.sx);
   for (let j = 0; j <= g.ny; j++) ys.push(j * g.sy);
@@ -131,14 +135,20 @@ function Viewer3D(el, M, onPick) {
     }
     for (let s = 0; s < nf; s++) {
       const z0 = s === 0 ? ft : s * hs, z1 = (s + 1) * hs;
-      box(G.columns, cb, z1 - z0, ch, X, (z0 + z1) / 2, Z, 0x8ea6c4, 1,
+      const cShape = l.shape || md.col.shape || 'rect';
+      const cD = (l.D || md.col.D || md.col.b) / 1000;
+      const drawCol = cShape === 'circ' ? cyl : box;
+      const cargs = cShape === 'circ' ? [cD, z1 - z0] : [cb, z1 - z0, ch];
+      drawCol(G.columns, ...cargs, X, (z0 + z1) / 2, Z, 0x8ea6c4, 1,
         { title: 'عمود C' + (k + 1) + (ROOM ? '' : ' — طابق ' + (s + 1)), kind: 'column',
           grp: 'columns', floor: s + 1,
           gk: ROOM ? null : 'col|' + l.i + '|' + l.j + '|' + (s + 1),
-          rows: [['الموقع', l.kind || '—'],
+          rows: [['الشكل', SHAPE_AR[cShape] || 'مستطيل'],
+            ['المقطع', cShape === 'circ' ? ('Ø' + Math.round(cD * 1000) + ' مم')
+              : (Math.round(cb * 1000) + ' × ' + Math.round(ch * 1000) + ' مم')],
+            ['الموقع', l.kind || '—'],
             ['استمرارية الجسور', l.cont_x === undefined ? '—' :
               ('X ' + (l.cont_x ? 'مستمر' : 'طرفي') + ' · Y ' + (l.cont_y ? 'مستمر' : 'طرفي'))],
-            ['المقطع', md.col.b + ' × ' + md.col.h + ' مم'],
             ['الارتفاع', (z1 - z0).toFixed(2) + ' م'],
             ['التسليح', md.col.rebar.label], ['الأتاري', md.col.rebar.tie_label],
             ['التطويق', md.col.rebar.conf_label || '—'],
@@ -284,6 +294,7 @@ function Viewer3D(el, M, onPick) {
       const ox = (Math.min(...FR.nodes.map(n => n.x)) + Math.max(...FR.nodes.map(n => n.x))) / 2;
       const oy = (Math.min(...FR.nodes.map(n => n.y)) + Math.max(...FR.nodes.map(n => n.y))) / 2;
       const PX = v => v - ox, PZ = v => -(v - oy);
+      MAPX = PX; MAPZ = PZ;                  // نفس التحويل يستعمله شبح العمود المضاف
       for (let s = 1; s <= nf; s++) {
         const z = s * hs;
         FR.nodes.forEach((n, k) => {
@@ -1051,6 +1062,133 @@ function Viewer3D(el, M, onPick) {
     G.plan.children.forEach(o => { if (o.material) o.material.opacity = planX.op; });
   }
 
+  /* ============ التربة الطبيعية وطبقات الردم بشكل أقرب للواقع ============
+     تحت الحفر تُرسم أسرّة التربة بألوانها حسب صنفها، ويُرسم منسوب الماء الجوفي
+     كسطح شفاف. وطبقات الجلمود والسبيس تُكسى بحبيبات بأحجامها الحقيقية:
+     الجلمود حصى خشن 4–10 سم والسبيس ناعم 1–3 سم — فيُفرَّق بينهما بالنظر. */
+  let soilBuilt = false;
+  function buildSoil() {
+    if (soilBuilt) return; soilBuilt = true;
+    const so = M.soil;
+    const w = L + 3.0, d = B + 3.0;
+    if (so && so.beds) {
+      so.beds.forEach(bd => {
+        const t = Math.max(.05, bd.top - bd.bottom);
+        box(G.soil, w, t, d, 0, (bd.top + bd.bottom) / 2, 0, new T.Color(bd.color), .97,
+          { title: bd.name, kind: 'soil', grp: 'soil',
+            rows: [['المنسوب', bd.bottom.toFixed(2) + ' → ' + bd.top.toFixed(2) + ' م'],
+              ['السماكة', t.toFixed(2) + ' م'], ['الصنف', bd.kind],
+              ['تحمّل تقديري', bd.qa ? bd.qa.toFixed(0) + ' kPa' : '—'],
+              ['ملاحظة', bd.note || '—']] });
+      });
+      if (so.gwt !== null && so.gwt !== undefined) {
+        const wm = new T.Mesh(new T.BoxGeometry(w + .6, .06, d + .6),
+          new T.MeshLambertMaterial({ color: 0x2f9bd8, transparent: true, opacity: .45,
+            clippingPlanes: [clip] }));
+        wm.position.set(0, so.gwt, 0);
+        wm.userData = { title: '💧 منسوب الماء الجوفي', kind: 'gwt', grp: 'soil',
+          rows: [['المنسوب', so.gwt.toFixed(2) + ' م من البنج مارك'],
+            ['الأثر', 'يرفع الضغط على الأساس ويقلّل تحمّل التربة — يحتاج نزح أثناء الحفر وعزلاً'],
+            ['العمق تحت قاع الأساس', (so.found_bot - so.gwt).toFixed(2) + ' م']] };
+        G.soil.add(wm); picks.push(wm);
+      }
+    }
+    // حبيبات الردم: الجلمود خشن والسبيس ناعم — نسخ مُنمذجة (InstancedMesh)
+    st.forEach(sl => {
+      if (sl.kind !== 'boulder' && sl.kind !== 'subbase') return;
+      const coarse = sl.kind === 'boulder';
+      const r0 = coarse ? .055 : .018;
+      const per = coarse ? 26 : 46;                     // حبيبة لكل متر مربع
+      const n = Math.min(2200, Math.round((L + .4) * (B + .4) * per * Math.max(1, sl.t / .25)));
+      const geo = new T.SphereGeometry(r0, coarse ? 7 : 5, coarse ? 5 : 4);
+      const im = new T.InstancedMesh(geo, new T.MeshLambertMaterial({
+        color: new T.Color(sl.color).multiplyScalar(coarse ? .8 : 1.05),
+        clippingPlanes: [clip] }), n);
+      const m4 = new T.Matrix4(), q = new T.Quaternion(), sc3 = new T.Vector3();
+      for (let i = 0; i < n; i++) {
+        const rx = (Math.random() - .5) * (L + .3), rz = (Math.random() - .5) * (B + .3);
+        const ry = sl.bottom + Math.random() * sl.t;
+        const k2 = .7 + Math.random() * .9;
+        sc3.set(k2, k2 * (.65 + Math.random() * .5), k2);
+        q.setFromEuler(new T.Euler(Math.random() * 3, Math.random() * 3, Math.random() * 3));
+        m4.compose(new T.Vector3(rx, ry, rz), q, sc3);
+        im.setMatrixAt(i, m4);
+      }
+      im.userData = { title: sl.name + ' — حبيبات بحجمها الحقيقي', kind: 'grain', grp: 'soil',
+        rows: [['نوع الحبيبة', coarse ? 'جلمود/حصى خشن 4–10 سم' : 'سبيس ناعم 1–3 سم'],
+          ['السماكة', sl.t.toFixed(2) + ' م'],
+          ['عدد الطبقات', sl.layers ? sl.layers + ' × ' + (sl.layer_t * 100).toFixed(0) + ' سم' : '—'],
+          ['الحجم', sl.volume.toFixed(1) + ' م³'],
+          ['المشترى سائباً', sl.buy ? sl.buy.toFixed(1) + ' م³' : '—']] };
+      G.soil.add(im); picks.push(im);
+    });
+  }
+
+  /* ============ مناطق الشد والضغط على العناصر الحاملة ============
+     الجسر المستمر: ليفه السفلي بالشدّ وسط البحر وعلويه بالشدّ فوق المسند،
+     والمنطقة المقابلة بالضغط — وهذا بالضبط سبب مكان الحديد أعلى وأسفل.
+     تُرسم شرائح ملوّنة على وجهَي كل جسر: أحمر شدّ · أزرق ضغط. */
+  let stressBuilt = false;
+  function buildStress() {
+    if (stressBuilt) return; stressBuilt = true;
+    const RED = 0xe8443a, BLU = 0x2f6fb8;
+    const skin = (w, h, d, x, y, z, col, info) => {
+      const m = new T.Mesh(new T.BoxGeometry(w, h, d), new T.MeshLambertMaterial({
+        color: col, transparent: true, opacity: .78, clippingPlanes: [clip], depthWrite: false }));
+      m.position.set(x, y, z); m.userData = info || {}; G.stress.add(m);
+      if (info) picks.push(m); return m;
+    };
+    const bh = md.beams.x.h / 1000, bw = md.beams.x.b / 1000, tSk = Math.max(.05, bh * .22);
+    const rowsFor = (zone, where) => [['المنطقة', zone],
+      ['الموقع', where], ['الحديد المناسب', zone === 'شدّ' ? 'الحديد يُوضع هنا — الخرسانة لا تقاوم الشدّ'
+        : 'الخرسانة تقاوم الضغط — الحديد للتطويق ومنع الانبعاج'],
+      ['القاعدة', 'العزم الموجب يشدّ الليف السفلي · العزم السالب يشدّ الليف العلوي']];
+    const mkBeam = (x1, z1, x2, z2, ytop) => {
+      const dx = x2 - x1, dz = z2 - z1, len = Math.hypot(dx, dz);
+      if (len < .4) return;
+      const cx = (x1 + x2) / 2, cz = (z1 + z2) / 2;
+      const ang = Math.atan2(dz, dx);
+      const mid = Math.max(.3, len * .5), end = Math.max(.3, len * .25);
+      const put = (frac, off, ln, col, zone, where) => {
+        const t2 = frac, ox2 = cx + Math.cos(ang) * (t2 * len), oz2 = cz + Math.sin(ang) * (t2 * len);
+        const m = skin(ln, tSk, bw * .98, ox2, ytop + off, oz2, col, {
+          title: (zone === 'شدّ' ? '🔴 شدّ' : '🔵 ضغط') + ' — ' + where, kind: 'stress',
+          grp: 'stress', rows: rowsFor(zone, where) });
+        m.rotation.y = -ang;
+      };
+      // وسط البحر: سفلي شدّ · علوي ضغط
+      put(0, -bh + tSk / 2, mid, RED, 'شدّ', 'الليف السفلي وسط البحر');
+      put(0, -tSk / 2, mid, BLU, 'ضغط', 'الليف العلوي وسط البحر');
+      // عند المسندين: علوي شدّ · سفلي ضغط
+      [-.5 + .12, .5 - .12].forEach(f => {
+        put(f, -tSk / 2, end, RED, 'شدّ', 'الليف العلوي فوق المسند');
+        put(f, -bh + tSk / 2, end, BLU, 'ضغط', 'الليف السفلي فوق المسند');
+      });
+    };
+    G.beams.children.forEach(o => {
+      const u = o.userData;
+      if (!u || u.kind !== 'beam' || !o.geometry || !o.geometry.parameters) return;
+      const pr = o.geometry.parameters, horiz = pr.width >= pr.depth;
+      const ln = horiz ? pr.width : pr.depth;
+      const x1 = o.position.x - (horiz ? ln / 2 : 0), z1 = o.position.z - (horiz ? 0 : ln / 2);
+      const x2 = o.position.x + (horiz ? ln / 2 : 0), z2 = o.position.z + (horiz ? 0 : ln / 2);
+      mkBeam(x1, z1, x2, z2, o.position.y + pr.height / 2);
+    });
+    // الأعمدة: ضغط بالكامل مع شدّ محتمل بوجه واحد تحت الحمل الجانبي
+    G.columns.children.forEach(o => {
+      if (!o.userData || o.userData.kind !== 'column' || !o.geometry) return;
+      const pr = o.geometry.parameters || {};
+      const w2 = (pr.width || (pr.radiusTop * 2) || .4) * 1.03;
+      const d2 = (pr.depth || (pr.radiusTop * 2) || .4) * 1.03;
+      const h2 = (pr.height || 3) * .98;
+      skin(w2, h2, d2, o.position.x, o.position.y, o.position.z, BLU,
+        { title: '🔵 ضغط — العمود', kind: 'stress', grp: 'stress',
+          rows: rowsFor('ضغط', 'جسم العمود كله')
+            .concat([['تنبيه', 'تحت الزلزال ينقلب الوجهان: وجه بالشدّ ووجه بالضغط — '
+              + 'ولهذا يُسلَّح العمود بأربعة أوجه ويُطوَّق عند طرفيه']]) });
+    });
+  }
+
   /* ==================== إنسان بطول 1.85 م للمقياس ==================== */
   let humanBuilt = false;
   function buildHuman() {
@@ -1104,7 +1242,7 @@ function Viewer3D(el, M, onPick) {
     [G.columns, G.beams].forEach(grp => grp.children.forEach(o => {
       const k = key(o); if (!k || !o.material) return;
       if (o.userData._c0 === undefined) o.userData._c0 = o.material.color.getHex();
-      if (removed && k === removed) { o.visible = false; o.userData._gone = true; return; }
+      if (removed && removed.indexOf(k) >= 0) { o.visible = false; o.userData._gone = true; return; }
       o.userData._gone = false;
       const r = res && res[k];
       if (!res) { o.material.color.setHex(o.userData._c0); o.userData.labRows = null; return; }
@@ -1205,6 +1343,13 @@ function Viewer3D(el, M, onPick) {
       else if (G.human.visible) humanTo(ROOM ? fb : (M.earth ? lv.existing : fb));
     },
     human: v => { if (v) buildHuman(); G.human.visible = !!v; return !!v; },
+    /* التربة الطبيعية تحت الحفر + الماء الجوفي + حبيبات الجلمود والسبيس */
+    soil: v => { if (v) buildSoil(); G.soil.visible = !!v; applyVis();
+      return { on: !!v, beds: (M.soil && M.soil.beds || []).length,
+               grains: G.soil.children.filter(o => o.isInstancedMesh).length }; },
+    /* مناطق الشدّ والضغط على الجسور والأعمدة */
+    stress: v => { if (v) buildStress(); G.stress.visible = !!v; applyVis();
+      return { on: !!v, n: G.stress.children.length }; },
     /* خلفية المخطط: بناء · إظهار · تحريك ومقياس ودوران ومنسوب وشفافية */
     planBuild: d => buildPlan(d),
     plan: v => { G.plan.visible = !!v && G.plan.children.length > 0; return G.plan.visible; },
@@ -1229,13 +1374,55 @@ function Viewer3D(el, M, onPick) {
       zoomTo(hit);
       return u.title;
     },
+    /* removed = قائمة عناصر محذوفة (عنصر واحد أو أكثر) */
     lab: (rows, removed) => {
       if (!rows) return labApply(null, null);
       const res = {};
       rows.forEach(r => { res[r.key.join('|')] = r; });
-      labApply(res, removed ? removed.join('|') : null);
+      const rm = !removed ? null
+        : (Array.isArray(removed[0]) ? removed : [removed]).map(r => r.join('|'));
+      labApply(res, rm);
+    },
+    /* إبراز العناصر المرشّحة للحذف قبل تنفيذه (تحديد متعدد) */
+    labMark: keys => {
+      const set = new Set(keys || []);
+      [G.columns, G.beams].forEach(grp => grp.children.forEach(o => {
+        const u = o.userData || {};
+        if (!u.gk || !o.material) return;
+        if (u._c0 === undefined) u._c0 = o.material.color.getHex();
+        if (set.has(u.gk)) { o.material.color.setHex(0xf59e0b); u._marked = true; }
+        else if (u._marked) { o.material.color.setHex(u._c0); u._marked = false; }
+      }));
+      return set.size;
     },
     clip: v => { clip.constant = v; },
+    /* شبح العمود المزمع إضافته: يتحرك مع مؤشّري X وY فترى مكانه قبل تثبيته */
+    ghost: o => {
+      while (G.ghost.children.length) {
+        const c = G.ghost.children.pop();
+        if (c.geometry) c.geometry.dispose();
+      }
+      if (!o) { G.ghost.visible = false; return null; }
+      const X = MAPX(o.x), Z = MAPZ(o.y);
+      const h = nf * hs - ft, yc = ft + h / 2;
+      const gmat = new T.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: .40,
+        depthWrite: false, clippingPlanes: [clip] });
+      const geo = o.shape === 'circ'
+        ? new T.CylinderGeometry((o.D || 400) / 2000, (o.D || 400) / 2000, h, 20)
+        : new T.BoxGeometry((o.b || 400) / 1000, h, (o.h || o.b || 400) / 1000);
+      const m = new T.Mesh(geo, gmat);
+      m.position.set(X, yc, Z); G.ghost.add(m);
+      const e = new T.LineSegments(new T.EdgesGeometry(geo),
+        new T.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: .95 }));
+      e.position.copy(m.position); G.ghost.add(e);
+      // خيط شاقولي من الأساس إلى السقف يوضّح موضع المحور بدقّة
+      const pts = [new T.Vector3(X, ft - 1.2, Z), new T.Vector3(X, nf * hs + 1.0, Z)];
+      G.ghost.add(new T.Line(new T.BufferGeometry().setFromPoints(pts),
+        new T.LineDashedMaterial({ color: 0x22d3ee, dashSize: .25, gapSize: .18 })));
+      G.ghost.children[G.ghost.children.length - 1].computeLineDistances();
+      G.ghost.visible = true;
+      return { x: +X.toFixed(3), z: +Z.toFixed(3) };
+    },
     zoomSel: () => zoomTo(last),
     reset: () => { anim = { t: 0, p0: cam.position.clone(), t0: ctl.target.clone(),
       p1: home.clone(), t1: mid.clone() }; },

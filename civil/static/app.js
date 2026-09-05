@@ -540,6 +540,7 @@ function mount3D(data, hostId) {
   const D = data || WZ;
   if (!host || !D) return;
   REBAR_ON = XRAY_ON = MOM_ON = PUN_ON = DEF_ON = HUM_ON = false;
+  SOIL_ON = STRESS_ON = ADD_ON = false;
   V3 = Viewer3D(host, D, pickPanel);
   pickPanel(null);
   const sl = document.getElementById('v3clip');
@@ -586,6 +587,9 @@ function v3bar(o) {
       <button id="btnDef" onclick="toggleDefl()">〰️ الهطول</button>` : ''}
     <button id="btnHum" onclick="toggleHuman()">🧍 إنسان 1.85 م</button>
     <button id="btnPlan" onclick="togglePlan()">📐 مخطط DWG</button>
+    <button id="btnSoil" onclick="toggleSoil()">🌍 التربة والطبقات</button>
+    <button id="btnStress" onclick="toggleStress()">🎨 الشد والضغط</button>
+    <button id="btnAdd" onclick="toggleAddCol()">➕ أضف عمود</button>
     <button onclick="V3&&V3.zoomSel()">🔍 تقريب المحدد</button>
     <select id="v3floor" onchange="V3&&V3.floor(this.value==='all'?'all':+this.value)"
       style="width:auto;padding:5px 9px;font-size:11.5px">
@@ -602,12 +606,180 @@ const v3legend = () => `<div class="legend"><span><i style="background:#e8443a">
   <span><i style="background:#86efac"></i>كراسي</span>
   <span><i style="background:#c084fc"></i>دولات</span>
   <span><i style="background:#d9c08a"></i>بلوك الهوردي</span>
+  <span><i style="background:#e8443a"></i>منطقة شدّ</span>
+  <span><i style="background:#2f6fb8"></i>منطقة ضغط</span>
+  <span><i style="background:#c9a86a"></i>تربة حاملة</span>
+  <span><i style="background:#2f9bd8"></i>ماء جوفي</span>
   <span><i style="background:#a8bcd4"></i>سقوف</span><span><i style="background:#7f97b8"></i>جسور</span>
   <span><i style="background:#8ea6c4"></i>أعمدة</span><span><i style="background:#3f6fa5"></i>أساس</span></div>`;
+
+/* ================== إضافة عمود بيدك من داخل المجسم ==================
+   الفكرة كما طلبها المستخدم: مؤشّران يشتغلان مثل مؤشّر «قص المقطع» تماماً —
+   الأول يحدّد X والثاني يحدّد Y، والنقطة (X , Y) هي **مركز العمود**.
+   شبح أزرق شفاف يتحرك معهما بالمجسم فترى مكان العمود قبل تثبيته. */
+const SHAPES = [['circ', 'دائري (O)'], ['sq', 'مربع'], ['rect', 'مستطيل'],
+                ['L', 'زاوية (L)'], ['T', 'تي (T)']];
+let ADD_ON = false;
+
+function colExtent() {                      // مدى إحداثيات المشروع لضبط المؤشّرين
+  const fr = WZ && WZ.model && WZ.model.frame;
+  if (fr && fr.nodes && fr.nodes.length) {
+    const xs = fr.nodes.map(n => n.x), ys = fr.nodes.map(n => n.y);
+    const mx = Math.min(...xs), Mx = Math.max(...xs);
+    const my = Math.min(...ys), My = Math.max(...ys);
+    const pad = Math.max(1, (Mx - mx + My - my) / 20);
+    return { x0: mx - pad, x1: Mx + pad, y0: my - pad, y1: My + pad, frame: true };
+  }
+  const g = (WZ && WZ.grid) || { L: 20, B: 12 };
+  return { x0: -1, x1: g.L + 1, y0: -1, y1: g.B + 1, frame: false };
+}
+
+function addColPanel() {
+  const e = colExtent(), st = Math.max(0.05, Math.round((e.x1 - e.x0) / 400 * 100) / 100);
+  return `<div class="addbox" id="addbox" hidden>
+    <div class="pdec-r">
+      <b style="color:var(--acc)">➕ عمود جديد</b>
+      <label>الشكل</label>
+      <select id="ac_shape" onchange="acDims();acGhost()">
+        ${SHAPES.map(([k, t]) => `<option value="${k}"${k === 'sq' ? ' selected' : ''}>${t}</option>`).join('')}
+      </select>
+      <span id="ac_dim"></span>
+      <span class="sp"></span>
+      <button class="btn" onclick="addColCommit()">✅ ثبّت العمود</button>
+      <button class="btn gh" onclick="addColClear()">🗑️ امسح المضافة</button>
+      <button class="btn gh" onclick="toggleAddCol()">إغلاق</button>
+    </div>
+    <div class="slider"><span style="font-size:11.5px;color:var(--mut);min-width:74px">↔️ المحور X</span>
+      <input type="range" id="ac_x" min="${e.x0}" max="${e.x1}" step="${st}"
+        value="${((e.x0 + e.x1) / 2).toFixed(2)}" oninput="acGhost()">
+      <b id="ac_xv" style="color:var(--acc2);min-width:70px;font-size:12px"></b></div>
+    <div class="slider"><span style="font-size:11.5px;color:var(--mut);min-width:74px">↕️ المحور Y</span>
+      <input type="range" id="ac_y" min="${e.y0}" max="${e.y1}" step="${st}"
+        value="${((e.y0 + e.y1) / 2).toFixed(2)}" oninput="acGhost()">
+      <b id="ac_yv" style="color:var(--acc2);min-width:70px;font-size:12px"></b></div>
+    <div class="note" id="ac_list"></div></div>`;
+}
+
+function acDims() {                          // حقول المقاس تتبع الشكل المختار
+  const sh = txt('ac_shape'), e = $('#ac_dim');
+  if (!e) return;
+  e.innerHTML = sh === 'circ'
+    ? `<label>القطر</label><input type="number" id="ac_D" value="500" step="50"
+         style="width:90px;padding:5px 8px;font-size:11.5px" oninput="acGhost()"><span class="pdec-s">مم</span>`
+    : `<label>المقطع</label><input type="number" id="ac_b" value="400" step="50"
+         style="width:78px;padding:5px 8px;font-size:11.5px" oninput="acGhost()">
+       <span class="pdec-s">×</span>
+       <input type="number" id="ac_h" value="${sh === 'sq' ? 400 : 600}" step="50"
+         style="width:78px;padding:5px 8px;font-size:11.5px" ${sh === 'sq' ? 'disabled' : ''}
+         oninput="acGhost()"><span class="pdec-s">مم</span>`;
+}
+
+function acRead() {
+  const sh = txt('ac_shape');
+  const o = { x: +$('#ac_x').value, y: +$('#ac_y').value, shape: sh === 'sq' ? 'rect' : sh };
+  if (sh === 'circ') { o.D = +($('#ac_D') || {}).value || 500; o.b = o.h = o.D; }
+  else {
+    o.b = +($('#ac_b') || {}).value || 400;
+    o.h = sh === 'sq' ? o.b : (+($('#ac_h') || {}).value || o.b);
+  }
+  o.form = sh;
+  return o;
+}
+
+function acGhost() {
+  if (!V3 || !V3.ghost) return;
+  const o = acRead();
+  $('#ac_xv').textContent = nf(o.x, 2) + ' م';
+  $('#ac_yv').textContent = nf(o.y, 2) + ' م';
+  if ($('#ac_h')) $('#ac_h').disabled = (txt('ac_shape') === 'sq');
+  V3.ghost(o);
+}
+
+function toggleAddCol() {
+  const bx = $('#addbox');
+  if (!bx) return;
+  ADD_ON = !ADD_ON;
+  bx.hidden = !ADD_ON;
+  tgl('btnAdd', ADD_ON);
+  if (ADD_ON) { acDims(); acGhost(); acList(); }
+  else if (V3 && V3.ghost) V3.ghost(null);
+}
+
+function acList() {
+  const e = $('#ac_list'), a = window.__added_cols || [];
+  if (!e) return;
+  e.innerHTML = a.length
+    ? '<b>الأعمدة المضافة (' + a.length + '):</b> ' + a.map((c, i) =>
+        `<span class="tag t-ok" style="cursor:pointer" onclick="acDrop(${i})">
+          ${c.shape === 'circ' ? 'Ø' + int(c.D) : int(c.b) + '×' + int(c.h)}
+          عند (${nf(c.x, 2)} , ${nf(c.y, 2)}) ✕</span>`).join(' ')
+      + '<br>اضغط على أي واحد لحذفه ثم يُعاد التصميم.'
+    : 'ما ثبّتّ أي عمود بعد — حرّك المؤشّرين لمكان العمود ثم اضغط «ثبّت العمود».';
+}
+
+async function addColCommit() {
+  const o = acRead();
+  window.__added_cols = (window.__added_cols || []).concat([
+    { x: o.x, y: o.y, shape: o.shape, b: o.b, h: o.h, D: o.D || null }]);
+  msgTop('➕ أُضيف عمود ' + (o.shape === 'circ' ? 'Ø' + int(o.D) : int(o.b) + '×' + int(o.h))
+    + ' عند (' + nf(o.x, 2) + ' , ' + nf(o.y, 2) + ') — يُعاد بناء الهيكل…');
+  await PAGES.wizard.run();
+  setTimeout(() => { if (ADD_ON) { toggleAddCol(); toggleAddCol(); } showChange(); }, 400);
+}
+
+async function acDrop(i) {
+  const a = window.__added_cols || [];
+  a.splice(i, 1);
+  window.__added_cols = a.length ? a : null;
+  await PAGES.wizard.run();
+  setTimeout(() => { if (ADD_ON) { toggleAddCol(); toggleAddCol(); } showChange(); }, 400);
+}
+
+async function addColClear() {
+  if (!(window.__added_cols || []).length) return;
+  window.__added_cols = null;
+  await PAGES.wizard.run();
+  setTimeout(() => { if (ADD_ON) { toggleAddCol(); toggleAddCol(); } showChange(); }, 400);
+}
+
+function msgTop(t) {
+  const s2 = $('#pstrip');
+  if (s2) { s2.classList.add('flash'); setTimeout(() => s2.classList.remove('flash'), 1600); }
+  const e = $('#v3stats'); if (e) e.textContent = t;
+}
 
 function tgl(id, st) { const b = $('#' + id); if (b) b.classList.toggle('hot', st); }
 let HUM_ON = false;
 function toggleHuman() { if (!V3 || !V3.human) return; HUM_ON = !HUM_ON; V3.human(HUM_ON); tgl('btnHum', HUM_ON); }
+let SOIL_ON = false;
+function toggleSoil() {
+  if (!V3 || !V3.soil) return;
+  SOIL_ON = !SOIL_ON;
+  const st = V3.soil(SOIL_ON);
+  tgl('btnSoil', SOIL_ON);
+  const so = WZ && WZ.soil, ew = WZ && WZ.earth;
+  $('#v3stats').innerHTML = SOIL_ON && so
+    ? `🌍 <b>${so.name}</b> (${so.kind_ar}) · تحمّل ${int(so.qa)} kPa · `
+      + `قاع الأساس ${nf(so.found_bot, 2)} م · `
+      + (so.gwt != null ? `💧 الماء الجوفي ${nf(so.gwt, 2)} م ` : 'بلا ماء جوفي مُدخل ')
+      + (ew ? `· جلمود ${nf(ew.boulder, 1)} م³ (${ew.boulder_layers} طبقة) · `
+            + `سبيس ${nf(ew.subbase, 1)} م³ (${ew.subbase_layers} طبقة)` : '')
+    : '';
+  if (SOIL_ON && !XRAY_ON) toggleXray();     // التربة تحت المبنى — تُرى بالأشعة
+}
+let STRESS_ON = false;
+function toggleStress() {
+  if (!V3 || !V3.stress) return;
+  STRESS_ON = !STRESS_ON;
+  const st = V3.stress(STRESS_ON);
+  tgl('btnStress', STRESS_ON);
+  $('#v3stats').innerHTML = STRESS_ON
+    ? '<span style="color:#e8443a">🔴 شدّ</span> — الحديد يوضع هنا · '
+      + '<span style="color:#2f6fb8">🔵 ضغط</span> — الخرسانة تكفي · '
+      + int(st.n) + ' منطقة معروضة. وسط البحر: سفلي شدّ وعلوي ضغط · فوق المسند: بالعكس.'
+    : '';
+  if (STRESS_ON && !XRAY_ON) toggleXray();
+}
 let PLAN_ON = false;
 function togglePlan() {
   if (!V3 || !V3.plan) return;
@@ -881,7 +1053,7 @@ const TABS = {
         <div class="note">${b.note}</div></div></div>`;
   },
   /* ---------- الإنشائيات والتجربة: اختيار بالضغط على المجسم ---------- */
-  lab: () => { LAB_SEL = null; renderLab(null); },
+  lab: () => { LAB_SEL = null; LAB_MULTI = []; renderLab(null); },
   /* ---------- مخطط DWG/DXF ---------- */
   plan: () => renderPlan(),
 };
@@ -1211,20 +1383,44 @@ const MODE_IC = { bending: '🌀 انحناء', shear: '✂️ قص', torsion: '
   buckling: '⬇️ ضغط وانبعاج', tension: '↔️ شد' };
 const KIND_AR = { col: 'عمود', bx: 'جسر باتجاه X', by: 'جسر باتجاه Y' };
 
+/* تحديد متعدد: كل ضغطة على عنصر تضيفه للقائمة أو تشيله منها، فتقدر تحذف
+   عدة أعمدة معاً — وهذا هو السيناريو الحقيقي (انفجار · اصطدام · حريق موضعي). */
+let LAB_MULTI = [];
 function labSelect(u) {                     // يُستدعى عند الضغط على عنصر بالمجسم
   if (!u || !u.gk) return false;
-  LAB_SEL = u.gk.split('|');
-  const box = $('#lb_sel');
-  if (box) box.innerHTML = `العنصر المختار: <b>${KIND_AR[LAB_SEL[0]] || LAB_SEL[0]}</b>
-    عند المحور (${LAB_SEL[1]}, ${LAB_SEL[2]}) بالطابق ${LAB_SEL[3]} —
-    <button class="btn" style="padding:5px 12px" onclick="runLab()">🧪 احذفه وحلّل</button>
-    <button class="btn gh" style="padding:5px 12px" onclick="V3&&V3.zoomSel()">🔍 قرّبه</button>`;
+  const k = u.gk;
+  const at = LAB_MULTI.indexOf(k);
+  if (at >= 0) LAB_MULTI.splice(at, 1); else LAB_MULTI.push(k);
+  LAB_SEL = LAB_MULTI.length ? LAB_MULTI[LAB_MULTI.length - 1].split('|') : null;
+  if (V3 && V3.labMark) V3.labMark(LAB_MULTI);
+  labSelBox();
   return true;
 }
+function labSelBox() {
+  const box = $('#lb_sel');
+  if (!box) return;
+  if (!LAB_MULTI.length) {
+    box.innerHTML = 'اضغط على أي <b>عمود</b> أو <b>جسر</b> بالمجسم أعلاه لاختياره — '
+      + 'والضغط على أكثر من عنصر يجمعها كلها لحذفها <b>معاً</b>. أو اختره من القوائم:';
+    return;
+  }
+  box.innerHTML = `<b>المحدَّد (${LAB_MULTI.length}):</b> `
+    + LAB_MULTI.map((k, i) => { const a = k.split('|');
+        return `<span class="tag t-warn" style="cursor:pointer" onclick="labUnpick(${i})">
+          ${KIND_AR[a[0]] || a[0]} (${a[1]}, ${a[2]}) ط${a[3]} ✕</span>`; }).join(' ')
+    + ` <button class="btn" style="padding:5px 12px" onclick="runLab()">🧪 احذفها كلها وحلّل</button>
+        <button class="btn gh" style="padding:5px 12px" onclick="labClearSel()">أفرغ التحديد</button>
+        <button class="btn gh" style="padding:5px 12px" onclick="V3&&V3.zoomSel()">🔍 قرّب الأخير</button>`;
+}
+function labUnpick(i) { LAB_MULTI.splice(i, 1);
+  if (V3 && V3.labMark) V3.labMark(LAB_MULTI); labSelBox(); }
+function labClearSel() { LAB_MULTI = []; LAB_SEL = null;
+  if (V3 && V3.labMark) V3.labMark([]); labSelBox(); }
 function renderLab(r) {
   const nfl = (WZ && WZ.model.floors) || 1;
   const head = `<div class="selbox" id="lb_sel">
-      اضغط على أي <b>عمود</b> أو <b>جسر</b> بالمجسم أعلاه لاختياره — أو اختره من القوائم:</div>
+      اضغط على أي <b>عمود</b> أو <b>جسر</b> بالمجسم أعلاه لاختياره — والضغط على أكثر من
+      عنصر يجمعها كلها لحذفها <b>معاً</b>. أو اختره من القوائم:</div>
     <div class="v3bar">
       <select id="lb_tag" style="width:auto;padding:6px 10px">
         <option value="col">عمود</option><option value="bx">جسر باتجاه X</option>
@@ -1308,22 +1504,24 @@ async function runSweep(full) {
         الانزياح الجانبي قبل الحذف = ${nf(r.drift_before, 1)} مم.</div></div>`;
 }
 function labRemoveAt(i, j) {
-  $('#lb_tag').value = 'col'; $('#lb_i').value = i; $('#lb_j').value = j; $('#lb_k').value = '1';
-  runLab(1);
+  LAB_MULTI = ['col|' + i + '|' + j + '|1'];
+  runLab();
 }
 async function runLab(fromForm, restore) {
   if (restore) {
-    LAB_RES = null; if (V3 && V3.lab) V3.lab(null);
+    LAB_RES = null; LAB_MULTI = [];
+    if (V3 && V3.lab) V3.lab(null);
     return renderLab(null);
   }
-  let sel = LAB_SEL;
-  if (fromForm || !sel) sel = [txt('lb_tag'), txt('lb_i'), txt('lb_j'), txt('lb_k')];
-  const p = Object.assign({}, WZ.input, { remove: sel });
+  let sels = LAB_MULTI.map(k => k.split('|'));
+  if (fromForm || !sels.length) sels = [[txt('lb_tag'), txt('lb_i'), txt('lb_j'), txt('lb_k')]];
+  const p = Object.assign({}, WZ.input, { removes: sels });
   const r = await post('lab', p);
-  LAB_RES = r; LAB_SEL = sel;
+  LAB_RES = r; LAB_SEL = sels[sels.length - 1];
+  LAB_MULTI = sels.map(a => a.join('|'));
   renderLab(r);
   if (V3 && V3.lab) V3.lab(r.rows, r.removed);
-  labSelect({ gk: sel.join('|') });
+  labSelBox();
 }
 
 /* -------------------------------- المعالج -------------------------------- */
@@ -1363,6 +1561,10 @@ PAGES.wizard = {
         ${F('وزن البلوكة', 'w_bk', (META.hordi || {}).block_kg || 12, .5, 'كغم')}</div>
       <div class="hint">الهوردي هو الأشيع بالعراق — أدخل مقاسات البلوك المتوفرة عندك.</div></div>
     <div class="card"><h3>٤ · تفاصيل التنفيذ</h3><div class="f">
+      ${S('شكل العمود', 'w_shape', [['auto', 'تلقائي — مستطيل أو من المخطط'],
+        ['rect', 'مستطيل'], ['sq', 'مربع'], ['circ', 'دائري (O) — حلزون'],
+        ['L', 'زاوية (L)'], ['T', 'تي (T)']], 'auto')}
+      ${F('قطر العمود الدائري (0=تلقائي)', 'w_colD', 0, 50, 'مم')}
       ${S('قاعدة الأوفرلاب', 'w_lap', (META.lap_modes || []).map(m => [m.k, m.name]), '60db')}
       ${S('قاعدة الدولات (Dowels)', 'w_dow', (META.dowel_modes || []).map(m => [m.k, m.name]), '16db')}
       ${S('نوع الكرسي', 'w_chair', (META.chairs || []).map(c => [c.k, c.name]), 's135')}
@@ -1380,6 +1582,8 @@ PAGES.wizard = {
     soil: txt('w_soil'), qa: val('w_qa') || null, ground: val('w_ground'), old_depth: val('w_old'),
     Df: val('w_df'), slab_type: txt('w_slab'), exposure: txt('w_exp'), lap_mode: txt('w_lap'),
     dowel_mode: txt('w_dow'), chair_kind: txt('w_chair'), bent: chk('w_bent'),
+    col_shape: txt('w_shape'), col_D: val('w_colD') || null,
+    added_cols: window.__added_cols || null,
     hordi: { block_W: val('w_bw'), block_L: val('w_bl'), block_H: val('w_bh'),
       rib_w: val('w_rw'), topping: val('w_tp'), block_kg: val('w_bk') },
     grid_override: window.__grid_override || null,
@@ -1461,6 +1665,7 @@ PAGES.wizard = {
           <input type="range" id="v3clip" min="-30" max="40" step="0.2">
           <span id="v3stats" style="font-size:11px;color:var(--acc2)"></span></div>
       </div>
+      ${addColPanel()}
       ${v3legend()}
       <div class="hint">اسحب للتدوير · العجلة للتكبير · <b>ضغطة واحدة = اختيار وعرض التفاصيل (بلا تحريك الكاميرا)
         · ضغطتان أو «تقريب المحدد» = تقريب متحرك.</b> زر «🧍 إنسان 1.85 م» يضع شخصاً بالحجم الطبيعي للمقارنة،

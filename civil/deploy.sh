@@ -1,10 +1,15 @@
 set -e
 APP=/opt/civil5819
 UNIT=/etc/systemd/system/civil5819.service
-# احتفظ بالبورت المستعمل حالياً إن كانت الخدمة منصّبة من قبل
-PORT=$(grep -oP '(?<=^Environment=PORT=)\d+' "$UNIT" 2>/dev/null | head -1)
-PORT=${PORT:-5819}
-echo "==> [0/5] البورت المستعمل: $PORT"
+# ترتيب اختيار البورت:
+#   ١) البورت الذي تكتبه صراحةً  PORT=8001 ./deploy.sh   ← الأعلى أولوية
+#   ٢) البورت المستعمل حالياً إن كانت الخدمة منصّبة من قبل (فلا يتغيّر عند التحديث)
+#   ٣) 8001 افتراضياً على سيرفر جديد
+WANT="${PORT:-}"
+CUR=$(grep -oP '(?<=^Environment=PORT=)\d+' "$UNIT" 2>/dev/null | head -1)
+PORT="${WANT:-${CUR:-8001}}"
+echo "==> [0/5] البورت المستعمل: $PORT$([ -n "$WANT" ] && echo ' (اخترته صراحةً)' || \
+  { [ -n "$CUR" ] && echo ' (نفس البورت المنصّب سابقاً)' || echo ' (سيرفر جديد — الافتراضي)'; })"
 SRC="https://codeload.github.com/notlikeyouthink888/Nn/tar.gz/refs/heads/claude/civil-engineering-site-g9u9al"
 
 echo "==> [1/5] المتطلبات (python3 + curl)"
@@ -39,7 +44,18 @@ systemctl daemon-reload 2>/dev/null && systemctl enable civil5819 >/dev/null 2>&
   PORT=$PORT nohup python3 "$APP/app.py" >/var/log/civil5819.log 2>&1 & }
 
 echo "==> [4/5] فتح المنفذ في الجدار الناري"
-command -v ufw >/dev/null && ufw allow ${PORT}/tcp >/dev/null 2>&1 || true
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi active; then
+  ufw allow ${PORT}/tcp >/dev/null 2>&1 || true
+  echo "    ufw: فُتح ${PORT}/tcp"
+elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port=${PORT}/tcp >/dev/null 2>&1 || true
+  firewall-cmd --reload >/dev/null 2>&1 || true
+  echo "    firewalld: فُتح ${PORT}/tcp"
+else
+  echo "    لا جدار ناري فعّال — لا شيء ليُفتح محلياً."
+fi
+echo "    ⚠️ إن كان مزوّد السيرفر يضع جداراً نارياً بلوحة التحكم (DigitalOcean · AWS ·"
+echo "       Hetzner …) فافتح ${PORT}/tcp من لوحته أيضاً وإلا بقي الموقع محجوباً." 
 
 echo "==> [5/5] فحص التشغيل"
 for i in $(seq 1 20); do sleep 1; curl -fsS http://127.0.0.1:$PORT/api/health >/dev/null 2>&1 && OK=1 && break; done

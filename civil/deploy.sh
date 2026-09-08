@@ -24,7 +24,7 @@ cp -r /tmp/civilsrc/civil/. "$APP"/ && rm -rf /tmp/civilsrc
 echo "==> [3/5] إنشاء خدمة systemd على المنفذ $PORT"
 cat > "$UNIT" <<UNIT
 [Unit]
-Description=Civil Engineering Platform (ACI 318-19 + Iraqi Code)
+Description=Civil Engineering Platform (ACI 318M-14 + Iraqi Code)
 After=network.target
 [Service]
 Type=simple

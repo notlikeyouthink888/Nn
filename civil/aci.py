@@ -357,6 +357,108 @@ def check_durability(d):
     return out
 
 
+def check_ties(cr):
+    """تركيب الأتاري والأساور — ACI 318M-14 المادتان 25.7.2 و25.3.4."""
+    sup = cr.get('support') or {}
+    tr = cr.get('tie_rule') or {}
+    out = [_cmp('25.7.2.2', 'قطر الأسوار', cr['tie_db'], cr.get('tie_db_min', 10.0),
+                'مم', mode='>=',
+                note='Ø10 للأسياخ الطولية Ø32 فأصغر · Ø13 لـ Ø36 فأكبر')]
+    out.append(_cmp('25.7.2.1', 'تباعد الأتاري بوسط العمود', cr['tie_s'],
+                    tr.get('s') or cr['tie_s'], 'مم',
+                    note='الأصغر من 16db الطولي و48db الأسوار وأصغر بُعد · ' + (tr.get('note') or '')))
+    out.append(_cmp('18.7.5.3', 'تباعد التطويق بالمنطقة الحرجة', cr['tie_s_conf'],
+                    cr['tie_s'], 'مم',
+                    note='لا يتجاوز تباعد الوسط — وطرفا العمود موضع المفصل اللدن'))
+    for k, nm in (('x', 'عرض العمود'), ('y', 'عمق العمود')):
+        d = sup.get(k)
+        if not d:
+            continue
+        out.append(_row('25.7.2.3', 'سند الأسياخ الوسطى — %s' % nm,
+                        'خلوص %d مم · %d أتاري' % (int(d['gap']), d['n']),
+                        'كل سيخ بديل مسنود · أو خلوص ≤ 150 مم', 'ok', d['why']))
+    out.append(_row('25.3.4', 'العكفة الزلزالية للأسوار',
+                    (cr.get('tie_hook') or {}).get('label', 'عكفة 135°'),
+                    'ثني ≥135° · تلتفّ على سيخ طولي · امتدادها للداخل', 'ok',
+                    'العكفة 90° يمسكها الغطاء وحده فتنفتح بانقشاره — و135° مثنية '
+                    'داخل اللبّ المحصور فتبقى ممسوكة'))
+    return out
+
+
+def check_beam_rebar(b):
+    """قطع الحديد ووصله بالجسر — ACI 318M-14 المادتان 9.7.3 و18.6.3."""
+    c = b['cut']; sp = b['splice']
+    out = [_row('9.7.3.3', 'تمديد السيخ بعد نقطة عدم الحاجة',
+                '%.2f م علوي · %.2f م سفلي' % (c['ext_top'], c['ext_bot']),
+                'الأكبر من d و12db', 'ok',
+                'يعوّض انزياح مواضع العزم الأقصى وأثر الشقّ القطري'),
+           _row('9.7.3.4', 'امتداد الحديد المستمر بعد قطع جاره',
+                '%.2f م' % c['ld_top'], 'ld كاملاً', 'ok',
+                'إجهاد السيخ المستمر يصل fy عند نقطة قطع جاره'),
+           _row(c['pos_into']['clause'], 'الحديد السفلي الداخل بالمسند',
+                '%d سيخ' % c['pos_into']['n'], c['pos_into']['rule'], 'ok', ''),
+           _row('9.7.3.8.4', 'الحديد العلوي بعد نقطة الانقلاب',
+                '%d سيخ × %.2f م' % (c['neg_third']['n'], c['neg_third']['ext']),
+                'ثلث العلوي · الأكبر من d و12db و ln/16', 'ok',
+                c['neg_third']['rule']),
+           _row('9.7.3.5', 'منع إنهاء حديد الشدّ بمنطقة شدّ',
+                'يُفحص عند كل نقطة قطع', 'أحد ثلاثة شروط', 'review',
+                c['no_cut_tension']['rule'])]
+    out.append(_row('18.6.3.3', 'منطقة الوصل المسموحة',
+                    sp['label'] if sp['ok'] else 'لا توجد',
+                    'خارج العقدة و2h من وجهها', 'ok' if sp['ok'] else 'warn',
+                    sp['why'] + (' · تُطوَّق بكانات ≤ %d مم' % int(sp['s_hoop'])
+                                 if sp.get('s_hoop') else '')))
+    for r in b['seismic']['rows']:
+        out.append(_cmp(r['clause'], r['name'], r['val'], r['lim'], r.get('unit', ''),
+                        mode='>=' if r.get('ge') or r['unit'] == 'سيخ' else '<='))
+    out.append(_row('25.3.1', 'هندسة عكفة حديد الجسر', b['hook_bar']['label'],
+                    'جدول 25.3.1', 'ok',
+                    'الطول المضاف للقصّ = %d مم (قوس %d + امتداد %d)'
+                    % (int(b['hook_bar']['added']), int(b['hook_bar']['arc']),
+                       int(b['hook_bar']['ext']))))
+    return out
+
+
+def check_canti(c):
+    """الكانتيليفر — ACI 318M-14 جدول 9.3.1.1 و9.7.3 و25.4."""
+    if not c or not c.get('on'):
+        return [_row('9.3.1.1', 'كانتيليفر بالمشروع', 'لا يوجد', '—', 'na',
+                     'لم يُدخَل بروز — البند لا ينطبق')]
+    out = []
+    for i in c['items']:
+        for r in i['rules']:
+            out.append(_row(r['c'], '%s — %s' % (i['side_name'], r['t'].replace('**', '')),
+                            r['v'], r['l'], 'ok' if r['ok'] else 'fail', r['why']))
+        g = i['defl']['gov']
+        out.append(_cmp('24.2.2', '%s — الترخيم' % i['side_name'],
+                        abs(g['value']), g['limit'], 'مم',
+                        note='الحالة: %s' % g['label']))
+    return out
+
+
+def check_piles(a):
+    """قرار التأسيس العميق — من التربة لا من عدد الطوابق."""
+    pl = a.get('piles')
+    if not pl:
+        return []
+    # هذا **قرار تصميم** لا مخالفة: الحالتان مطابقتان ما دام الأساس المنفَّذ
+    # يطابق ما تفرضه التربة. ويصير مخالفة فقط لو أوجبت التربة عمقاً ونُفِّذ سطحي.
+    mismatch = pl['need'] and a.get('type') != 'piles'
+    out = [_row('13.4', 'هل توجب التربة تأسيساً عميقاً؟',
+                ('نعم — ' + ' · '.join(pl['triggers'])) if pl['need'] else 'لا',
+                'يُقرَّر من صنف التربة لا من عدد الطوابق',
+                'fail' if mismatch else 'ok',
+                pl['verdict'] + (' · والمنفَّذ: ' + (a.get('name') or '')))]
+    out.append(_row('13.4.1.1', 'أقل مجموعة ركائز تحت عمود',
+                    'ثلاث ركائز' if pl['need'] else '—',
+                    'لا تُنفَّذ ركيزة مفردة',
+                    'ok' if pl['need'] else 'na',
+                    'الركيزة المفردة لا تقاوم عزم انزياح موقعها وليس لها بديل إن '
+                    'ظهر بها عيب صبّ · والاثنتان تلزمهما جسور رابطة عمودية'))
+    return out
+
+
 # ----------------------------- التقرير الكامل -----------------------------
 def report(R):
     """يبني تقرير المطابقة من ناتج المعالج كاملاً."""
@@ -386,6 +488,14 @@ def report(R):
     if ax.get('durability'):
         secs.append(dict(name='الديمومة وأصناف التعرّض (19.3)',
                          rows=check_durability(ax['durability'])))
+    secs.append(dict(name='تركيب الأتاري والأساور (25.7.2 · 25.3.4)',
+                     rows=check_ties(m['col']['rebar'])))
+    if ax.get('beam_rules'):
+        for b2 in ax['beam_rules']['rows']:
+            secs.append(dict(name='قطع ووصل حديد الجسر %s (9.7.3 · 18.6.3)' % b2['beam'],
+                             rows=check_beam_rebar(b2)))
+    secs.append(dict(name='الكانتيليفر (9.3.1.1 · 9.7.3)', rows=check_canti(R.get('canti'))))
+    secs.append(dict(name='قرار التأسيس العميق (13.4)', rows=check_piles(R['advisor'])))
     n = {'ok': 0, 'warn': 0, 'fail': 0, 'na': 0, 'review': 0}
     for s in secs:
         for r in s['rows']:

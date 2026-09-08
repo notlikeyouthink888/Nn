@@ -62,10 +62,13 @@ def advisor(p):
     total = sum(loads)
     reasons = []; alts = []
     if q_net <= 1.0:
+        pl0 = pile_case(dict(p, q_net=q_net, q_raft=1e9, avg_press=0.0, ratio=9.9))
         return dict(type='piles', name='ركائز (خوازيق)', ratio=9.9, total=total,
                     reasons=['التربة ردم غير مدكوك أو تحمّلها معدوم — لا يجوز التأسيس السطحي'],
                     alts=['استبدال التربة بالكامل بطبقات سبيس مدكوكة ثم أساس سطحي'],
-                    q_net=q_net, areas=[], sum_area=0.0, floors=floors)
+                    q_net=q_net, areas=[], sum_area=0.0, floors=floors,
+                    piles=pl0, warn=pl0['triggers'], need_piles=True,
+                    avg_press=0.0, Bmax=0.0, overlap=False)
     areas = [P / q_net for P in loads]
     sA = sum(areas)
     ratio = sA / footprint if footprint else 9.9
@@ -111,20 +114,103 @@ def advisor(p):
                            % (q_raft, qa))
             alts.append('حصيرة عميقة (أساس معوَّض) مع استبدال تربة إذا كانت الطبقة الضعيفة سطحية فقط')
 
-    # مؤشرات تستدعي الركائز حتى لو النسبة مقبولة
-    warn = []
-    if q_net < 75 and floors >= 4:
-        warn.append('تحمّل التربة منخفض (%.0f kPa) مع %d طوابق — يُنصح بدراسة الركائز' % (q_net, floors))
-    if floors >= 10 and q_net < 200:
-        warn.append('مبنى %d طوابق على تربة %.0f kPa — الركائز شبه حتمية لتحديد الهبوط' % (floors, q_net))
-    if avg_press > 0.8 * q_net:
-        warn.append('متوسط الضغط على التربة (%.0f kPa) قريب من الحد المسموح (%.0f kPa)' % (avg_press, q_net))
-    if warn and typ != 'piles':
-        alts.insert(0, 'ركائز — للأسباب: ' + ' · '.join(warn))
+    pl = pile_case(dict(p, q_net=q_net, q_raft=(total / footprint + 13.0) if footprint else 1e9,
+                        avg_press=avg_press, ratio=ratio, typ=typ))
+    warn = pl['triggers']
+    if pl['need'] and typ != 'piles':
+        # التربة نفسها توجب التأسيس العميق ولو كفت المساحة حسابياً — والقرار لها
+        alts.insert(0, 'كان المقترح «%s» بحسب المساحة، لكن التربة تمنعه' % name)
+        typ, name = 'piles', 'ركائز (خوازيق) مع هامة'
+        reasons = ['التربة توجب التأسيس العميق: ' + ' · '.join(warn)] + reasons
+    elif typ == 'piles' and not pl['need']:
+        # ضاقت المساحة لكن لا سبب تربة — البديل الأرخص أولاً، والركائز آخر الخيارات
+        alts.insert(0, 'قبل الركائز: استبدال تربة أو أساس معوَّض أو تكبير الحصيرة')
     return dict(type=typ, name=name, ratio=ratio, sum_area=sA, areas=areas, total=total,
                 reasons=reasons, alts=alts, warn=warn, q_net=q_net, avg_press=avg_press,
-                Bmax=Bmax, overlap=overlap, floors=floors,
-                need_piles=(typ == 'piles' or bool(warn)))
+                Bmax=Bmax, overlap=overlap, floors=floors, piles=pl,
+                need_piles=(typ == 'piles'))
+
+
+# ------------------------- متى الركائز فعلاً؟ (وقلّما تكون) -------------------------
+#: أسباب التربة التي **تُوجب** التأسيس العميق. الطوابق والحمل **ليسا** منها:
+#: مبنى عشرين طابقاً على طين قاسٍ يقف على حصيرة، ومبنى طابقين على سبخة لا يقف
+#: على أي أساس سطحي. القرار للتربة لا للارتفاع.
+PILE_SOIL_CASES = [
+    ('fill',      'ردم غير مدكوك أو نفايات بناء تحت الأساس',
+     'الردم يهبط بالزمن ولو خفّ الحمل — لا يُحسب له تحمّل إطلاقاً'),
+    ('sabkha',    'سبخة أو طين طري جداً (qa ≤ 40 kPa)',
+     'الهبوط التضاغطي يستمر سنوات ويتجاوز المسموح مهما كبر الأساس'),
+    ('soft',      'طين طري (qa ≤ 60 kPa) مع حمل لا تحمله حصيرة كاملة',
+     'الحصيرة توحّد الهبوط لكنها لا تلغيه — والطين الطري يهبط كلياً'),
+    ('gypsum',    'تربة جبسية انهيارية (Collapsible Gypseous Soil)',
+     'الجبس يذوب بالماء فتنهار البنية فجأة — وهذه أخطر تربة بوسط وغرب العراق، '
+     'وانهيارها لا ينذر ولا يُقاس بفحص التحمّل الجاف'),
+    ('liquefy',   'رمل مفكك مشبع تحت منسوب ماء جوفي عالٍ (خطر تميّع زلزالي)',
+     'الرمل المفكك المشبع يفقد تحمّله كلياً لحظة الهزة'),
+    ('expansive', 'طين انتفاخي والمنطقة النشطة أعمق من الأساس',
+     'الانتفاخ يرفع الأساس بالشتاء ويهبطه بالصيف فيشقّق البناء من الأسفل'),
+    ('capacity',  'حتى الحصيرة الكاملة لا تحمل — الضغط يتجاوز التحمّل',
+     'لم يبقَ أساس سطحي ممكن'),
+    ('uplift',    'قوى شدّ أو قلب على الأعمدة (صوامع · أبراج · جدران قص طويلة)',
+     'الأساس السطحي لا يقاوم الشدّ إلا بوزنه، والركيزة تقاومه باحتكاكها'),
+]
+
+
+def pile_case(p):
+    """هل تلزم الركائز فعلاً؟ — القرار **من التربة** لا من عدد الطوابق.
+
+    كان المنطق السابق يوصي بالركائز لمجرد «تحمّل منخفض مع ٤ طوابق» أو «١٠ طوابق
+    على تربة أقل من 200 kPa» — وهذا يجعلها شبه دائمة، وهو خطأ: أغلب أبنية العراق
+    تقف على أسس منفردة أو حصيرة، والركائز استثناء مكلف يُلجأ إليه حين **التربة
+    نفسها** لا تصلح، لا حين يعلو المبنى.
+    """
+    q_net = float(p.get('q_net', 0.0))
+    qa = float(p.get('qa', 0.0))
+    kind = p.get('soil_kind') or ''
+    name = p.get('soil') or ''
+    gwt = p.get('gwt')
+    Df = float(p.get('Df', 1.5))
+    q_raft = float(p.get('q_raft', 0.0))
+    trig, why = [], []
+    hit = set()
+
+    def add(key):
+        if key in hit:
+            return
+        hit.add(key)
+        for k, t, w in PILE_SOIL_CASES:
+            if k == key:
+                trig.append(t); why.append(w)
+
+    if kind == 'fill' or q_net <= 1.0:
+        add('fill')
+    if qa and qa <= 40.0:
+        add('sabkha')
+    elif qa and qa <= 60.0 and q_raft > qa:
+        add('soft')
+    if p.get('gypseous'):
+        add('gypsum')
+    if kind == 'sand' and qa and qa <= 100.0 and gwt is not None \
+            and float(gwt) > -(Df + 3.0):
+        add('liquefy')
+    if p.get('expansive'):
+        add('expansive')
+    if q_raft > qa > 0:
+        add('capacity')
+    if p.get('uplift'):
+        add('uplift')
+
+    need = bool(trig)
+    return dict(need=need, triggers=trig, why=why,
+                soil=name, kind=kind, q_net=q_net, q_raft=q_raft,
+                cases=[dict(k=k, t=t, w=w) for k, t, w in PILE_SOIL_CASES],
+                verdict=('التربة توجب التأسيس العميق: ' + ' · '.join(trig)) if need
+                        else ('لا سبب تربة يوجب الركائز — الأساس السطحي كافٍ. '
+                              'الركائز أساس **استثنائي** كلفته أضعاف السطحي '
+                              'وتحتاج جسّاً وفحص تحميل، ولا تُقترح لمجرد ارتفاع '
+                              'المبنى أو كِبَر الحمل.'),
+                rule='القرار من التربة لا من عدد الطوابق (ACI 13.4 + الممارسة '
+                     'الجيوتقنية) — والاختيار النهائي للتقرير الجيوتقني.')
 
 # -------------------------------- الحصيرة ---------------------------------
 def raft(p):
@@ -244,12 +330,34 @@ def pile(p):
         e = 1.0 - th / 90.0 * ((rows - 1) * m + (m - 1) * rows) / (m * rows)
         return m, rows, e
 
-    n = max(1, math.ceil(P / max(Qall, 1.0)))
+    # ---- أقل عدد ركائز تحت عمود واحد = **ثلاث**، ولا تُقبل ركيزة مفردة أبداً ----
+    # الركيزة المفردة تحت عمود لا تقاوم عزماً ولا خروجاً عن المركز: خطأ التنفيذ
+    # المسموح بموقع الركيزة (±75 مم بالكود العالمي، وأكثر بالواقع) يحوّل الحمل
+    # المحوري إلى عزم على رأس ركيزة نحيلة، وليس لها **بديل** إن ضعفت واحدة.
+    # الاثنتان تقاومان بمحور واحد فقط فتحتاجان جسور رابطة بالاتجاه العمودي.
+    # ولهذا الممارسة: ثلاث ركائز بمثلث تعطي ثباتاً بكل الاتجاهات بلا جسور رابطة.
+    n_min = int(p.get('n_min', 3))
+    n = max(n_min, math.ceil(P / max(Qall, 1.0)))
     for _ in range(40):                            # زد العدد حتى تكفي المجموعة
         m, rows, eff = group(n)
         if n * Qall * eff >= P: break
         n += 1
+    n = max(n, n_min)
     m, rows, eff = group(n)
+    n = max(n, m * rows)          # الشبكة تُبنى كاملة — لا نصف ركيزة بالزاوية
+    m, rows, eff = group(n)
+    n_cap = dict(
+        n_min=n_min, forced=(P / max(Qall, 1.0) <= n_min),
+        need_tie=(n <= 2),
+        rule='أقل مجموعة تحت عمود = %d ركائز' % n_min,
+        why='الركيزة **المفردة** تحت عمود ممنوعة عملياً: خطأ موقعها المسموح '
+            'بالتنفيذ يحوّل الحمل المحوري إلى عزم على رأسها، وليس لها بديل إن '
+            'ظهر فيها عيب صبّ. والاثنتان تقاومان العزم بمحور واحد فقط فتلزمهما '
+            'جسور رابطة (Tie Beams) بالاتجاه العمودي. الثلاث بمثلث ثابتة بكل '
+            'الاتجاهات — ولهذا هي الحد الأدنى العملي.',
+        note=('عدد الركائز محكوم بالحد الأدنى لا بالحمل — الحمل يحتاج %.1f ركيزة فقط'
+              % (P / max(Qall, 1.0))) if P / max(Qall, 1.0) <= n_min else
+             'عدد الركائز محكوم بالحمل')
     Qgroup = n * Qall * eff
     cap_B = (m - 1) * s + D + 0.6
     cap_L = (rows - 1) * s + D + 0.6
@@ -288,8 +396,10 @@ def pile(p):
                 W=W, FS=FS, Qall=Qall, n=n, spacing=s, eff=eff, Qgroup=Qgroup,
                 ok=Qgroup >= P, P=P, steps=steps, rows=rows, cols=m,
                 cap=dict(B=cap_B, L=cap_L, h=cap_h, conc=cap_B * cap_L * cap_h),
-                types=PILE_TYPES, recommended=rec,
-                notes=['يجب تنفيذ فحص تحميل (Pile Load Test) لركيزة واحدة على الأقل لكل 100 ركيزة أو لكل مشروع',
+                types=PILE_TYPES, recommended=rec, group_rule=n_cap,
+                notes=['**لا تُنفَّذ ركيزة مفردة تحت عمود** — أقل مجموعة ثلاث ركائز '
+                       'بمثلث، أو اثنتان مع جسور رابطة بالاتجاه العمودي عليهما',
+                       'يجب تنفيذ فحص تحميل (Pile Load Test) لركيزة واحدة على الأقل لكل 100 ركيزة أو لكل مشروع',
                        'إذا وُجد ردم حديث أو طين طري فوق الطبقة الحاملة يجب حساب الاحتكاك السالب (Negative Skin Friction) وطرحه من القدرة',
                        'كفاءة المجموعة محسوبة بمعادلة Converse-Labarre — تُهمل عادةً بالتربة الرملية عند تباعد ≥ 3D',
                        'هذه الحسابات أولية ولا تُغني عن التقرير الجيوتقني وفحوص التربة الميدانية'])

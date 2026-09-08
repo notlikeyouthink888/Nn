@@ -35,12 +35,25 @@ function Viewer3D(el, M, onPick) {
 
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
   const GN = ['ghost', 'soil', 'stress', 'layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
-              'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl', 'human', 'plan'];
+              'canti', 'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl', 'human', 'plan'];
   const G = {}; GN.forEach(k => { G[k] = new T.Group(); G[k].name = k; sc.add(G[k]); });
   G.moments.visible = G.punch.visible = G.defl.visible = G.rebar.visible = G.extra.visible =
     G.chairs.visible = G.human.visible = G.plan.visible = G.ghost.visible =
     G.soil.visible = G.stress.visible = false;
   const on = {}; GN.forEach(k => on[k] = 1);
+  /* ---- حالة التسليح وألوانه: تُعرَّف مبكراً لأن بناء الكانتيليفر
+     يستدعي inst و addRings قبل الوصول لقسم التسليح ---- */
+  const STEEL = 0xe8443a, TIE = 0xff9f1c, EXTRA = 0x22d3ee, CHAIR = 0x86efac,
+    DOWEL = 0xc084fc, CTOP = 0xfacc15, CBOT = 0x60a5fa;
+  let built = false, S = { bars: 0, meshes: 0, weight: 0, byGrp: {} }, CURG = 'rebar';
+  const stock = md.stock || 12.0, LAPS = md.laps || {};
+  const lapOf = db => { const l = LAPS[db] || LAPS[String(db)];
+    return l ? (typeof l === 'object' ? l.bottom : l) : 0.6; };
+  function tally(grp, n, w) {
+    const b = S.byGrp[grp] || (S.byGrp[grp] = { bars: 0, weight: 0 });
+    b.bars += n; b.weight += w; S.bars += n; S.weight += w; S.meshes++;
+  }
+
   const picks = [];
   const px = v => v - L / 2, pz = v => -(v - B / 2);
   const SHAPE_AR = { rect: 'مستطيل', circ: 'دائري (O)', L: 'زاوية (L)', T: 'تي (T)' };
@@ -338,8 +351,106 @@ function Viewer3D(el, M, onPick) {
               ['فرش', (md.slab.mesh.short || md.slab.mesh.bottom).label],
               ['غطاء', (md.slab.mesh.long || md.slab.mesh.bottom).label]] });
         buildStairs(z, s, PX, PZ);
+        buildCanti(z, s);
       }
     }
+    /* ============ الكانتيليفر (الشناشيل والبلكونات) ============
+       العنصر الوحيد الذي **كل** حديده الرئيسي بالوجه العلوي، ولذلك يُرسم هنا
+       بلونين مختلفين صراحةً: العلوي أصفر ناصع فوق منتصف السماكة (حديد الشدّ)،
+       والسفلي أزرق باهت تحته (انكماش وتماسك فقط). المشهد نفسه يقول القاعدة. */
+    function buildCanti(z, s) {
+      const C = md.canti;
+      if (!C || !C.on || !C.items || !C.items.length) return;
+      C.items.forEach((it, k) => {
+        const Lc = it.L, th2 = it.h / 1000, y = z - th2 / 2;
+        const along = it.along_x;                       // البروز على حافة شمالية/جنوبية
+        const sgn = it.side.indexOf('-') > 0 ? -1 : 1;
+        const wide = along ? L : B;                     // طول الحافة
+        const cx = along ? 0 : sgn * (L / 2 + Lc / 2);
+        const cz = along ? -sgn * (B / 2 + Lc / 2) : 0;
+        const info = k2 => ({ title: k2 + ' — ' + it.side_name + ' · طابق ' + s,
+          kind: 'canti', grp: 'canti', floor: s,
+          rows: [['البروز', Lc.toFixed(2) + ' م'],
+            ['السماكة', Math.round(it.h) + ' مم (الأدنى ' + Math.round(it.hmin) +
+              ' مم = ℓ/8 — جدول ACI 9.3.1.1)'],
+            ['عزم وجه المسند', it.Mu.toFixed(1) + ' kN·م لكل متر'],
+            ['القص عند المسند', it.Vu.toFixed(1) + ' kN لكل متر'],
+            ['الحديد **العلوي**', it.top.label + ' — وجه الشدّ'],
+            ['الحديد السفلي', it.bottom.label + ' — انكماش وتماسك فقط'],
+            ['نشر العلوي', it.anchor.rule],
+            ['الترخيم', it.d_imm.toFixed(2) + ' مم فوري · ' +
+              (it.defl.ok ? 'ضمن الحدّ' : 'يتجاوز الحدّ')]] });
+        // البلاطة
+        box(G.canti, along ? wide : Lc, th2, along ? Lc : wide, cx, y, cz,
+          0xb9c9dd, 1, info('بلاطة كانتيليفر'));
+        // درابزين على الطرف الحرّ إن وُجد حمل
+        if (C.parapet > 0) {
+          const ph = 0.9, pt = 0.15;
+          box(G.canti, along ? wide : pt, ph, along ? pt : wide,
+            along ? 0 : sgn * (L / 2 + Lc - pt / 2), z + ph / 2 - th2,
+            along ? -sgn * (B / 2 + Lc - pt / 2) : 0, 0xa3b4c9, 1,
+            Object.assign(info('درابزين الطرف الحرّ'), { rows: [
+              ['الحمل', C.parapet.toFixed(1) + ' kN/م على الطرف الحرّ'],
+              ['الأثر', 'يزيد عزم وجه المسند بمقدار P·ℓ = ' +
+                (C.parapet * Lc).toFixed(1) + ' kN·م/م — وهو أشدّ موقع ممكن للحمل']] }));
+        }
+        // ---- الحديد: علوي (شدّ) ثم سفلي (انكماش) ----
+        const cvT = 0.025, dbT = it.top.db / 1000, dbB = it.bottom.db / 1000;
+        const sT = (it.top.s || 200) / 1000, sB = (it.bottom.s || 200) / 1000;
+        const yT = z - cvT - dbT / 2, yB = z - th2 + cvT + dbB / 2;
+        const back = Math.min(it.anchor.ld, it.back_span * 0.9);   // النشر داخل البحر الخلفي
+        const runT = Lc + back;                        // من داخل البحر إلى الطرف الحرّ
+        const nT = Math.max(2, Math.floor(wide / sT) + 1);
+        const posT = [], posB = [];
+        for (let i = 0; i < nT; i++) {
+          const t = -wide / 2 + i * (wide / Math.max(1, nT - 1));
+          const c0 = along ? -sgn * (B / 2 + Lc / 2 - back / 2) : sgn * (L / 2 + Lc / 2 - back / 2);
+          posT.push(along ? [t, yT, c0] : [c0, yT, t]);
+        }
+        const nB = Math.max(2, Math.floor(wide / sB) + 1);
+        for (let i = 0; i < nB; i++) {
+          const t = -wide / 2 + i * (wide / Math.max(1, nB - 1));
+          const c0 = along ? -sgn * (B / 2 + Lc / 2) : sgn * (L / 2 + Lc / 2);
+          posB.push(along ? [t, yB, c0] : [c0, yB, t]);
+        }
+        // العلوي: عكفة 90° هابطة عند الطرف الحرّ، ومستقيم داخل البحر الخلفي
+        const dirC = along ? 'z' : 'x';
+        inst(barGeo(runT, it.top.db, dirC, { a: 0, b: 90, up: -1 }), CTOP, posT,
+          Object.assign(info('حديد الكانتيليفر **العلوي** — وجه الشدّ'), { rows: [
+            ['الموضع', '**الوجه العلوي** — عزم البروز سالب على طوله كله'],
+            ['المقطع', it.top.label],
+            ['الطول', runT.toFixed(2) + ' م = بروز ' + Lc.toFixed(2) +
+              ' + نشر داخل البحر الخلفي ' + back.toFixed(2) + ' م'],
+            ['الطرف الحرّ', 'عكفة 90° هابطة (ACI 9.7.3.3 يستثني الطرف الحرّ من ' +
+              'تمديد d أو 12db، والعكفة لتثبيت الأسوار وحماية الطرف)'],
+            ['الخطأ الشائع', 'وضع هذا الحديد بالأسفل — انهيار فوري عند فكّ القالب']] }),
+          G.canti, posT.length * runT * Math.PI * Math.pow(it.top.db / 2000, 2) * 7850);
+        inst(barGeo(Lc + 0.3, it.bottom.db, dirC, { a: 90, b: 90, up: 1 }), CBOT, posB,
+          Object.assign(info('حديد الكانتيليفر السفلي'), { rows: [
+            ['الموضع', 'الوجه السفلي — وجه **الضغط**، فلا حديد شدّ فيه'],
+            ['المقطع', it.bottom.label],
+            ['الوظيفة', 'انكماش وحرارة 0.0018·Ag (ACI 7.6.1.1) + تماسك إنشائي ' +
+              'يدخل المسند (9.7.7) — لا يقاوم عزم البروز']] }),
+          G.canti, posB.length * (Lc + 0.3) * Math.PI * Math.pow(it.bottom.db / 2000, 2) * 7850);
+        // أساور البروز — لبلاطة البروز **لا أساور**: البلاطات تُصمَّم بلا حديد قص
+        // (ACI 22.5 مع λs) وتزداد سماكتها بدل ذلك. الأساور تظهر فقط إن كان
+        // البروز جسراً ضيّقاً لا بلاطة.
+        if (it.wide) return;
+        const stp = [], ss = (it.shear.s || 200) / 1000;
+        for (let t = -wide / 2 + ss / 2; t < wide / 2; t += ss * 2) {
+          const c0 = along ? -sgn * (B / 2 + Lc * 0.25) : sgn * (L / 2 + Lc * 0.25);
+          stp.push(along ? [t, z - th2 / 2, c0] : [c0, z - th2 / 2, t]);
+        }
+        if (stp.length) addRings(Lc * 0.5, th2 - 2 * cvT, it.shear.db_stirrup || 10, stp,
+          Object.assign(info('أساور البروز'), { rows: [
+            ['التباعد', it.shear.label],
+            ['الموضع', 'مكثّفة عند **وجه المسند** — القص أقصى ما يكون هناك، ' +
+              'بعكس البحر البسيط الذي يكون قصّه أقصى عند المسندين وصفراً بالوسط'],
+            ['العكفة', 'زلزالية 135° (ACI 25.3.4)']] }),
+          TIE, G.canti, along ? 'z' : 'x', 0.075);
+      });
+    }
+
     /* ---- الدرج والمصاعد وفتحات السقف ---- */
     function buildStairs(z, s, PX, PZ) {
       const SP = md.stairs;
@@ -421,25 +532,64 @@ function Viewer3D(el, M, onPick) {
             ['غطاء (طويل)', (md.slab.mesh.long || md.slab.mesh.bottom).label],
             ['علوي فوق المساند', md.slab.mesh.top.label],
             ['الخرسانة', (L * B * md.slab.h / 1000).toFixed(1) + ' م³']] });
+      buildCanti(z, s);
     }
   }
 
   /* ============================== التسليح ============================== */
-  const STEEL = 0xe8443a, TIE = 0xff9f1c, EXTRA = 0x22d3ee, CHAIR = 0x86efac,
-    DOWEL = 0xc084fc;
-  let built = false, S = { bars: 0, meshes: 0, weight: 0, byGrp: {} }, CURG = 'rebar';
-  const stock = md.stock || 12.0, LAPS = md.laps || {};
-  const lapOf = db => { const l = LAPS[db] || LAPS[String(db)];
-    return l ? (typeof l === 'object' ? l.bottom : l) : 0.6; };
-  function tally(grp, n, w) {
-    const b = S.byGrp[grp] || (S.byGrp[grp] = { bars: 0, weight: 0 });
-    b.bars += n; b.weight += w; S.bars += n; S.weight += w; S.meshes++;
+  /* ============ هندسة العكفة القياسية — ACI 318M-14 جدولا 25.3.1 و25.3.2 ============
+     قطر الثني الداخلي: للأسياخ 6db (≤Ø25) · 8db (Ø29–36) · 10db (Ø43–57)
+                        للأساور 4db (≤Ø16) · 6db (Ø19–25)
+     الامتداد بعد الثنية: أسياخ 12db لـ90° و max(4db,65) لـ180°
+                          أساور max(6db,75) لـ135° · و12db لـ90° فوق Ø16    */
+  // تُعرَّف بـ function لا const: البناء الإنشائي (الكانتيليفر) يستدعيها قبل
+  // أن يصل التنفيذ لهذا السطر، والـ const بمنطقة موت زمني فترمي خطأً.
+  function bendDia(db, tie) {
+    return tie ? (db <= 16 ? 4 : 6) * db : (db <= 25 ? 6 : db <= 36 ? 8 : 10) * db;
   }
-  function barGeo(len, db, dir) {
-    const gm = new T.CylinderGeometry(db / 2000, db / 2000, len, 6, 1);
-    if (dir === 'x') gm.rotateZ(Math.PI / 2);
-    if (dir === 'z') gm.rotateX(Math.PI / 2);
-    return gm;
+  function hookExt(db, ang, tie) {
+    return tie ? (ang === 90 ? (db <= 16 ? Math.max(6 * db, 75) : 12 * db)
+      : Math.max(6 * db, 75)) : (ang === 90 ? 12 * db : Math.max(4 * db, 65));
+  }
+
+  /* نقاط العكفة بمستوى محلي: السيخ ممتد على +u، والعكفة تنثني نحو −v.
+     تُرجع مصفوفة نقاط [u,v] بالمتر تبدأ من نهاية الجزء المستقيم. */
+  function hookPts(db, ang, tie, sign) {
+    const d = db / 1000, R = (bendDia(db, tie) / 2 + db / 2) / 1000;
+    const e = hookExt(db, ang, tie) / 1000, a = ang * Math.PI / 180, s = sign || 1;
+    const p = [], N = 7, cy = -s * R;                     // مركز قوس الثني
+    for (let i = 0; i <= N; i++) {
+      const t = a * i / N;
+      p.push([R * Math.sin(t), cy + s * R * Math.cos(t)]);
+    }
+    const tip = p[p.length - 1];
+    p.push([tip[0] + e * Math.cos(a), tip[1] + s * e * Math.sin(a)]);
+    return p;
+  }
+
+  /* سيخ مستقيم **بعكفاته الحقيقية** بالطرفين — لا أسطوانة عارية.
+     hk = {a:زاوية بداية, b:زاوية نهاية, tie:أسوار؟, up:اتجاه العكفة (+1 لأعلى)}
+     الصفر أو null يعني طرفاً مقطوعاً بلا عكفة (وسط الوصلة مثلاً). */
+  function barGeo(len, db, dir, hk) {
+    if (!hk || (!hk.a && !hk.b)) {
+      const gm = new T.CylinderGeometry(db / 2000, db / 2000, len, 6, 1);
+      if (dir === 'x') gm.rotateZ(Math.PI / 2);
+      if (dir === 'z') gm.rotateX(Math.PI / 2);
+      return gm;
+    }
+    const up = hk.up === undefined ? 1 : hk.up, tie = !!hk.tie, h = len / 2, pts = [];
+    if (hk.a) {                                    // عكفة البداية (مرآة على −u)
+      const q = hookPts(db, hk.a, tie, up);
+      for (let i = q.length - 1; i >= 0; i--) pts.push([-h - q[i][0], q[i][1]]);
+    } else pts.push([-h, 0]);
+    pts.push([-h + 0.001, 0], [h - 0.001, 0]);
+    if (hk.b) hookPts(db, hk.b, tie, up).forEach(q => pts.push([h + q[0], q[1]]));
+    else pts.push([h, 0]);
+    const v = pts.map(q => dir === 'x' ? new T.Vector3(q[0], q[1], 0)
+      : dir === 'z' ? new T.Vector3(0, q[1], q[0])
+        : new T.Vector3(q[1], q[0], 0));           // dir 'y' = عمودي (أسياخ العمود)
+    return new T.TubeGeometry(new T.CatmullRomCurve3(v, false, 'catmullrom', 0),
+      Math.max(24, pts.length * 3), db / 2000, 6, false);
   }
   function inst(geo, col, pos, info, grp, wt, meta) {
     if (!pos.length) return null;
@@ -455,22 +605,31 @@ function Viewer3D(el, M, onPick) {
     return im;
   }
   /* سيخ مقطوع على أطوال السوق مع وصلات ظاهرة */
-  function addRun(len, db, dir, pos, info, col, grp) {
+  /* hook: زاوية عكفة الطرفين (افتراضياً 90° لكل سيخ مستقيم كما يُنفَّذ بالموقع
+     وكما يُحسب بجدول التقطيع). العكفة تُرسم على **الطرفين الحقيقيين للسيخ**
+     لا على أطراف القطع الوسطية — فالوصلة تراكب لا نهاية سيخ. */
+  function addRun(len, db, dir, pos, info, col, grp, hook) {
     const lap = lapOf(db);
     let n = 1;
     while ((len + (n - 1) * lap) / n > stock && n < 60) n++;
     const piece = (len + (n - 1) * lap) / n;
+    const hA = hook === undefined ? 90 : hook, up = (hook && hook.up) || 1;
+    const ang = (typeof hA === 'object') ? (hA.ang || 90) : hA;
     const w1 = piece * Math.PI * Math.pow(db / 2000, 2) * 7850;
     for (let i = 0; i < n; i++) {
       const startC = i * (piece - lap) + piece / 2 - len / 2;
       const off = (i % 2) ? db / 1000 : 0;                 // إزاحة لإظهار التداخل
       const pp = pos.map(p => dir === 'x' ? [p[0] + startC, p[1], p[2] + off]
         : dir === 'z' ? [p[0] + off, p[1], p[2] + startC] : [p[0] + off, p[1] + startC, p[2]]);
+      const hk = ang ? { a: i === 0 ? ang : 0, b: i === n - 1 ? ang : 0, up: up } : null;
+      const ex = ang ? [['العكفة', 'عكفة ' + ang + '° بطرفي السيخ — ثني داخلي ' +
+        Math.round(bendDia(db, false)) + ' مم وامتداد ' + Math.round(hookExt(db, ang, false)) +
+        ' مم (ACI جدول 25.3.1)']] : [];
       const inf = i === 0 && info ? Object.assign({}, info, { rows: (info.rows || []).concat(
         [['التقطيع', n + ' قطعة × ' + piece.toFixed(2) + ' م (سوق ' + stock + ' م)'],
-         ['الوصلات', (n - 1) + ' وصلة × ' + lap.toFixed(2) + ' م (1.3·ld)']]) }) : null;
+         ['الوصلات', (n - 1) + ' وصلة × ' + lap.toFixed(2) + ' م (1.3·ld)']]).concat(ex) }) : null;
       const meta = { grp: (info && info.grp) || CURG, floor: info && info.floor };
-      inst(barGeo(piece, db, dir), col || STEEL, pp, inf, grp, w1 * pp.length, meta);
+      inst(barGeo(piece, db, dir, hk), col || STEEL, pp, inf, grp, w1 * pp.length, meta);
     }
     return n;
   }
@@ -481,25 +640,69 @@ function Viewer3D(el, M, onPick) {
       .forEach(q => pts.push(new T.Vector3(q[0], 0, q[1])));
     return new T.TubeGeometry(new T.CatmullRomCurve3(pts, true, 'catmullrom', .1), 36, db / 2000, 5, true);
   }
-  /* ذيلا العكفة 135° عند ركن السوار (ACI 25.3.2 — امتداد 6db ≥ 75 مم) */
-  function hookGeo(w, d, db, ext) {
-    const e = Math.max(ext || 0, .075), s2 = e / Math.SQRT2, pts = [];
-    const mk = a => new T.TubeGeometry(new T.CatmullRomCurve3(a, false, 'catmullrom', 0),
-      6, db / 2000, 5, false);
-    pts.push(new T.Vector3(w / 2, 0, d / 2), new T.Vector3(w / 2 - s2, 0, d / 2 - s2));
-    return mk(pts);
+  /* ============ العكفة الزلزالية 135° للأساور — ACI 318M-14 المادة 25.3.4 ============
+     البند يوجب ثلاثة أشياء معاً، وكلها مرسومة هنا كما تُنفَّذ:
+       (١) ثني ≥ 135° لكل الأساور غير الدائرية
+       (٢) العكفة **تلتفّ حول سيخ طولي** (engage) لا بالهواء
+       (٣) الامتداد يتّجه إلى **داخل** السوار لا خارجه
+     العكفتان بركنين **متقابلين قطرياً** لا بركن واحد — فلو انفتحت واحدة بقيت
+     الأخرى تمسك اللبّ. والرسم يُظهر ذلك بالعين. */
+  function tieHookGeo(w, d, db, corner) {
+    const R = ((db <= 16 ? 4 : 6) * db / 2 + db / 2) / 1000;   // نصف قطر محور الثني
+    const e = Math.max(6 * db, 75) / 1000;                     // امتداد 6db ≥ 75 مم
+    const sx = corner ? 1 : -1, sz = corner ? 1 : -1;
+    const cx = sx * (w / 2), cz = sz * (d / 2);
+    // القوس يبدأ باتجاه الضلع ثم ينثني 135° نحو قطر المقطع (إلى الداخل)
+    const p = [], N = 9, a0 = Math.atan2(-sz, -sx);            // اتجاه القطر للداخل
+    const st = Math.atan2(0, -sx);                             // اتجاه الضلع
+    for (let i = 0; i <= N; i++) {
+      const t = st + (3 * Math.PI / 4) * (i / N) * sz * (sx > 0 ? 1 : -1);
+      p.push(new T.Vector3(cx + R * Math.cos(t) * 0 + R * Math.sin(t) * -sx,
+        0, cz - R * (1 - Math.cos(t)) * sz));
+    }
+    const dirI = new T.Vector3(-sx, 0, -sz).normalize();
+    const tip = p[p.length - 1].clone().add(dirI.multiplyScalar(e));
+    p.push(tip);
+    return new T.TubeGeometry(new T.CatmullRomCurve3(p, false, 'catmullrom', 0),
+      18, db / 2000, 5, false);
   }
-  function addRings(w, d, db, pos, info, col, grp, rot, hookExt) {
+  /* الأتاري الداخلي (Crosstie) — ACI 25.3.5: متصل بين طرفيه، 135° بطرف و90° بالآخر */
+  function crossGeo(span, db, ang2) {
+    const R = ((db <= 16 ? 4 : 6) * db / 2 + db / 2) / 1000;
+    const e1 = Math.max(6 * db, 75) / 1000, e2 = Math.max(6 * db, 75) / 1000;
+    const h = span / 2, p = [];
+    p.push(new T.Vector3(-h - R * .7 - e1 * .7, 0, R * .7 + e1 * .7));   // ذيل 135°
+    p.push(new T.Vector3(-h - R * .4, 0, R * .4));
+    p.push(new T.Vector3(-h, 0, 0), new T.Vector3(h, 0, 0));             // الساق
+    p.push(new T.Vector3(h + R * .4, 0, R * .4));
+    p.push(new T.Vector3(h + R * .4, 0, R * .4 + e2));                   // ذيل 90°
+    return new T.TubeGeometry(new T.CatmullRomCurve3(p, false, 'catmullrom', 0),
+      20, db / 2000, 5, false);
+  }
+  function addRings(w, d, db, pos, info, col, grp, rot, hookExt, cross) {
     if (!pos.length) return null;
     const geo = ringGeo(w, d, db);
-    const hg = hookGeo(w, d, db, hookExt);
-    if (rot === 'x') { geo.rotateX(Math.PI / 2); hg.rotateX(Math.PI / 2); }
-    if (rot === 'z') { geo.rotateX(Math.PI / 2); geo.rotateY(Math.PI / 2);
-      hg.rotateX(Math.PI / 2); hg.rotateY(Math.PI / 2); }
-    const im = inst(geo, col || TIE, pos, info, grp,
-      pos.length * 2 * (w + d) * Math.PI * Math.pow(db / 2000, 2) * 7850);
-    inst(hg, col || TIE, pos, null, grp, 0,
-      { grp: (info && info.grp) || CURG, floor: info && info.floor });
+    const h1 = tieHookGeo(w, d, db, true), h2 = tieHookGeo(w, d, db, false);
+    const gs = [geo, h1, h2];
+    // أتاري داخلية: عدد الأرجل الإضافية بكل اتجاه ومواقعها
+    const cx = (cross && cross.x) || 0, cz = (cross && cross.z) || 0;
+    for (let i = 0; i < cx; i++) {
+      const g = crossGeo(d, db); g.rotateY(Math.PI / 2);
+      g.translate((-0.5 + (i + 1) / (cx + 1)) * w, 0, 0); gs.push(g);
+    }
+    for (let i = 0; i < cz; i++) {
+      const g = crossGeo(w, db);
+      g.translate(0, 0, (-0.5 + (i + 1) / (cz + 1)) * d); gs.push(g);
+    }
+    gs.forEach(g => {
+      if (rot === 'x') g.rotateX(Math.PI / 2);
+      if (rot === 'z') { g.rotateX(Math.PI / 2); g.rotateY(Math.PI / 2); }
+    });
+    const per = 2 * (w + d) + (cx * d + cz * w);
+    const im = inst(gs[0], col || TIE, pos, info, grp,
+      pos.length * per * Math.PI * Math.pow(db / 2000, 2) * 7850);
+    const meta = { grp: (info && info.grp) || CURG, floor: info && info.floor };
+    for (let i = 1; i < gs.length; i++) inst(gs[i], col || TIE, pos, null, grp, 0, meta);
     return im;
   }
   /* الكرسي حسب نوعه وزاويته — z90 أرجل عمودية · s135 ميل 45° · sb مستمر · ihc منفرد.
@@ -656,11 +859,17 @@ function Viewer3D(el, M, onPick) {
         for (let y2 = z0 + .05; y2 < z0 + lo; y2 += sc2) tp.push([X, y2, Z]);
         for (let y2 = z0 + lo; y2 < z1 - lo; y2 += sm) tp.push([X, y2, Z]);
         for (let y2 = Math.max(z1 - lo, z0 + lo); y2 < z1 - .05; y2 += sc2) tp.push([X, y2, Z]);
+        const sup = cr.support || {};
         addRings(cb - 2 * cvr, ch - 2 * cvr, cr.tie_db, tp,
           { title: 'أتاري العمود بعكفة 135° — طابق ' + (s + 1), kind: 'rebar', floor: s + 1,
             rows: [['الوسط', cr.tie_label], ['التطويق', cr.conf_label || '—'],
-              ['العكفة', (cr.hook && cr.hook.label) || 'عكفة 135°'], ['العدد', tp.length]],
-          }, null, null, null, cr.hook ? cr.hook.ext / 1000 : .075);
+              ['العكفة', (cr.hook && cr.hook.label) || 'عكفة زلزالية 135° (ACI 25.3.4)'],
+              ['العكفتان', 'بركنين **متقابلين قطرياً** — لو انفتحت واحدة بقيت الأخرى'],
+              ['الأتاري الداخلية', (sup.total || 0) + ' — ' + (sup.why || 'ACI 25.7.2.3')],
+              ['التباعد الحاكم', (cr.tie_rule && cr.tie_rule.note) || '—'],
+              ['العدد', tp.length]],
+          }, null, null, null, cr.hook ? cr.hook.ext / 1000 : .075,
+          { x: (sup.x && sup.x.n) || 0, z: (sup.y && sup.y.n) || 0 });
         // ---- الدولات (أشاير الربط) عند قاعدة العمود ----
         if (s === 0 && cr.dowels) {
           const dw = cr.dowels, em = dw.embed / 1000, pj = dw.project / 1000;
@@ -704,10 +913,10 @@ function Viewer3D(el, M, onPick) {
         const t2 = -len / 2 + i * len / ns;
         stp.push(dir === 'x' ? [cX + t2, z - hB / 2, cZ] : [cX, z - hB / 2, cZ + t2]);
       }
-      const inf = t => ({ title: t + ' — ' + ttl, kind: 'rebar', floor: floor,
+      const inf = (t, more) => ({ title: t + ' — ' + ttl, kind: 'rebar', floor: floor,
         rows: [['المقطع', Math.round(bw * 1000) + ' × ' + Math.round(hB * 1000) + ' مم'],
           ['سفلي', reb.bottom.label], ['علوي', reb.top.label], ['الأساور', sdb.label],
-          ['الغطاء', Math.round(cv * 1000) + ' مم']] });
+          ['الغطاء', Math.round(cv * 1000) + ' مم']].concat(more || []) });
       addRun(len, reb.bottom.db, dir, bot, inf('تسليح سفلي مستقيم'));
       // الأسياخ المثنية 45° عند ln/7 (نصف الحديد السفلي)
       if (bnt.length && det) {
@@ -744,9 +953,17 @@ function Viewer3D(el, M, onPick) {
       } else {
         addRun(len, reb.top.db, dir, top, inf('تسليح علوي'));
       }
+      const bLegs = (sdb.legs || 2) - 2;      // أرجل زائدة على السوار المحيط = أتاري
       addRings(dir === 'x' ? bw - 2 * cv : hB - 2 * cv, dir === 'x' ? hB - 2 * cv : bw - 2 * cv,
-        sdb.db, stp, inf('أساور بعكفة 135°'), null, null, dir === 'x' ? 'x' : 'z',
-        Math.max(6 * sdb.db / 1000, .075));
+        sdb.db, stp, inf('أساور بعكفة زلزالية 135°', [
+          ['لماذا هنا', 'ثلاث وظائف: تحمل القص · تحصر لبّ الخرسانة · تمنع انبعاج ' +
+            'الأسياخ الطولية بعد انقشار الغطاء'],
+          ['العكفة', 'ثني 135° يلتفّ على سيخ طولي وامتداده **داخل** السوار ' +
+            '(ACI 25.3.4) — العكفة 90° تنفتح عند انقشار الغطاء'],
+          ['الأرجل', (sdb.legs || 2) + ' — ' + (bLegs > 0 ? bLegs + ' أتاري داخلية'
+            : 'سوار محيط وحده')]]),
+        null, null, dir === 'x' ? 'x' : 'z', Math.max(6 * sdb.db / 1000, .075),
+        { x: 0, z: Math.max(0, bLegs) });
     };
     if (ROOM) {
       (md.beams || []).forEach((b, i) => {

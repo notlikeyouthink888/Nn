@@ -44,6 +44,7 @@ def meta():
                                   for a, b, c, d, e, f in DT.EXPOSURE_CLASSES],
                 exposure_default=list(DT.IRAQ_DEFAULT),
                 defl_cases=[dict(k=a, name=b, den=c, what=d) for a, b, c, d in E.DEFL_CASES],
+                canti_sides=[dict(k=a, name=b) for a, b in PJ.CANTI_SIDES],
                 joint_conf=[dict(k=a, name=b, gamma=c) for a, b, c in E.JOINT_CONF],
                 cover_table=[dict(name=a, v=b, ref=c) for a, b, c in DT.COVER_TABLE],
                 hordi=SL.HORDI_DEFAULT, version="3.0")

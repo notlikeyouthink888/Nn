@@ -42,6 +42,8 @@ const expSelects = () => EXP_CATS.map(([p, nm], i) => {
       (c.fc ? ' · f\'c ≥ ' + c.fc : '') + (c.wcm ? ' · w/cm ≤ ' + c.wcm : '')]), def);
 }).join('');
 const expPick = () => EXP_CATS.map(([p]) => txt('w_exp' + p)).filter(Boolean);
+// معرّف HTML آمن لجهة البروز ('x+' → 'xp') — الرمزان + و− لا يصلحان بمحدّد CSS
+const csid = k => k.replace('+', 'p').replace('-', 'm');
 const kpi = (l, v, cls = '') => `<div class="kpi ${cls}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
 const tag = ok => ok ? '<span class="tag t-ok">مقبول ✓</span>' : '<span class="tag t-bad">غير مقبول ✗</span>';
 const rcol = r => r <= 0.7 ? '#34d399' : r <= 0.9 ? '#a3e635' : r <= 1.0 ? '#fbbf24' : '#f87171';
@@ -628,6 +630,8 @@ const v3chips = list => list.map(([k, t, on]) =>
     onchange="V3&&V3.group('${k}',this.checked);refreshStats()"> ${t}</label>`).join('');
 const v3legend = () => `<div class="legend"><span><i style="background:#e8443a"></i>أسياخ التسليح</span>
   <span><i style="background:#ff9f1c"></i>أتاري وأساور</span>
+  <span><i style="background:#facc15"></i>كانتيليفر — علوي (شدّ)</span>
+  <span><i style="background:#60a5fa"></i>كانتيليفر — سفلي (انكماش)</span>
   <span><i style="background:#22d3ee"></i>تسليح إضافي</span>
   <span><i style="background:#86efac"></i>كراسي</span>
   <span><i style="background:#c084fc"></i>دولات</span>
@@ -959,8 +963,228 @@ function detailPanel(r) {
           ${nf(r.floor.slab_sw, 2)} kN/m².
           <button class="btn gh" style="margin-top:8px" onclick="wtab('slabs')">قارن كل الأنواع بالتفصيل</button></div></div>
       ${extraPanel(r)}
+      ${tiePanel(r)}
+      ${beamRebarPanel(r)}
+      ${cantiPanel(r)}
+      ${pilePanel(r)}
     </div>
 `;
+}
+
+/* ---------- تركيب الكانات والأتاري: ماذا تفعل ولماذا هي هنا بالذات ---------- */
+function tiePanel(r) {
+  const cr = r.model.col.rebar, br = (r.aci_extra && r.aci_extra.beam_rules) || null;
+  const sup = cr.support || {}, tr = cr.tie_rule || {}, hk = cr.tie_hook || {};
+  const ct = br && br.rows[0] ? br.rows[0].crosstie : null;
+  return `
+    <div class="card"><h3>🌀 تركيب الكانات والأتاري — ولماذا هي هنا بالذات</h3>
+      <div class="rec" style="margin:0 0 12px">
+        <h3 style="margin-top:0">الأسوار لا توضع «لتربط الحديد»</h3>
+        <div style="font-size:13px;line-height:1.9">هذا أشيع سوء فهم بالموقع. للأسوار
+          <b>ثلاث وظائف إنشائية</b>، والربط ليس منها:
+          <ol style="padding-right:20px;margin:8px 0">
+            <li><b>تحمل القص</b> — الشقّ القطري يميل 45° فيقطع الأسوار، وكل سوار
+              يعبره يشدّ ويمنع انفتاحه. ولهذا يُحسب تباعدها من Vs لا بالتقدير.</li>
+            <li><b>تحصر لبّ الخرسانة</b> — الخرسانة المحصورة تتحمّل أكثر وتنضغط
+              أطول قبل أن تنهار. هذا مصدر <b>مطاوعة</b> العمود بالزلزال كلها.</li>
+            <li><b>تمنع انبعاج السيخ الطولي</b> — بعد انقشار الغطاء يصير السيخ
+              عموداً نحيلاً حرّاً؛ السوار يقصّر طوله الحرّ فلا ينبعج. وهذه الوظيفة
+              هي سبب المادة 25.7.2.3 كلها.</li>
+          </ol>
+          والوظيفة الثالثة تفسّر لماذا لا يكفي سوار محيطي وحده كلما كبر المقطع.</div></div>
+
+      <h4 style="margin:12px 0 6px;color:var(--mut);font-size:13px">أولاً — أين تُوضع وبأي تباعد</h4>
+      ${table(['العنصر', 'الموضع', 'التباعد', 'البند والسبب'], [
+        ['العمود — المنطقة الحرجة',
+         'على مسافة ℓo من كل طرف (أعلى وأسفل كل طابق)',
+         '<b>' + (cr.conf_label || '').replace('تطويق ', '') + '</b>',
+         'ACI 18.7.5 — طرفا العمود هما موضع المفصل اللدن بالزلزال، فالتطويق يُكثَّف هناك'],
+        ['العمود — الوسط', 'ما بين المنطقتين الحرجتين',
+         '<b>Ø' + cr.tie_db + ' @ ' + int(cr.tie_s) + ' مم</b>',
+         'ACI 25.7.2.1(ب) — ' + (tr.note || '')],
+        ...(br ? br.rows.map(b => ['جسر ' + b.beam + ' — المنطقة الحرجة',
+          '2h = ' + (2 * b.h / 1000).toFixed(2) + ' م من وجه كل مسند',
+          '<b>≤ min(d/4 , 8db , 24db الأسوار , 300) </b>',
+          'ACI 18.6.4 — المفصل اللدن بالجسر يتكوّن عند وجه العمود']) : []),
+        ...(br ? br.rows.map(b => ['جسر ' + b.beam + ' — الوسط', 'باقي البحر',
+          '<b>' + b.stirrup.label + '</b>',
+          'ACI 9.7.6.2.2 — ≤ d/2 (و d/4 عند القص العالي) وبحدّ 600 مم']) : []),
+      ])}
+
+      <h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">ثانياً — لماذا العكفة 135° لا 90°</h4>
+      ${table(['البند', 'التفصيل'], [
+        ['هندسة العكفة الزلزالية', '<b>' + (hk.label || '') + '</b> — ACI جدول 25.3.2'],
+        ['الشرط الأول (25.3.4أ)', 'ثني <b>≥ 135°</b> لكل الأسوار غير الدائرية · و90° للحلزون الدائري'],
+        ['الشرط الثاني (25.3.4ب)', 'العكفة <b>تلتفّ على سيخ طولي</b> — لا تُثنى بالهواء'],
+        ['الشرط الثالث (25.3.4ب)', 'الامتداد يتّجه إلى <b>داخل</b> السوار لا خارجه'],
+        ['لماذا', 'الغطاء الخرساني ينقشر أول ما يصل العمود لحدّه. العكفة 90° ' +
+          'يمسكها الغطاء وحده، فتنفتح بمجرد انقشاره ويتحرّر السوار كله. ' +
+          'العكفة 135° مثنية <b>داخل اللبّ المحصور</b> فتبقى ممسوكة بعد انقشار الغطاء.'],
+        ['بالمجسم', 'العكفتان مرسومتان بركنين <b>متقابلين قطرياً</b> لا بركن واحد — ' +
+          'فلو انفتحت واحدة بقيت الأخرى تمسك اللبّ. شغّل «التسليح» وقرّب على أي عمود لتراهما.'],
+      ])}
+
+      <h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">ثالثاً — الأتاري الداخلية: متى تلزم فعلاً</h4>
+      ${table(['الاتجاه', 'عدد الأسياخ بالوجه', 'الخلوص بينها', 'أتاري مطلوبة', 'لماذا'], [
+        ['أفقي (عرض العمود)', (sup.x && sup.x.bars) || '—',
+         sup.x ? Math.round(sup.x.gap) + ' مم' : '—',
+         '<b>' + ((sup.x && sup.x.n) || 0) + '</b>', (sup.x && sup.x.why) || ''],
+        ['رأسي (عمق العمود)', (sup.y && sup.y.bars) || '—',
+         sup.y ? Math.round(sup.y.gap) + ' مم' : '—',
+         '<b>' + ((sup.y && sup.y.n) || 0) + '</b>', (sup.y && sup.y.why) || ''],
+      ])}
+      <div class="note">قاعدة ACI 25.7.2.3 بنصّها: <b>كل سيخ ركني وكل سيخ بديل</b> يجب أن
+        يُسنَد بركن أسوار بزاوية داخلية ≤ 135°، <b>ولا يبعد أي سيخ غير مسنود أكثر من
+        150 مم خلوصاً</b> عن سيخ مسنود. فحين تكون الأسياخ متقاربة (الخلوص ≤ 150 مم)
+        <b>لا تلزم أتاري إطلاقاً</b> — والبرنامج يحسب الخلوص الفعلي بدل أن يفرضها
+        بقاعدة تقريبية. ${ct ? '<br>وشكل الأتاري نفسه محكوم بالمادة 25.3.5: <b>' +
+        ct.label + '</b>. ' + ct.why : ''}</div>
+
+      <h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">رابعاً — قطر الأسوار</h4>
+      ${table(['القاعدة', 'المطلوب', 'المستعمل'], [
+        ['ACI 25.7.2.2', 'Ø10 للأسياخ الطولية Ø32 فأصغر · Ø13 لـ Ø36 فأكبر أو المحزومة',
+         '<b>Ø' + cr.tie_db + '</b> (الأدنى المطلوب Ø' + (cr.tie_db_min || 10) + ')'],
+        ['ACI 25.7.2.1(أ)', 'الخلوص الصافي ≥ (4/3)·مقاس الركام الأكبر',
+         tr.clear_min ? '≥ ' + Math.round(tr.clear_min) + ' مم' : '—'],
+      ])}</div>`;
+}
+
+/* ---------- تسليح الجسور: أين يُقطع وأين يُوصَل وأين يُمنع ---------- */
+function beamRebarPanel(r) {
+  const br = r.aci_extra && r.aci_extra.beam_rules;
+  if (!br) return '';
+  const y = ok => ok ? '<span class="tag t-ok">مطابق</span>' : '<span class="tag t-bad">راجع</span>';
+  return `
+    <div class="card"><h3>🧵 تسليح الجسور — أين يُقطع السيخ وأين يُوصَل وأين يُمنع</h3>
+      ${br.rows.map(b => `
+        <h4 style="margin:10px 0 6px;color:var(--acc2);font-size:13.5px">جسر ${b.beam}
+          — ${int(b.b)}×${int(b.h)} مم · بحر ${nf(b.span, 2)} م (صافي ${nf(b.ln, 2)} م)
+          · ${b.top.label} علوي · ${b.bottom.label} سفلي</h4>
+        ${table(['البند', 'القاعدة', 'القيمة المحسوبة'], [
+          ['9.7.3.3', 'يمتد السيخ بعد نقطة عدم الحاجة إليه = الأكبر من d و12db',
+           '<b>' + nf(b.cut.ext_top, 2) + ' م</b> علوي · ' + nf(b.cut.ext_bot, 2) + ' م سفلي'],
+          ['9.7.3.4', 'الحديد المستمر يمتد ld كاملاً بعد نقطة قطع جاره',
+           '<b>' + nf(b.cut.ld_top, 2) + ' م</b> علوي · ' + nf(b.cut.ld_bot, 2) + ' م سفلي'],
+          [b.cut.pos_into.clause, 'ما يدخل من الحديد السفلي بالمسند', b.cut.pos_into.rule],
+          ['9.7.3.8.4', 'ما يتجاوز من الحديد العلوي نقطة الانقلاب',
+           '<b>' + b.cut.neg_third.n + ' سيخ</b> — ' + b.cut.neg_third.rule],
+          ['9.7.3.5', '<b>يُمنع</b> إنهاء حديد الشدّ بمنطقة شدّ',
+           '<span style="font-size:11.5px">' + b.cut.no_cut_tension.rule + '</span>'],
+        ])}
+        <div class="rec" style="margin:10px 0">
+          <h3 style="margin-top:0">🚫 أين يُمنع وصل حديد هذا الجسر — ACI 18.6.3.3</h3>
+          <div style="font-size:13px;line-height:1.9">
+            يُمنع التراكب: <b>داخل العقدة</b> · وبمسافة <b>2h = ${nf(2 * b.h / 1000, 2)} م</b>
+            من وجه العقدة · وبمسافة 2h من أي مقطع يُتوقّع فيه خضوع انحنائي.<br>
+            <b style="color:${b.splice.ok ? 'var(--ok)' : '#f87171'}">${b.splice.label}</b><br>
+            ${b.splice.ok ? 'وتُطوَّق منطقة الوصل بكانات تباعدها ≤ الأصغر من d/4 و100 مم = <b>' +
+              Math.round(b.splice.s_hoop) + ' مم</b>.' : ''}
+            <div style="margin-top:8px;padding:8px;background:#7f1d1d22;border-radius:6px">
+              <b>هذا البند يُخالَف بالموقع دائماً:</b> الوصلة تُوضع «فوق العمود» لأنه
+              أسهل — وهو <b>بالضبط</b> المكان الممنوع، لأن العزم السالب أقصى ما يكون هناك
+              وهناك يُتوقّع خضوع الحديد. ${b.splice.why}</div>
+            ${spliceBar(b)}
+          </div></div>
+        ${table(['البند', 'الفحص الزلزالي (18.6.3)', 'المحسوب', 'الحدّ', ''],
+          b.seismic.rows.map(x => ['<code style="color:var(--acc2)">' + x.clause + '</code>',
+            x.name, (x.fmt ? nf(x.val, 4) : (x.unit === 'سيخ' ? x.val : int(x.val))) + ' ' + x.unit,
+            (x.ge ? '≥ ' : '≤ ') + (x.fmt ? nf(x.lim, 4) : int(x.lim)) + ' ' + x.unit, y(x.ok)]))}
+        <div class="note">${b.seismic.why}</div>
+        ${table(['العكفة', 'الهندسة', 'الطول المضاف للقصّ'], [
+          ['حديد الجسر Ø' + b.top.db + ' — عكفة 90°', b.hook_bar.label,
+           '<b>' + Math.round(b.hook_bar.added) + ' مم</b> (قوس ' + Math.round(b.hook_bar.arc) +
+           ' + امتداد ' + Math.round(b.hook_bar.ext) + ')'],
+          ['الأسوار Ø' + b.stirrup.db + ' — عكفة زلزالية 135°', b.hook_tie.label,
+           '<b>' + Math.round(b.hook_tie.added) + ' مم</b> لكل عكفة × عكفتين'],
+        ])}`).join('<hr style="border:none;border-top:1px solid var(--bd);margin:16px 0">')}
+      <div class="note">طول العكفة المضاف = <b>طول القوس على محور السيخ</b> + الامتداد
+        المستقيم — لا الامتداد وحده كما يُحسب بالموقع. وهو مضاف فعلاً لأطوال القطع
+        بجدول التقطيع.</div></div>`;
+}
+
+/* شريط بصري لمنطقة الوصل المسموحة على طول البحر */
+function spliceBar(b) {
+  if (!b.splice.ok) return `<div style="margin-top:10px;height:26px;border-radius:6px;
+    background:repeating-linear-gradient(45deg,#7f1d1d,#7f1d1d 8px,#991b1b 8px,#991b1b 16px);
+    display:flex;align-items:center;justify-content:center;color:#fecaca;font-size:11.5px">
+    البحر كله منطقة منع — لا وصلة مسموحة</div>`;
+  const a = (b.splice.zone[0] / b.span) * 100, c = (b.splice.zone[1] / b.span) * 100;
+  return `<div style="margin-top:10px">
+    <div style="position:relative;height:26px;border-radius:6px;overflow:hidden;
+      background:repeating-linear-gradient(45deg,#7f1d1d,#7f1d1d 8px,#991b1b 8px,#991b1b 16px)">
+      <div style="position:absolute;left:${a}%;width:${c - a}%;top:0;bottom:0;
+        background:#065f46;display:flex;align-items:center;justify-content:center;
+        color:#a7f3d0;font-size:11px;font-weight:700">وصل مسموح</div></div>
+    <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--mut);margin-top:3px">
+      <span>مركز المسند 0.00</span><span>وسط البحر ${nf(b.span / 2, 2)} م</span>
+      <span>المسند التالي ${nf(b.span, 2)} م</span></div></div>`;
+}
+
+/* ---------- الكانتيليفر ---------- */
+function cantiPanel(r) {
+  const c = r.canti;
+  if (!c) return '';
+  if (!c.on) return `<div class="card"><h3>📐 الكانتيليفر (الشناشيل والبلكونات)</h3>
+    <div class="note">${c.note}</div></div>`;
+  const y = ok => ok ? '<span class="tag t-ok">مطابق</span>' : '<span class="tag t-bad">راجع</span>';
+  return `
+    <div class="card"><h3>📐 الكانتيليفر — الشناشيل والبلكونات</h3>
+      <div class="grid g4">
+        ${kpi('البروز', nf(c.L, 2) + ' م')}
+        ${kpi('عدد الجهات', c.items.length)}
+        ${kpi('المساحة', nf(c.area, 1) + ' م²')}
+        ${kpi('المطابقة', c.ok ? 'مطابق ✓' : 'راجع', c.ok ? 'ok' : 'bad')}</div>
+      ${c.items.map(i => `
+        <h4 style="margin:12px 0 6px;color:var(--acc2);font-size:13.5px">${i.side_name}
+          — سماكة ${int(i.h)} مم · Mu ${nf(i.Mu, 1)} kN·م/م · Vu ${nf(i.Vu, 1)} kN/م</h4>
+        <div class="grid g2" style="gap:10px">
+          <div style="padding:10px;background:#facc1522;border-radius:8px;border-right:3px solid #facc15">
+            <b style="color:#facc15">الوجه العلوي — حديد الشدّ</b>
+            <div style="font-size:20px;font-weight:700;margin:4px 0">${i.top.label}</div>
+            <div style="font-size:11.5px;color:var(--mut)">هنا <b>كل</b> الحديد الرئيسي.
+              عزم البروز سالب على طوله كله، فالوجه المشدود هو العلوي.</div></div>
+          <div style="padding:10px;background:#60a5fa22;border-radius:8px;border-right:3px solid #60a5fa">
+            <b style="color:#60a5fa">الوجه السفلي — انكماش وتماسك</b>
+            <div style="font-size:20px;font-weight:700;margin:4px 0">${i.bottom.label}</div>
+            <div style="font-size:11.5px;color:var(--mut)">وجه <b>الضغط</b> — لا يقاوم
+              عزم البروز. حديد انكماش 0.0018·Ag وتماسك يدخل المسند.</div></div></div>
+        ${table(['البند', 'القاعدة', 'المحسوب', 'الحدّ', ''], i.rules.map(x =>
+          ['<code style="color:var(--acc2)">' + x.c + '</code>', x.t, x.v, x.l, y(x.ok)]))}
+        <div class="note">${i.rules.map(x => '<b>' + x.t.replace(/\*\*/g, '') + ':</b> ' + x.why).join('<br>')}</div>
+        ${table(['التثبيت والترخيم', 'القيمة'], [
+          ['نشر الحديد العلوي', i.anchor.rule],
+          ['الترخيم الفوري', nf(i.d_imm, 2) + ' مم' + (i.defl.ok ? ' — ضمن حدّ ' +
+            nf(i.defl.gov.limit, 1) + ' مم' : ' — <b style="color:#f87171">يتجاوز الحدّ</b>')],
+          ['أدنى سماكة', int(i.hmin) + ' مم = ℓ/8 (جدول ACI 9.3.1.1) — والمنفَّذ ' + int(i.h) + ' مم'],
+        ])}`).join('')}
+      <div class="note">${c.note}<br>شغّل <b>«التسليح»</b> بالمجسم واختر طبقة
+        <b>«كانتيليفر (شناشيل)»</b> لترى الحديد الأصفر بالأعلى والأزرق بالأسفل بعينك.</div></div>`;
+}
+
+/* ---------- الركائز: متى تلزم فعلاً — وقلّما تلزم ---------- */
+function pilePanel(r) {
+  const a = r.advisor, pl = a && a.piles;
+  if (!pl) return '';
+  const hit = pl.triggers || [];
+  return `
+    <div class="card"><h3>🪨 الركائز — متى تلزم فعلاً (وقلّما تلزم)</h3>
+      <div class="rec" style="margin:0 0 12px;border-right:3px solid ${pl.need ? '#f87171' : 'var(--ok)'}">
+        <h3 style="margin-top:0">${pl.need ? '⚠️ التربة توجب التأسيس العميق' : '✓ لا حاجة للركائز'}</h3>
+        <div style="font-size:13px;line-height:1.9">${pl.verdict}</div></div>
+      <div class="note" style="margin-bottom:10px"><b>القرار من التربة لا من عدد الطوابق.</b>
+        مبنى عشرين طابقاً على طين قاسٍ يقف على حصيرة، ومبنى طابقين على سبخة لا يقف على
+        أي أساس سطحي. الارتفاع والحمل يقرّران <b>حجم</b> الأساس لا <b>نوعه</b>.</div>
+      ${table(['الحالة', 'الشرط', 'لماذا', 'ينطبق؟'], pl.cases.map(c2 => {
+        const on = hit.indexOf(c2.t) >= 0;
+        return [on ? '<b style="color:#f87171">✗ قائمة</b>' : '<span style="color:var(--mut)">—</span>',
+          c2.t, '<span style="font-size:11.5px;color:var(--mut)">' + c2.w + '</span>',
+          on ? '<span class="tag t-bad">نعم</span>' : '<span class="tag t-ok">لا</span>'];
+      }))}
+      <div class="note"><b>وإذا لزمت الركائز:</b> لا تُنفَّذ <b>ركيزة مفردة</b> تحت عمود
+        أبداً — خطأ موقعها المسموح بالتنفيذ يحوّل الحمل المحوري إلى عزم على رأسها،
+        وليس لها بديل إن ظهر بها عيب صبّ. والاثنتان تقاومان العزم بمحور واحد فقط
+        فتلزمهما جسور رابطة بالاتجاه العمودي. <b>الحد الأدنى العملي ثلاث ركائز بمثلث</b>،
+        والبرنامج يفرضه ولو كان الحمل يحتاج واحدة.</div></div>`;
 }
 
 /* ---- أربعة أبواب من ACI 318M-14 تُحسب على المشروع: 22.7 · 18.8.4 · 24.2 · 19.3 ---- */
@@ -1038,6 +1262,77 @@ function wtab(id) {
   $$('.wpanel').forEach(p => { p.hidden = p.dataset.t !== id; });
   if (!WT[id] && TABS[id]) { WT[id] = 1; TABS[id](); }
 }
+/* ===== خريطة الحديد على طول الجسر — شريط المناطق بالأشعة الإنشائية =====
+   الجسر ليس مقطعاً واحداً: على طوله مناطق يختلف فيها ما يجب أن يُنفَّذ، وأخطاء
+   الموقع كلها تقع بحدود هذه المناطق لا بالحساب. هنا تُرسم بالمقياس. */
+function zoneMapCard(beams) {
+  const b = beams.find(m => m.det && m.det.zones);
+  if (!b) return '';
+  const uniq = {}; beams.forEach(m => { if (m.det && m.det.zones)
+    uniq[m.det.zones.span.toFixed(2) + '|' + m.det.zones.h] = m; });
+  const list = Object.values(uniq).slice(0, 4);
+  return `<div class="card" style="margin-top:14px">
+    <h3>🧭 خريطة الحديد على طول الجسر — أين يتغيّر التنفيذ</h3>
+    ${list.map(m => zoneMap(m.det.zones, m)).join('')}
+    <div class="legend" style="margin-top:10px">
+      <span><i style="background:#f97316"></i>تكثيف الأساور (2h من وجه المسند)</span>
+      <span><i style="background:#0ea5e9"></i>أساور الوسط</span>
+      <span><i style="background:#065f46"></i>وصل الحديد مسموح</span>
+      <span><i style="background:#991b1b"></i>وصل الحديد ممنوع</span></div>
+    <div class="note">هذا الشريط هو ما ينقص المخططات عادةً: يقول للحدّاد <b>أين</b>
+      يغيّر تباعد الأسوار، و<b>أين</b> يجوز أن يضع الوصلة، و<b>أين</b> ينتهي السيخ
+      العلوي — كلها بالمتر من مركز المسند، ومحسوبة من أبعاد هذا الجسر بالذات.</div></div>`;
+}
+
+function zoneMap(z, m) {
+  const W = 100, pct = v => (v / z.span) * 100;
+  const sp = z.splice;
+  return `
+  <div style="margin:14px 0 18px">
+    <div style="font-size:12.5px;color:var(--acc2);font-weight:700;margin-bottom:6px">
+      جسر بحره ${nf(z.span, 2)} م · عمق ${int(z.h)} مم · صافي ${nf(z.ln, 2)} م
+      ${m ? ' · طابق ' + m.story : ''}</div>
+
+    <div style="font-size:10.5px;color:var(--mut);margin:6px 0 2px">صفّ ١ — الأساور</div>
+    <div style="position:relative;height:24px;border-radius:5px;overflow:hidden;display:flex">
+      ${z.zones.map(x => `<div title="${x.name} — ${x.clause}: ${x.text}"
+        style="width:${pct(x.b - x.a)}%;background:${x.color};display:flex;
+        align-items:center;justify-content:center;color:#0b1220;font-size:9.5px;
+        font-weight:700;overflow:hidden;white-space:nowrap">${x.b - x.a > z.span * 0.15
+          ? x.name : ''}</div>`).join('')}
+    </div>
+
+    <div style="font-size:10.5px;color:var(--mut);margin:8px 0 2px">صفّ ٢ — أين يجوز وصل الحديد (ACI 18.6.3.3)</div>
+    <div style="position:relative;height:24px;border-radius:5px;overflow:hidden;
+      background:repeating-linear-gradient(45deg,#7f1d1d,#7f1d1d 7px,#991b1b 7px,#991b1b 14px)">
+      ${sp.ok ? `<div style="position:absolute;left:${pct(sp.a)}%;width:${pct(sp.b - sp.a)}%;
+        top:0;bottom:0;background:#065f46;display:flex;align-items:center;
+        justify-content:center;color:#a7f3d0;font-size:10px;font-weight:700">
+        وصل مسموح (${nf(sp.b - sp.a, 2)} م)</div>`
+        : `<div style="position:absolute;inset:0;display:flex;align-items:center;
+        justify-content:center;color:#fecaca;font-size:10px;font-weight:700">
+        البحر قصير — لا وصلة مسموحة، السيخ يعبر كاملاً</div>`}
+    </div>
+
+    <div style="font-size:10.5px;color:var(--mut);margin:8px 0 2px">صفّ ٣ — النقاط الحاكمة</div>
+    <div style="position:relative;height:46px;background:var(--bg2);border-radius:5px">
+      <div style="position:absolute;top:8px;left:0;right:0;height:2px;background:var(--bd)"></div>
+      ${z.marks.map((k, i) => `<div title="${k.name} — ${k.clause}: ${k.text}"
+        style="position:absolute;left:${pct(k.x)}%;top:0;transform:translateX(-50%)">
+        <div style="width:2px;height:16px;background:var(--acc2);margin:0 auto"></div>
+        <div style="font-size:8.5px;color:var(--mut);white-space:nowrap;
+          transform:translateY(${(i % 2) * 12}px)">${nf(k.x, 2)}<br>${k.name}</div></div>`).join('')}
+    </div>
+
+    ${table(['المنطقة', 'من — إلى', 'البند', 'ما يُنفَّذ', 'لماذا'],
+      z.zones.filter(x => x.k !== 'conf2').map(x => [x.name,
+        nf(x.a, 2) + ' — ' + nf(x.b, 2) + ' م', '<code style="color:var(--acc2)">' + x.clause + '</code>',
+        x.text, '<span style="font-size:11px;color:var(--mut)">' + x.why + '</span>'])
+      .concat(z.marks.map(k => ['◆ ' + k.name, nf(k.x, 2) + ' م',
+        '<code style="color:var(--acc2)">' + k.clause + '</code>', k.text, ''])))}
+  </div>`;
+}
+
 const TABS = {
   /* ---------- الأشعة الإنشائية على هندسة المشروع نفسه ---------- */
   xr: async () => {
@@ -1067,6 +1362,7 @@ const TABS = {
         <span>تراكيب الأحمال: ${x.combos.join(' · ')}</span></div>
       <div class="note">التحليل على إطار المشروع نفسه (${g.nx} بحر × ${m.floors} طابق ·
         جسر ${m.beams.x.b}×${m.beams.x.h} · عمود ${m.col.b}×${m.col.h}) — لا حاجة لإدخال الأرقام يدوياً.</div></div>
+    ${zoneMapCard(beams)}
     <div class="grid g2" style="margin-top:14px">
       <div class="card"><h3>الجسور</h3><div style="max-height:380px;overflow:auto">
         ${table(['طابق', 'البحر', 'M+', 'M−', 'V', 'سفلي', 'علوي', 'أساور', 'النسبة'],
@@ -1703,6 +1999,19 @@ PAGES.wizard = {
       ${S('قاعدة الدولات (Dowels)', 'w_dow', (META.dowel_modes || []).map(m => [m.k, m.name]), '16db')}
       ${S('نوع الكرسي', 'w_chair', (META.chairs || []).map(c => [c.k, c.name]), 's135')}
       ${C('ثني الحديد السفلي 45° عند L/7', 'w_bent', true)}</div>
+      <h3 style="margin-top:14px">الكانتيليفر — الشناشيل والبلكونات</h3>
+      <div class="f">
+        ${F('طول البروز (0 = بلا بروز)', 'w_cL', 0, .1, 'م')}
+        ${F('حمل الدرابزين على الطرف الحرّ', 'w_cP', 0, .5, 'kN/م')}
+        ${F('سماكة البروز (0 = تلقائي)', 'w_cH', 0, 10, 'مم')}</div>
+      <div class="chips" style="margin-top:8px">${(META.canti_sides || []).map(o =>
+        `<label><input type="checkbox" id="w_cs_${csid(o.k)}"> ${o.name}</label>`).join('')}</div>
+      <div class="hint"><b>البروز أكثر عنصر يُنفَّذ خطأً:</b> حديده الرئيسي
+        <b>كله علوي</b> لأن عزمه سالب على طوله كله — والحدّاد المعتاد على الجسور
+        يضعه بالأسفل فينهار عند فكّ القالب. وأدنى سماكة له <b>ℓ/8</b> لا ℓ/16
+        (جدول ACI 9.3.1.1). حدّد الجهات وسيُصمَّم ويُرسم بالمجسم بلونين:
+        <b style="color:#facc15">أصفر للعلوي (شدّ)</b> و<b style="color:#60a5fa">أزرق
+        للسفلي (انكماش)</b>.</div>
       <div class="row"><button class="btn" onclick="PAGES.wizard.run()">🚀 صمّم المشروع</button>
         <button class="btn gh" onclick="window.print()">🖨️ تقرير PDF</button>
         <button class="btn gh" onclick="PAGES.wizard.dxf()">📐 مخطط الأسس DXF</button>
@@ -1716,6 +2025,8 @@ PAGES.wizard = {
     soil: txt('w_soil'), qa: val('w_qa') || null, ground: val('w_ground'), old_depth: val('w_old'),
     Df: val('w_df'), slab_type: txt('w_slab'), exposure: txt('w_exp'), lap_mode: txt('w_lap'),
     exposure_classes: expPick(), wcm: val('w_wcm') || null,
+    cantilever: { L: val('w_cL'), parapet: val('w_cP'), h: val('w_cH') || null,
+      sides: (META.canti_sides || []).map(o => o.k).filter(k => chk('w_cs_' + csid(k))) },
     dowel_mode: txt('w_dow'), chair_kind: txt('w_chair'), bent: chk('w_bent'),
     col_shape: txt('w_shape'), col_D: val('w_colD') || null,
     added_cols: window.__added_cols || null,
@@ -1793,7 +2104,8 @@ PAGES.wizard = {
           ${v3chips([['layers', 'طبقات الردم', 1], ['raft', 'حصيرة', 1], ['isolated', 'أسس منفردة', 1],
              ['piles', 'ركائز', r.recommended === 'piles' ? 1 : 0], ['columns', 'أعمدة', 1],
              ['beams', 'جسور', 1], ['slabs', 'سقوف', 1], ['extra', 'تسليح إضافي', 1],
-             ['chairs', 'كراسي', 1]])}
+             ['chairs', 'كراسي', 1],
+             ['canti', 'كانتيليفر (شناشيل)', (r.canti && r.canti.on) ? 1 : 0]])}
         </div>
         <div class="info" id="v3info"></div>
         <div class="slider"><span style="font-size:11px;color:var(--mut)">قص المقطع</span>

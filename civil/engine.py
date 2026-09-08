@@ -1263,6 +1263,63 @@ def slab_module(p):
                     two_way=beta <= 2.0)
 
 # ============================== X-RAY (full frame) ==========================
+def rebar_zones(span, h, d, bw, col_w, db_top, db_bot, n_bot, fc, fy, sh):
+    """**خريطة الحديد على طول البحر** — تُرسم بالأشعة الإنشائية كشريط مناطق.
+
+    الجسر ليس مقطعاً واحداً: على طوله مناطق يختلف فيها ما يجب أن يُنفَّذ، وأخطاء
+    التنفيذ كلها تقع بحدود هذه المناطق لا بالحساب. الدالة تعيد كل منطقة بموقعها
+    من مركز المسند الأيسر (بالمتر) ولونها ونصّها والبند الذي أوجدها:
+
+      * منطقة التكثيف (18.6.4.2)  : 2h من وجه كل مسند — أساور بتباعد مخفَّض
+      * منطقة منع الوصل (18.6.3.3): داخل العقدة + 2h من وجهها
+      * منطقة الوصل المسموحة       : ما بينهما حول وسط البحر
+      * نقطة الانقلاب              : ≈ 0.146·ln بالبحر المستمر
+      * قطع الحديد العلوي (9.7.3.8.4): الانقلاب + الأكبر من d و12db و ln/16
+      * قطع الحديد السفلي (9.7.3.3)  : L/7 للثني، وما يدخل المسند (9.7.3.8.2)
+    """
+    sup = col_w / 1000.0
+    ln = max(0.5, span - sup)
+    h_m = h / 1000.0
+    conf = min(2.0 * h_m, ln / 2.0)                      # منطقة التكثيف من وجه المسند
+    ban = sup / 2.0 + 2.0 * h_m                          # منع الوصل من مركز المسند
+    infl = sup / 2.0 + 0.146 * ln
+    cut_top = infl + max(d, 12.0 * db_top, ln * 1000.0 / 16.0) / 1000.0
+    s_crit = min(d / 4.0, 8.0 * db_bot, 24.0 * (sh.get('db_stirrup') or 10), 300.0)
+    zones = [
+        dict(k='conf', a=0.0, b=sup / 2.0 + conf, color='#f97316',
+             name='تكثيف الأساور', clause='18.6.4.2',
+             text='Ø%d @ %d مم على 2h = %.2f م من وجه المسند'
+                  % (int(sh.get('db_stirrup') or 10), int(s_crit), 2.0 * h_m),
+             why='المفصل اللدن يتكوّن عند وجه العمود بالزلزال — والتكثيف يحصر '
+                 'الخرسانة هناك فتدور المقطع بلا انهيار'),
+        dict(k='mid', a=sup / 2.0 + conf, b=span - sup / 2.0 - conf, color='#0ea5e9',
+             name='أساور الوسط', clause='9.7.6.2.2',
+             text='%s — الحدّ d/2 = %d مم' % (sh.get('label', ''), int(d / 2.0)),
+             why='القص أقل بالوسط، فالتباعد يعود للحدّ الاعتيادي'),
+        dict(k='conf2', a=span - sup / 2.0 - conf, b=span, color='#f97316',
+             name='تكثيف الأساور', clause='18.6.4.2',
+             text='مماثل للطرف الآخر', why='الطرفان متماثلان'),
+    ]
+    splice = dict(ban=ban, a=ban, b=span - ban, ok=(span - ban) > ban + 0.3,
+                  s_hoop=min(d / 4.0, 100.0), clause='18.6.3.3')
+    marks = [
+        dict(x=sup / 2.0, name='وجه المسند', clause='—',
+             text='هنا أقصى عزم سالب وأقصى قص'),
+        dict(x=infl, name='نقطة الانقلاب', clause='9.7.3.8.4',
+             text='العزم يتحوّل من سالب إلى موجب — ولا يُقطع الحديد عندها بل بعدها'),
+        dict(x=cut_top, name='قطع الحديد العلوي', clause='9.7.3.8.4',
+             text='ثلث العلوي يتجاوز الانقلاب بـ %.2f م' % (cut_top - infl)),
+        dict(x=ln / 7.0 + sup / 2.0, name='ثني السفلي 45°', clause='9.7.3.8',
+             text='نقطة الثني التقليدية عند ln/7'),
+        dict(x=span / 2.0, name='وسط البحر', clause='—',
+             text='أقصى عزم موجب — وأفضل موضع للوصلة'),
+    ]
+    return dict(span=span, ln=ln, h=h, sup=sup, zones=zones, splice=splice,
+                marks=[m for m in marks if 0 <= m['x'] <= span],
+                s_crit=s_crit, s_mid=sh.get('s'), conf_len=conf,
+                clause='ACI 318M-14 9.7.3 · 18.6.3.3 · 18.6.4.2')
+
+
 def xray(p):
     bays = [float(x) for x in p['bays']]
     hts = [float(x) for x in p['heights']]
@@ -1352,6 +1409,9 @@ def xray(p):
             ratio = max(f1['ratio'], f2['ratio'], sh['ratio'])
             det = dict(bot=f1['bars']['label'], top=f2['bars']['label'], stirrups=sh['label'],
                        Mpos=Mpos, Mneg=-Mneg, V=e_['V'], phiMn=f1['phiMn'], phiVn=sh['phiVn'])
+            det['zones'] = rebar_zones(bays[b_ - 1], hb, dbeam, bb, bc,
+                                       f2['bars']['db'], f1['bars']['db'],
+                                       f1['bars']['n'], fc, fy, sh)
         else:
             Pu = abs(e_['Nc']); Mu = max(abs(e_['Mmax']), abs(e_['Mmin']))
             phiMn, ratio = col_check(Pu, Mu, pts)

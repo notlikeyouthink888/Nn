@@ -9,6 +9,7 @@ import engine as E
 import found as F
 import earth as W
 import detail as DT
+import rebar as RB
 import slabs as SL
 import stairs as ST
 import plan as PL
@@ -339,16 +340,22 @@ def design_column(b, h, Pu, Mu, fc, fy, shape='rect', D=None):
     # منطقة التطويق عند طرفي العمود (ACI 18.7.5) — مناطق زلزالية
     sc = math.floor(min(min(b, h) / 4.0, 6 * best['db'], 150.0) / 25.0) * 25.0
     # أتاري داخلية: كل سيخ بديل مسنود بركن أسوار (ACI 25.7.2.3) وخلوص ≤ 150 مم
-    ct_x = max(0, best['nb'] - 2) if best['nb'] > 3 else 0
-    ct_y = ct_x
+    # الأتاري الداخلية بحسب **نص** المادة 25.7.2.3 لا بقاعدة تقريبية: كل سيخ
+    # بديل يُسنَد بركن أسوار، **إلا** إذا كان خلوصه عن أقرب سيخ مسنود ≤ 150 مم.
+    sup = RB.tie_support(best['nb'], best['nb'], b, h, cover=40.0, ds=dbt, db=best['db'])
+    ct_x, ct_y = sup['x']['n'], sup['y']['n']
+    trule = RB.tie_spacing(best['db'], dbt, b, h)
+    thook = RB.hook_full(dbt, 135, 'tie')
     tie_txt = "أتاري Ø%d @ %d مم" % (dbt, int(st))
-    if ct_x:
-        tie_txt += " + %d أتاري داخلية بكل اتجاه (ACI 25.7.2.3)" % ct_x
+    if ct_x or ct_y:
+        tie_txt += " + %d أتاري داخلية (ACI 25.7.2.3)" % (ct_x + ct_y)
     shp = shape if shape in ('L', 'T') else 'rect'
     if shp in ('L', 'T'):
         tie_txt += " — أساور مغلقة متداخلة تتبع شكل %s" % ('L' if shp == 'L' else 'T')
     best.update(tie_db=dbt, tie_s=st, tie_s_conf=sc, conf_len=lo, cover=40.0,
                 shape=shp, D=None, spiral=False, crossties=ct_x + ct_y,
+                support=sup, tie_rule=trule, tie_hook=thook,
+                tie_db_min=RB.tie_db_min(best['db']),
                 label="%dØ%d" % (best['n'], best['db']),
                 tie_label=tie_txt,
                 conf_label="تطويق Ø%d @ %d مم على مسافة %d مم من كل طرف" % (dbt, int(sc), int(lo)))
@@ -800,6 +807,12 @@ def wizard(p):
     aci_extra = aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy,
                            fl['D'], live, exposure, p)
 
+    # ---------------- الكانتيليفر (الشناشيل والبلكونات) ----------------
+    # البروز الحرّ هو أكثر عنصر يُنفَّذ خطأً بالعراق: حديده **كله علوي**، والحدّاد
+    # المعتاد على الجسور يضعه بالأسفل فينهار عند فكّ القالب. يُصمَّم هنا كاملاً
+    # ويُرسم بالمجسم بلون مميّز حتى يُرى بالعين أن الشدّ بالأعلى.
+    canti = cantilever_pkg(p, g, bx, by, fl['D'], live, fc, fy, cb, ch, slab)
+
     # ------------------------- نموذج العرض ثلاثي الأبعاد -------------------
     model = dict(
         floors=floors, story_h=hs, levels=[k * hs for k in range(floors + 1)],
@@ -822,6 +835,7 @@ def wizard(p):
                              integrity=dict(n=2, db=slab['mesh']['short']['db']))),
         found=dict(mode=rec, chairs=ch_found),
         plan=p.get('plan_view'),
+        canti=canti,
         frame=(dict(fo, source='plan') if fo else None),
         stairs=stair_pkg,
         detail=dict(covers=covers, chairs=dict(slab=ch_slab, found=ch_found, kind=chair_kind,
@@ -867,6 +881,7 @@ def wizard(p):
                            chair_kind=chair_kind, exposure=exposure, bent=bent,
                            hordi=hordi_in, grid_override=go,
                            footprint_override=p.get('footprint_override')),
+                canti=canti,
                 grid=g, footprint=fp, loads=loads, total=total, Pmax=Pmax, Pumax=Pumax,
                 floor=dict(D=D, L=live, Droof=Droof, slab=t_slab, items=fl['items'],
                            beams=beams_allow, slab_sw=slab_sw, slab_type=slab_kind),
@@ -881,6 +896,68 @@ def wizard(p):
                                             Df, p.get('gwt')),
                 boq=dict(rows=rows, total=grand), seismic=seis, aci_extra=aci_extra,
                 summary=summary, span_max=span_max, span_min=span_min)
+
+# ==================== الكانتيليفر — الشناشيل والبلكونات ====================
+#: جهات البروز الأربع كما يراها الناظر للمخطط
+CANTI_SIDES = [('x+', 'الواجهة الشرقية (+X)'), ('x-', 'الواجهة الغربية (−X)'),
+               ('z+', 'الواجهة الشمالية (+Z)'), ('z-', 'الواجهة الجنوبية (−Z)')]
+
+
+def cantilever_pkg(p, g, bx, by, wD, live, fc, fy, cb, ch, slab):
+    """يصمّم كل بروز طلبه المستخدم ويعيد ما يكفي لرسمه ولجدول الكميات.
+
+    البروز يمتد من الجسر الطرفي إلى الخارج، ويحمل: بلاطة بسماكة الكانتيليفر،
+    وحمل درابزين على طرفه الحرّ إن وُجد. البحر الخلفي الذي يُنشر فيه الحديد هو
+    أول بحر بالاتجاه العمودي على جهة البروز.
+    """
+    raw = p.get('cantilever') or {}
+    Lc = float(raw.get('L') or 0.0)
+    sides = [s for s in (raw.get('sides') or []) if s in dict(CANTI_SIDES)]
+    if Lc <= 0.05 or not sides:
+        return dict(on=False, L=Lc, sides=[],
+                    note='لا يوجد بروز بالمشروع — أدخل طول البروز وجهاته من بطاقة '
+                         '«الكانتيليفر» بالمعالج ليُصمَّم ويُرسم.',
+                    options=[dict(k=a, name=b) for a, b in CANTI_SIDES])
+    parapet = float(raw.get('parapet') or 0.0)          # kN/م على الطرف الحرّ
+    live_c = float(raw.get('live') or max(live, 3.0))   # البلكونة حملها الحي أعلى
+    hc = float(raw.get('h') or 0.0)
+    items = []
+    for sd in sides:
+        # الجسر الطرفي بالاتجاه الموازي للحافة، والبحر الخلفي عمودي عليها
+        along_x = sd.startswith('z')                    # حافة شمالية/جنوبية ⇒ الجسر بمحور X
+        bm = bx if along_x else by
+        back = g['sy'] if along_x else g['sx']
+        b_w = bm['section']['b']
+        # سماكة **بلاطة** البروز — لا عمق الجسر: جدول 9.3.1.1 يعطي ℓ/8 للكانتيليفر
+        # (ضِعف حدّ البحر البسيط)، وتُقرَّب لأعلى 25 مم ولا تقلّ عن سماكة السقف.
+        h_use = hc or max(slab['h'], 150.0,
+                          math.ceil(Lc * 1000.0 / 8.0 * (0.4 + fy / 700.0) / 25.0) * 25.0)
+        trib = 1.0                                       # يُصمَّم لكل متر عرض
+        r = RB.cantilever(Lc, trib, wD, live_c, 1000.0, h_use, fc, fy,
+                          cover=DT.cover('beam', 'weather', 16.0),
+                          ds=bm['rebar']['stirrup']['db'],
+                          parapet=parapet, back_span=back)
+        edge = (g['B'] if along_x else g['L'])           # طول الحافة الحاملة للبروز
+        r.update(side=sd, side_name=dict(CANTI_SIDES)[sd], along_x=along_x,
+                 back_span=back, edge=edge, area=edge * Lc,
+                 beam=dict(b=b_w, h=bm['section']['h']),
+                 n_top=max(2, int(math.ceil(edge / (r['top']['s'] / 1000.0)))
+                           if r['top'].get('s') else int(math.ceil(edge / 0.15))),
+                 splice=RB.splice_zones(max(back, 2.0 * Lc), h_use, cb / 1000.0))
+        items.append(r)
+    worst = max(items, key=lambda r: r['Mu'])
+    return dict(on=True, L=Lc, sides=sides, parapet=parapet, live=live_c,
+                items=items, worst=worst,
+                h=worst['h'], hmin=worst['hmin'], ok=all(i['ok_h'] and i['flex']['ok']
+                                                         and i['shear']['ok'] and i['defl']['ok']
+                                                         for i in items),
+                area=sum(i['area'] for i in items),
+                options=[dict(k=a, name=b) for a, b in CANTI_SIDES],
+                clause='ACI 318M-14 جدول 9.3.1.1 · 9.7.3 · 25.4 · 22.5 · 9.7.7',
+                note='حديد الكانتيليفر **كله علوي** — الوجه المشدود هو العلوي على '
+                     'طول البروز. وهو مرسوم بالمجسم بلون مميّز فوق منتصف السماكة '
+                     'ليُرى بالعين، ويمتد داخل البحر الخلفي طول النشر كاملاً.')
+
 
 # ============ فحوص ACI التي كانت غائبة: الالتواء · العقدة · الترخيم · الديمومة ============
 def aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy, wD, live, exposure, p):
@@ -968,6 +1045,36 @@ def aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy, wD, live, exposure, p
                              cases=[dict(k=a, name=b, den=c2, what=d2)
                                     for a, b, c2, d2 in E.DEFL_CASES],
                              clause='ACI 318M-14 جدول 24.2.2')
+
+    # ---------------- 9.7.3 + 18.6.3 قواعد حديد الجسور ----------------
+    beams_rules = []
+    for name, b2 in (('X', bx), ('Y', by)):
+        s2 = b2['section']; rb2 = b2['rebar']
+        d2 = s2['h'] - rb2['cover'] - rb2['stirrup']['db'] - rb2['bottom']['db'] / 2.0
+        lnb = max(0.5, s2['span'] - cb / 1000.0)
+        cut = RB.bar_cutoff(lnb, d2, rb2['top']['db'], rb2['bottom']['db'], fc, fy,
+                            cover=rb2['cover'], spacing=None,
+                            n_top=rb2['top']['n'], n_bot=rb2['bottom']['n'],
+                            simple=(s2['nspan'] == 1))
+        spl = RB.splice_zones(s2['span'], s2['h'], cb / 1000.0)
+        spl['s_hoop'] = min(d2 / 4.0, 100.0)
+        sz = RB.seismic_beam(rb2['top']['As'], rb2['bottom']['As'], s2['b'], d2, fy, fc,
+                             rb2['top']['n'], rb2['bottom']['n'])
+        hk = RB.hook_full(rb2['top']['db'], 90, 'bar')
+        hs2 = RB.hook_full(rb2['stirrup']['db'], 135, 'tie')
+        beams_rules.append(dict(beam=name, b=s2['b'], h=s2['h'], d=d2, span=s2['span'],
+                                ln=lnb, cut=cut, splice=spl, seismic=sz,
+                                hook_bar=hk, hook_tie=hs2,
+                                crosstie=RB.crosstie(rb2['stirrup']['db']),
+                                tie_rule=RB.tie_spacing(rb2['bottom']['db'],
+                                                        rb2['stirrup']['db'], s2['b'], s2['h']),
+                                top=rb2['top'], bottom=rb2['bottom'],
+                                stirrup=rb2['stirrup']))
+    out['beam_rules'] = dict(rows=beams_rules,
+                             clause='ACI 318M-14 9.7.3 · 18.6.3 · 25.3 · 25.7.2')
+
+    # ---------------- 13.3.3.3 توزيع حديد الأساس ----------------
+    out['footing_band'] = None
 
     # ---------------- 19.3 أصناف التعرّض والديمومة ----------------
     cls = p.get('exposure_classes') or list(DT.IRAQ_DEFAULT)

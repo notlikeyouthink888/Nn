@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-تقرير مطابقة ACI 318-19 — يفحص التصميم المنتهي بنداً بنداً.
+تقرير مطابقة ACI 318M-14 — يفحص التصميم المنتهي بنداً بنداً.
 
 الفكرة: لا يكفي أن يقول البرنامج «صُمِّم وفق الكود». هنا يُعاد فحص كل عنصر
 مقابل نص البند، وتُطبع القيمة المحسوبة والحدّ الكودي ورقم البند والنتيجة —
@@ -25,7 +25,10 @@ def _cmp(clause, title, val, lim, unit='', mode='<=', note='', warn_at=0.95):
         return _row(clause, title, '%.3g %s' % (val, unit), '—', 'review', note)
     r = val / lim if mode == '<=' else lim / max(val, 1e-9)
     if r > 1.0 + 1e-6:
-        st, extra = 'fail', 'يتجاوز الحدّ بنسبة %.2f' % r
+        st = 'fail'
+        extra = ('يتجاوز الحدّ بنسبة %.2f' % r if mode == '<='
+                 else 'أقل من المطلوب — ينقصه %.4g %s (نسبة %.2f)'
+                      % (lim - val, unit, r))
     elif r >= 0.999:
         # القيمة عند الحدّ بالضبط: هذا يعني أن **هذا البند هو الحاكم** للتصميم
         st, extra = 'ok', 'محكوم بهذا البند بالضبط'
@@ -183,7 +186,7 @@ def check_column(col, fc, fy, hs, seismic=True):
 
 
 # ----------------------------- فحص السقف -----------------------------
-def check_slab(slab, g, fc, fy, exposure='interior'):
+def check_slab(slab, g, fc, fy, exposure='interior', col=None):
     out = []
     h = slab['h']
     mesh = slab['mesh']
@@ -226,15 +229,19 @@ def check_slab(slab, g, fc, fy, exposure='interior'):
     s_sh = min(5.0 * h_sh, 450.0)
     out.append(_cmp('24.4.3.3', 'أقصى تباعد لحديد الانكماش',
                     mesh['top']['s'], s_sh, 'مم', note='min(5h , 450 مم)'))
-    # 8.3.1.1 الحد الأدنى للسماكة
-    ln = max(g['sx'], g['sy']) * 1000.0 - 400.0
-    h_min = ln / 33.0
+    # 8.3.1.1 الحد الأدنى للسماكة — ℓn هو البحر **الصافي** من وجه لوجه المسند
+    # (حاشية [1] بالجدول)، فيُطرح مقطع العمود الفعلي لا 400 مم مفترضة: بالمشاريع
+    # الكبيرة يصل العمود إلى متر، فافتراض 400 يضخّم ℓn ويرفض سماكةً مطابقة.
+    cw = max(float((col or {}).get('b') or 400.0), float((col or {}).get('h') or 400.0))
+    ln = max(g['sx'], g['sy']) * 1000.0 - cw
+    h_min = max(ln / 33.0, 125.0)          # جدول 8.3.1.1 (fy=420 · طرفي بجسور حافّية) + 8.3.1.1 الحدّ المطلق
     out.append(_cmp('8.3.1.1', 'الحد الأدنى لسماكة السقف (بلا هطول محسوب)',
                     h, h_min, 'مم', mode='>=',
-                    note='ℓn/33 لبلاطة ثنائية الاتجاه بجسور محيطية'))
-    # 20.5.1.3 الغطاء
+                    note='ℓn/33 لبلاطة ثنائية الاتجاه بجسور محيطية (fy=420) وبحدّ مطلق '
+                         '125 مم · ℓn = %.0f مم صافي بعد طرح عمود %d مم' % (ln, int(cw))))
+    # 20.6.1.3.1 الغطاء
     cov = D.cover('slab', exposure, mesh['short']['db'])
-    out.append(_cmp('20.5.1.3', 'الغطاء الخرساني للسقف', slab['cover'], cov,
+    out.append(_cmp('20.6.1.3.1', 'الغطاء الخرساني للسقف', slab['cover'], cov,
                     'مم', mode='>=', note='20 مم داخلي لأقطار ≤ Ø36'))
     return out
 
@@ -247,12 +254,106 @@ def check_footing(alt, kind, fc, fy):
         out.append(_cmp('13.3.1.2', 'الحد الأدنى لسماكة الأساس المنفرد فوق الحديد',
                         t['h'] - 75.0 - 16.0, 150.0, 'مم', mode='>=',
                         note='عمق فعّال ≥ 150 مم فوق الحديد السفلي'))
-        out.append(_cmp('20.5.1.3', 'الغطاء على التربة', 75.0, 75.0, 'مم',
+        out.append(_cmp('20.6.1.3.1', 'الغطاء على التربة', 75.0, 75.0, 'مم',
                         mode='>=', note='مصبوب على التربة مباشرة'))
     if alt.get('punch'):
         p = alt['punch']
         out.append(_cmp('22.6.5.2', 'قص الثقب عند العمود', p['Vu'], p['phiVc'], 'kN',
                         note='vc = أصغر [0.33√f\'c , 0.17(1+2/β)√f\'c , 0.083(2+αs·d/b0)√f\'c]'))
+    return out
+
+
+# ------------- الأبواب التي أُضيفت بعد قراءة النص المطبوع 318M-14 -------------
+def check_torsion(t):
+    """الالتواء — ACI 318M-14 الباب 22.7 مع 9.6.4 و9.7.5 و9.7.6.3."""
+    out = []
+    if not t.get('required'):
+        out.append(_row('22.7.1.1', 'هل يلزم تصميم التواء؟',
+                        'Tu = %.2f kN·م' % t['Tu'], 'φTth = %.2f kN·م' % t['phiTth'],
+                        'na', 'Tu أقل من عزم العتبة φTth فيُهمل الالتواء نصّاً '
+                              '(المادة 22.7.1.1) — وهذا حال الجسر الداخلي.'))
+        return out
+    out.append(_row('22.7.1.1', 'يلزم تصميم التواء',
+                    'Tu = %.2f kN·م' % t['Tu'], '≥ φTth = %.2f kN·م' % t['phiTth'],
+                    'ok', t['case']))
+    out.append(_cmp('22.7.7.1', 'حدّ مقطع الالتواء والقص معاً',
+                    t['lhs'], t['rhs'], 'ميغا',
+                    note='√[(Vu/bwd)² + (Tu·ph/1.7Aoh²)²] ≤ φ[Vc/bwd + 0.66√f\'c]'))
+    out.append(_row('22.7.6.1', 'حديد الالتواء العرضي At/s',
+                    '%.3f مم²/مم لرِجل' % t['At_s'],
+                    'من (22.7.6.1a) بـ Ao=0.85Aoh وθ=45°', 'ok',
+                    'Aoh = %.0f مم² · ph = %.0f مم' % (t['Aoh'], t['ph'])))
+    out.append(_cmp('9.6.4.3', 'الحديد الطولي للالتواء Aℓ', t['Al'], t['Al_min'],
+                    'مم²', mode='>=', note='الأصغر من صيغتَي 9.6.4.3(أ) و(ب)'))
+    if t.get('stirrup_new'):
+        out.append(_cmp('9.7.6.3.3', 'تباعد كانات الالتواء',
+                        t['stirrup_new']['s'], t['s_max'], 'مم',
+                        note='s ≤ الأصغر من ph/8 و300 مم'))
+    if t.get('long_bars'):
+        out.append(_cmp('9.7.5.2', 'قطر السيخ الطولي للالتواء',
+                        t['long_bars']['db'], max(0.042 * t['s_max'], 10.0), 'مم',
+                        mode='>=', note='≥ الأكبر من 0.042·s و10 مم · سيخ بكل ركن (9.7.5.1)'))
+    return out
+
+
+def check_joint(j):
+    """قص العقدة جسر–عمود — ACI 318M-14 المادة 18.8.4."""
+    out = [_row('18.8.2.1', 'قوة الحديد العلوي عند وجه العقدة',
+                'T = 1.25·fy·As = %.0f kN' % j['T'],
+                'إجهاد 1.25fy نصّاً', 'ok',
+                'قص العمود المقابل Vcol = %.0f kN' % j['Vcol'])]
+    for r in j['rows']:
+        out.append(_cmp('18.8.4.1', 'قص العقدة — %s (γ = %.1f)' % (r['name'], r['gamma']),
+                        r['Vu'], r['phiVn'], 'kN',
+                        note='Vn = γ·λ·√f\'c·Aj · Aj = %.2f م² (18.8.4.3) · φ = 0.85'
+                             % (r['Aj'] / 1e6)))
+    out.append(_row('18.8.5.1', 'طول نشر العكفة داخل العقدة الزلزالية',
+                    'ldh = %.0f مم' % j['hook']['ldh'],
+                    'fy·db/(5.4λ√f\'c) ≥ max(8db , 150)', 'ok',
+                    'أطول من 25.4.3.1 لأنه يراعي انعكاس الحمل · '
+                    'والسيخ المستقيم = 2.5× ذلك (18.8.5.3)'))
+    return out
+
+
+def check_deflection(rows):
+    """الترخيم — ACI 318M-14 جدول 24.2.2 بحالاته الأربع."""
+    out = []
+    for c in rows:
+        out.append(_row('24.2.4.1.1', 'معامل الزمن للجسر %s' % c['beam'],
+                        'λΔ = %.2f' % c['long_term']['lambda_d'],
+                        'ξ/(1+50ρ′) · ξ = %.1f' % c['long_term']['xi'], 'ok',
+                        'يُضرب بالترخيم الفوري للحمل **الدائم** وحده'))
+        for o in c['cases']:
+            out.append(_cmp('24.2.2', 'الجسر %s — %s' % (c['beam'], o['label']),
+                            abs(o['value']), o['limit'], 'مم',
+                            note='L/%d · %s' % (int(o['den']), o['what'])))
+    return out
+
+
+def check_durability(d):
+    """الديمومة وأصناف التعرّض — ACI 318M-14 الباب 19.3."""
+    out = [_row('19.3.1.1', 'أصناف التعرّض المعتمَدة', ' · '.join(d['classes']),
+                'يحدّدها المهندس المسؤول (19.3.1.1)', 'ok',
+                ' · '.join('%s: %s' % (r['code'], r['desc']) for r in d['rows']))]
+    out.append(_cmp('19.3.2.1', 'أدنى مقاومة خرسانة f\'c للديمومة',
+                    d['fc'], d['fc_min'], 'ميغا', mode='>=',
+                    note='الصنف الحاكم %s — والمادة 19.3.2.1 توجب **الأشدّ** '
+                         'حين تجتمع الأصناف' % d['gov_fc']))
+    if d['wcm_max'] is not None:
+        if d['wcm'] is None:
+            out.append(_row('19.3.2.1', 'أقصى نسبة ماء/أسمنت w/cm',
+                            'لم تُدخَل', '≤ %.2f' % d['wcm_max'], 'review',
+                            'يُقيَّد بمواصفة الخلطة عند المجهّز — الصنف الحاكم %s'
+                            % d['gov_wcm']))
+        else:
+            out.append(_cmp('19.3.2.1', 'أقصى نسبة ماء/أسمنت w/cm',
+                            d['wcm'], d['wcm_max'], '',
+                            note='الصنف الحاكم %s' % d['gov_wcm']))
+    for r in d['rows']:
+        if r['note']:
+            out.append(_row('19.3.2.1', 'شرط إضافي للصنف %s' % r['code'],
+                            r['note'], 'جدول 19.3.2.1', 'review',
+                            'يُنفَّذ بمواصفة الخلطة لا بالتصميم الإنشائي'))
     return out
 
 
@@ -269,11 +370,22 @@ def report(R):
     secs.append(dict(name='الأعمدة', rows=check_column(
         dict(m['col'], Pu=R.get('Pumax', 0.0), dowels=m['col'].get('dowels')),
         fc, fy, m['story_h'])))
-    secs.append(dict(name='السقف', rows=check_slab(m['slab'], g, fc, fy, exp)))
+    secs.append(dict(name='السقف', rows=check_slab(m['slab'], g, fc, fy, exp, m['col'])))
     secs.append(dict(name='الأساس', rows=check_footing(
         dict(R['alts'][R['recommended']],
              punch=(R['punching'][0]['found'] if R.get('punching') else None)),
         R['recommended'], fc, fy)))
+    ax = R.get('aci_extra') or {}
+    if ax.get('torsion'):
+        secs.append(dict(name='الالتواء (الباب 22.7)', rows=check_torsion(ax['torsion'])))
+    if ax.get('joint'):
+        secs.append(dict(name='قص العقدة (18.8.4)', rows=check_joint(ax['joint'])))
+    if ax.get('deflection'):
+        secs.append(dict(name='الترخيم (جدول 24.2.2)',
+                         rows=check_deflection(ax['deflection']['rows'])))
+    if ax.get('durability'):
+        secs.append(dict(name='الديمومة وأصناف التعرّض (19.3)',
+                         rows=check_durability(ax['durability'])))
     n = {'ok': 0, 'warn': 0, 'fail': 0, 'na': 0, 'review': 0}
     for s in secs:
         for r in s['rows']:
@@ -282,7 +394,7 @@ def report(R):
     return dict(sections=secs, counts=n, total=total,
                 verdict=('مطابق — لا مخالفة' if n['fail'] == 0 else
                          '%d بند مخالف — راجعها قبل التنفيذ' % n['fail']),
-                code='ACI 318-19 (SI)',
+                code='ACI 318M-14 (SI)',
                 note='كل بند يُعاد فحصه على التصميم المنتهي — القيمة المحسوبة والحدّ '
                      'الكودي ورقم البند معروضة كلها ليقدر المهندس يدقّقها بيده. '
                      'البنود المعلّمة «يحتاج تدقيق» تتطلب رجوعاً للنص المطبوع.')

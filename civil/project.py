@@ -392,7 +392,9 @@ def wizard(p):
     area = float(p.get('area', 200.0))
     floors = max(1, int(p.get('floors', 2)))
     use = p.get('use', 'سكني / غرف نوم')
-    fc = float(p.get('fc', 25.0)); fy = float(p.get('fy', 420.0))
+    # الافتراضي 31 ميغا لا 25: أصناف التعرّض الافتراضية (كبريتات S2 — تربة
+    # العراق الجبسية) توجب f'c ≥ 31 بجدول ACI 318M-14 رقم 19.3.2.1.
+    fc = float(p.get('fc', 31.0)); fy = float(p.get('fy', 420.0))
     soil_name = p.get('soil', 'طين قاسي')
     qa = float(p.get('qa') or F.SOIL_MAP.get(soil_name, (150.0, 'clay'))[0])
     soil_kind = F.SOIL_MAP.get(soil_name, (qa, 'clay'))[1]
@@ -596,6 +598,29 @@ def wizard(p):
         sy_real = max(ly, key=lambda a: (len(a), sum(a))) if ly else None
     bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb, spans=sx_real)
     by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real)
+    # --- ACI 318M-14 18.8.4: مقطع العمود يجب أن يكفي **قص العقدة** لا الحمل وحده.
+    # العقدة الداخلية تستلم شدّ الحديد العلوي بإجهاد 1.25fy من الجهتين (18.8.2.1)،
+    # وهي الحالة التي تُسقط الطابق كله بالزلزال إن نقصت. حين يكون المقطع مستنتَجاً
+    # تلقائياً نكبّره حتى يمرّ؛ وحين يكون **من مخططك أو باختيارك** لا نغيّره أبداً
+    # بل يُبلَّغ الخلل بتقرير المطابقة.
+    col_auto = (want == 'auto') and not (col_mix and col_note and 'من مخططك' in col_note)
+    joint_grow = None
+    for _ in range(8):
+        bm0 = bx if bx['section']['h'] >= by['section']['h'] else by
+        T0 = 1.25 * fy * bm0['rebar']['top']['As'] / 1000.0
+        d0 = bm0['section']['h'] - bm0['rebar']['cover'] - bm0['rebar']['stirrup']['db'] - 8.0
+        Vcol0 = 2.0 * (T0 * 0.9 * d0 / 1000.0) / max(1.0, hs)
+        jt = E.joint_shear(2.0 * T0 - Vcol0, cb, ch, bm0['section']['b'], fc, conf='four')
+        if jt['ok'] or not col_auto or col_shape == 'circ':
+            break
+        cb += 50.0; ch = max(ch, cb)
+        joint_grow = 'كُبّر العمود إلى %d × %d مم ليمرّ قص العقدة (ACI 18.8.4)' % (cb, ch)
+        bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb, spans=sx_real)
+        by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real)
+    if joint_grow:
+        col_note = (col_note + ' · ' if col_note else '') + joint_grow
+        Ag = max(Ag, cb * ch)
+        col_sw = cb * ch / 1e6 * 24.0 * hs * floors
     Mcol = 0.40 * max(abs(min(s['M'] for s in bx['supports'])),
                       abs(min(s['M'] for s in by['supports'])))
     col_rebar = design_column(cb, ch, Pumax, Mcol, fc, fy,
@@ -772,6 +797,9 @@ def wizard(p):
     layout = slab_layout(g['L'], g['B'], slab['mesh'], slab['cover'], slab.get('geom'),
                          laps.get(int(slab['mesh']['short']['db']), {}).get('bottom', 0.0))
 
+    aci_extra = aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy,
+                           fl['D'], live, exposure, p)
+
     # ------------------------- نموذج العرض ثلاثي الأبعاد -------------------
     model = dict(
         floors=floors, story_h=hs, levels=[k * hs for k in range(floors + 1)],
@@ -817,6 +845,21 @@ def wizard(p):
         "الحمل الكلي على التربة %.0f kN · أثقل عمود %.0f kN" % (total, Pmax),
         "التوصية: %s" % adv['name'],
     ]
+    _du = aci_extra['durability']
+    if not _du['ok_fc']:
+        summary.append(
+            "⚠️ الديمومة (ACI 19.3.2.1): أصناف التعرّض %s توجب f'c ≥ %d ميغا "
+            "ونسبة ماء/أسمنت ≤ %.2f — والمُدخَل %d ميغا. ارفع المقاومة أو غيّر "
+            "أصناف التعرّض إن كانت تربتك غير كبريتية."
+            % (' · '.join(_du['classes']), int(_du['fc_min']),
+               _du['wcm_max'] or 0.45, int(fc)))
+    _tj = aci_extra['torsion']
+    if _tj.get('required'):
+        summary.append(
+            "الالتواء (ACI 22.7): الجسر الطرفي باتجاه %s يستلم Tu = %.1f kN·م من "
+            "طرف البلاطة — الكانات %s وحديد طولي %s."
+            % (_tj['beam'], _tj['Tu'], _tj['stirrup_new']['label'],
+               _tj['long_bars']['label']))
     return dict(input=dict(area=area, floors=floors, use=use, qa=qa, soil=soil_name,
                            ground=ground, old_depth=old_depth, Df=Df, fc=fc, fy=fy,
                            story_h=hs, coverage=cover, city=p.get('city', 'بغداد'),
@@ -836,8 +879,104 @@ def wizard(p):
                 punching=punch, chairs=dict(slab=ch_slab, found=ch_found), laps=laps,
                 earth=ew, soil=soil_profile(soil_name, qa, soil_kind, ew['levels'],
                                             Df, p.get('gwt')),
-                boq=dict(rows=rows, total=grand), seismic=seis,
+                boq=dict(rows=rows, total=grand), seismic=seis, aci_extra=aci_extra,
                 summary=summary, span_max=span_max, span_min=span_min)
+
+# ============ فحوص ACI التي كانت غائبة: الالتواء · العقدة · الترخيم · الديمومة ============
+def aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy, wD, live, exposure, p):
+    """أربعة أبواب من ACI 318M-14 لم تكن مطبَّقة أبداً، تُحسب هنا على المشروع نفسه:
+
+      22.7  الالتواء بالجسر الطرفي (الشناشيل والبلكونات) — كان يُهمَل كلياً
+      18.8.4 قص العقدة بين الجسر والعمود — وهي أول ما ينهار زلزالياً
+      24.2  الترخيم بجدول 24.2.2 بحالاته الأربع — كان يُفحص بحدّ واحد فقط
+      19.3  أصناف التعرّض والديمومة — كان f'c يُختار للقوة وحدها
+    """
+    out = {}
+    # ---------------- 22.7 الالتواء بالجسر الطرفي (Spandrel) ----------------
+    # البلاطة تستند على الجسر الطرفي من جهة واحدة، فعزم طرفها ينقلب التواءً
+    # على الجسر. عزم الطرف من جدول ACI 6.5.2: wu·ℓn²/24 «عنصر مبنيّ مع جسر طرفي».
+    bm = bx if bx['section']['h'] >= by['section']['h'] else by
+    sec = bm['section']
+    Ls = g['sy'] if bm is bx else g['sx']            # بحر البلاطة العمودي على الجسر
+    Lb = sec['span']
+    wu = 1.2 * wD + 1.6 * live                        # kN/م²
+    ln_s = max(0.5, Ls - cb / 1000.0)
+    t_m = wu * ln_s ** 2 / 24.0                       # kN·م لكل متر طول جسر
+    ln_b = max(0.5, Lb - ch / 1000.0)
+    d_b = sec['h'] - bm['rebar']['cover'] - bm['rebar']['stirrup']['db'] - 8.0
+    Tu = t_m * max(0.0, ln_b / 2.0 - d_b / 1000.0)    # عند المقطع الحرج على بُعد d
+    Vu_b = max(d['shear']['Vu'] for d in bm['design'])
+    tor = E.torsion(Tu, Vu_b, sec['b'], sec['h'], fc, fy,
+                    fyt=fy, cover=bm['rebar']['cover'],
+                    ds=bm['rebar']['stirrup']['db'], d=d_b,
+                    Vc=max(d['shear']['Vc'] for d in bm['design']))
+    tor['t_per_m'] = t_m; tor['ln_slab'] = ln_s; tor['ln_beam'] = ln_b
+    tor['beam'] = 'X' if bm is bx else 'Y'
+    tor['b'] = sec['b']; tor['h'] = sec['h']
+    if tor.get('required'):
+        # كانة إضافية للالتواء فوق كانة القص: At/s لرِجل واحدة × 2 رِجل
+        st = bm['rebar']['stirrup']
+        Av_s = 2.0 * E.ab(st['db']) / max(1.0, st['s'])          # مم²/مم من القص
+        need = Av_s + 2.0 * tor['At_s']
+        s_new = 2.0 * E.ab(st['db']) / need if need > 0 else st['s']
+        s_new = max(75.0, min(math.floor(min(s_new, tor['s_max']) / 25.0) * 25.0, tor['s_max']))
+        n_long = max(4, int(math.ceil(tor['Al'] / E.ab(max(12.0, tor['db_long'])))))
+        tor['stirrup_new'] = dict(db=st['db'], s=s_new, was=st['s'],
+                                  label='Ø%d@%d (كان Ø%d@%d)' % (st['db'], int(s_new),
+                                                                 st['db'], int(st['s'])))
+        tor['long_bars'] = dict(n=n_long, db=max(12.0, round(tor['db_long'])),
+                                As=n_long * E.ab(max(12.0, tor['db_long'])),
+                                label='%dØ%d موزّعة على محيط الكانة (سيخ بكل ركن)'
+                                      % (n_long, int(max(12.0, round(tor['db_long'])))))
+    out['torsion'] = tor
+
+    # ---------------- 18.8.4 قص العقدة جسر–عمود ----------------
+    # قوة الحديد العلوي عند وجه العقدة بإجهاد 1.25fy (18.8.2.1) ناقص قص العمود.
+    As_top = bm['rebar']['top']['As']
+    T = 1.25 * fy * As_top / 1000.0                   # kN
+    Mpr = T * 0.9 * d_b / 1000.0                      # kN·م تقريب ذراع 0.9d
+    hs_ = float(p.get('story_h', 3.2))
+    Vcol = 2.0 * Mpr / max(1.0, hs_)                  # عقدة داخلية: عزمان متقابلان
+    joints = []
+    for key, conf, lab in (('interior', 'four', 'عقدة داخلية'),
+                           ('edge', 'three', 'عقدة حافّية'),
+                           ('corner', 'other', 'عقدة ركنية')):
+        f = {'interior': 2.0, 'edge': 1.0, 'corner': 1.0}[key]
+        Vj = f * T - Vcol
+        j = E.joint_shear(Vj, cb, ch, sec['b'], fc, conf=conf, detail=True)
+        j.update(key=key, name=lab, T=T, Vcol=Vcol)
+        joints.append(j)
+    out['joint'] = dict(rows=joints, As_top=As_top, T=T, Vcol=Vcol, Mpr=Mpr,
+                        hook=E.joint_hook(bm['rebar']['top']['db'], fc, fy),
+                        worst=min(joints, key=lambda j: (j['ok'], -j['ratio'])),
+                        clause='ACI 318M-14 18.8.4 + 18.8.2.1 + 18.8.5.1')
+
+    # ---------------- 24.2 الترخيم بجدول 24.2.2 ----------------
+    dfl = []
+    for name, b2 in (('X', bx), ('Y', by)):
+        w = min(b2['design'], key=lambda d: d['d_imm'])
+        # نصيب الحمل الدائم من الترخيم الفوري (تحليل الخدمة يجمع D+L)
+        share = wD / max(0.001, wD + live)
+        dd = abs(w['d_imm']) * share
+        dl = abs(w['d_imm']) * (1.0 - share)
+        rho_p = 0.0                     # لا حديد ضغط دائم بالمقطع المفرد
+        c = E.deflection_check(w['L'], dd, dl, rho_p=rho_p, months=60,
+                               case='attach_dmg')
+        c.update(beam=name, L=w['L'], h=b2['section']['h'])
+        dfl.append(c)
+    out['deflection'] = dict(rows=dfl, worst=min(dfl, key=lambda c: (c['ok'], -c['ratio'])),
+                             cases=[dict(k=a, name=b, den=c2, what=d2)
+                                    for a, b, c2, d2 in E.DEFL_CASES],
+                             clause='ACI 318M-14 جدول 24.2.2')
+
+    # ---------------- 19.3 أصناف التعرّض والديمومة ----------------
+    cls = p.get('exposure_classes') or list(DT.IRAQ_DEFAULT)
+    dur = DT.durability(fc, tuple(cls), p.get('wcm'))
+    dur['options'] = [dict(code=a, cat=b, desc=c2, wcm=d2, fc=e2, note=f2)
+                      for a, b, c2, d2, e2, f2 in DT.EXPOSURE_CLASSES]
+    dur['default'] = list(DT.IRAQ_DEFAULT)
+    out['durability'] = dur
+    return out
 
 # -------------------- مواصفات المختبر (الإنشائيات والتجربة) --------------------
 SOIL_LOOK = {                       # لون وملمس تقريبي لكل صنف تربة بالمجسم
@@ -977,7 +1116,9 @@ def slabtypes(p):
     """يقارن أنواع السقوف على نفس البحر والحمل."""
     span = float(p.get('span', 6.0)); span2 = float(p.get('span2', span))
     live = float(p.get('live', 2.0)); wD = float(p.get('wD', 2.5))
-    fc = float(p.get('fc', 25.0)); fy = float(p.get('fy', 420.0))
+    # الافتراضي 31 ميغا لا 25: أصناف التعرّض الافتراضية (كبريتات S2 — تربة
+    # العراق الجبسية) توجب f'c ≥ 31 بجدول ACI 318M-14 رقم 19.3.2.1.
+    fc = float(p.get('fc', 31.0)); fy = float(p.get('fy', 420.0))
     base = dict(p.get('hordi') or {})
     base.update(span=span, Lx=span, Ly=span2, live=live, wD=wD, fc=fc, fy=fy,
                 nspans=int(p.get('nspans', 3)))

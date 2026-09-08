@@ -156,10 +156,35 @@ def schedule(R):
         hk = det.get('hook_stirrup') or D.hook(st['db'], 135, 'tie')
         cvb = det.get('cover', 40.0)
         per = 2 * ((bm['b'] - 2 * cvb) + (bm['h'] - 2 * cvb)) / 1000.0 + 2 * hk['added'] / 1000.0
-        nst = D.n_bars(bm['span'], st['s'] / 1000.0) * nspan
-        rows.append(_row('B%s-S' % lab, 'جسور %s — أساور بعكفة 135°' % lab, st['db'], 'أسوار مغلقة',
-                         per, nst * nlines * nf, fc, fy,
-                         note='عكفتان %s' % hk['label']))
+        # ACI 22.7 — الالتواء يخصّ **الجسور الطرفية** وحدها (البلاطة على جهة واحدة).
+        # فتُفصَل الأساور: خطّان طرفيان بالتباعد الأضيق، والباقي بتباعد القص.
+        tor = ((R.get('aci_extra') or {}).get('torsion') or {})
+        tor_here = (tor.get('required') and tor.get('beam') == lab
+                    and tor.get('stirrup_new') and nlines >= 2)
+        n_edge = 2 if tor_here else 0
+        n_in = max(0, nlines - n_edge)
+        if n_in:
+            nst = D.n_bars(bm['span'], st['s'] / 1000.0) * nspan
+            rows.append(_row('B%s-S' % lab,
+                             'جسور %s — أساور بعكفة 135°%s' % (lab, ' (الخطوط الداخلية)' if n_edge else ''),
+                             st['db'], 'أسوار مغلقة', per, nst * n_in * nf, fc, fy,
+                             note='عكفتان %s' % hk['label']))
+        if tor_here:
+            sn = tor['stirrup_new']
+            nst2 = D.n_bars(bm['span'], sn['s'] / 1000.0) * nspan
+            rows.append(_row('B%s-ST' % lab,
+                             'جسور %s الطرفية — أساور القص + الالتواء' % lab,
+                             sn['db'], 'أسوار مغلقة', per, nst2 * n_edge * nf, fc, fy,
+                             note='%s — ACI 22.7.6.1 و9.6.4.2 · التباعد ≤ ph/8 = %d مم (9.7.6.3.3) · '
+                                  'أسوار مغلقة لا زوج U متراكب (R9.7.6.3.1)'
+                                  % (sn['label'], int(tor['s_max']))))
+            lb = tor['long_bars']
+            rows.append(_row('B%s-TL' % lab,
+                             'جسور %s الطرفية — حديد الالتواء الطولي' % lab,
+                             lb['db'], 'مستقيم منشور بالمسند', run, lb['n'] * n_edge * nf, fc, fy,
+                             note='%s — ACI 22.7.6.1(ب) و9.6.4.3 · موزّع على محيط الكانة '
+                                  'بتباعد ≤ 300 مم (9.7.5.1) وينشر عند وجه المسند (9.7.5.4)'
+                                  % lb['label']))
 
     # ------------------------------ السقوف ------------------------------
     sl = m['slab']

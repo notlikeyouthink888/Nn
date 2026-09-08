@@ -40,6 +40,11 @@ def meta():
                              dict(k='16db', name='قاعدة الموقع 16·db'),
                              dict(k='40db', name='قاعدة الموقع 40·db')],
                 exposures=[dict(k=a, name=b) for a, b in DT.EXPOSURES],
+                exposure_classes=[dict(code=a, cat=b, desc=c, wcm=d, fc=e, note=f)
+                                  for a, b, c, d, e, f in DT.EXPOSURE_CLASSES],
+                exposure_default=list(DT.IRAQ_DEFAULT),
+                defl_cases=[dict(k=a, name=b, den=c, what=d) for a, b, c, d in E.DEFL_CASES],
+                joint_conf=[dict(k=a, name=b, gamma=c) for a, b, c in E.JOINT_CONF],
                 cover_table=[dict(name=a, v=b, ref=c) for a, b, c in DT.COVER_TABLE],
                 hordi=SL.HORDI_DEFAULT, version="3.0")
 

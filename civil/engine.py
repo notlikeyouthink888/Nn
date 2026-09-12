@@ -1,0 +1,1470 @@
+# -*- coding: utf-8 -*-
+"""
+Civil / Structural engineering calculation engine.
+Codes: ACI 318M-14 (SI), ASCE 7-16 (ELF), Iraqi Code for Loads & Forces.
+Units: mm, MPa, kN, kN.m, m  (frame analysis internally uses kN, m).
+"""
+import math
+
+# ============================== linear algebra ==============================
+def solve(A, b):
+    n = len(A)
+    M = [row[:] + [b[i]] for i, row in enumerate(A)]
+    for k in range(n):
+        p = max(range(k, n), key=lambda r: abs(M[r][k]))
+        if abs(M[p][k]) < 1e-10:
+            raise ValueError("Unstable structure (singular stiffness matrix)")
+        M[k], M[p] = M[p], M[k]
+        pv = M[k][k]
+        for r in range(k + 1, n):
+            f = M[r][k] / pv
+            if f:
+                for c in range(k, n + 1):
+                    M[r][c] -= f * M[k][c]
+    x = [0.0] * n
+    for k in range(n - 1, -1, -1):
+        s = M[k][n] - sum(M[k][c] * x[c] for c in range(k + 1, n))
+        x[k] = s / M[k][k]
+    return x
+
+# ============================ 2D frame (stiffness) ==========================
+class Frame:
+    """Planar frame, 3 DOF/node (ux, uy, rz). kN, m."""
+    def __init__(self):
+        self.nodes = []; self.members = []; self.sup = {}; self.nl = {}
+
+    def node(self, x, y):
+        self.nodes.append((x, y)); return len(self.nodes) - 1
+
+    def member(self, i, j, E, A, I, qx=0.0, qy=0.0, tag="", meta=None):
+        self.members.append(dict(i=i, j=j, E=E, A=A, I=I, qx=qx, qy=qy,
+                                 tag=tag, meta=meta or {}))
+        return len(self.members) - 1
+
+    def support(self, n, fx=1, fy=1, mz=1):
+        self.sup[n] = (fx, fy, mz)
+
+    def load(self, n, Fx=0.0, Fy=0.0, Mz=0.0):
+        p = self.nl.get(n, [0.0, 0.0, 0.0])
+        self.nl[n] = [p[0] + Fx, p[1] + Fy, p[2] + Mz]
+
+    def _geo(self, m):
+        xi, yi = self.nodes[m['i']]; xj, yj = self.nodes[m['j']]
+        dx, dy = xj - xi, yj - yi; L = math.hypot(dx, dy)
+        return L, dx / L, dy / L
+
+    @staticmethod
+    def _kloc(E, A, I, L):
+        ea = E * A / L; a = 12 * E * I / L ** 3; b = 6 * E * I / L ** 2
+        c = 4 * E * I / L; d = 2 * E * I / L
+        return [[ea, 0, 0, -ea, 0, 0],
+                [0, a, b, 0, -a, b],
+                [0, b, c, 0, -b, d],
+                [-ea, 0, 0, ea, 0, 0],
+                [0, -a, -b, 0, a, -b],
+                [0, b, d, 0, -b, c]]
+
+    @staticmethod
+    def _T(c, s):
+        return [[c, s, 0, 0, 0, 0], [-s, c, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0],
+                [0, 0, 0, c, s, 0], [0, 0, 0, -s, c, 0], [0, 0, 0, 0, 0, 1]]
+
+    @staticmethod
+    def _w(m, c, s):
+        return m['qx'] * c + m['qy'] * s, -m['qx'] * s + m['qy'] * c   # wx, wy local
+
+    def run(self):
+        nn = len(self.nodes); nd = 3 * nn
+        K = [[0.0] * nd for _ in range(nd)]
+        P = [0.0] * nd
+        for n, v in self.nl.items():
+            P[3 * n] += v[0]; P[3 * n + 1] += v[1]; P[3 * n + 2] += v[2]
+        self._cache = []
+        for m in self.members:
+            L, c, s = self._geo(m)
+            kl = self._kloc(m['E'], m['A'], m['I'], L); T = self._T(c, s)
+            # kg = T' kl T
+            kt = [[sum(kl[r][k] * T[k][cc] for k in range(6)) for cc in range(6)] for r in range(6)]
+            kg = [[sum(T[k][r] * kt[k][cc] for k in range(6)) for cc in range(6)] for r in range(6)]
+            wx, wy = self._w(m, c, s)
+            q0 = [-wx * L / 2, -wy * L / 2, -wy * L * L / 12,
+                  -wx * L / 2, -wy * L / 2, wy * L * L / 12]
+            peq = [-sum(T[k][r] * q0[k] for k in range(6)) for r in range(6)]
+            dof = [3 * m['i'], 3 * m['i'] + 1, 3 * m['i'] + 2,
+                   3 * m['j'], 3 * m['j'] + 1, 3 * m['j'] + 2]
+            for a in range(6):
+                P[dof[a]] += peq[a]
+                for b in range(6):
+                    K[dof[a]][dof[b]] += kg[a][b]
+            self._cache.append((L, c, s, kl, T, q0, dof, wx, wy))
+        fixed = set()
+        for n, f in self.sup.items():
+            for k in range(3):
+                if f[k]:
+                    fixed.add(3 * n + k)
+        free = [d for d in range(nd) if d not in fixed]
+        Kr = [[K[a][b] for b in free] for a in free]
+        Pr = [P[a] for a in free]
+        ur = solve(Kr, Pr)
+        U = [0.0] * nd
+        for i, d in enumerate(free):
+            U[d] = ur[i]
+        self.U = U
+        self.mf = []
+        for idx, m in enumerate(self.members):
+            L, c, s, kl, T, q0, dof, wx, wy = self._cache[idx]
+            ug = [U[d] for d in dof]
+            ul = [sum(T[r][k] * ug[k] for k in range(6)) for r in range(6)]
+            q = [sum(kl[r][k] * ul[k] for k in range(6)) + q0[r] for r in range(6)]
+            self.mf.append(q)
+        # reactions
+        self.reactions = {}
+        for n in self.sup:
+            self.reactions[n] = [0.0, 0.0, 0.0]
+        for idx, m in enumerate(self.members):
+            L, c, s, kl, T, q0, dof, wx, wy = self._cache[idx]
+            q = self.mf[idx]
+            qg = [sum(T[k][r] * q[k] for k in range(6)) for r in range(6)]
+            for nd_, off in ((m['i'], 0), (m['j'], 3)):
+                if nd_ in self.reactions:
+                    for k in range(3):
+                        self.reactions[nd_][k] += qg[off + k]
+        for n in self.reactions:
+            v = self.nl.get(n, [0, 0, 0])
+            self.reactions[n] = [self.reactions[n][k] - v[k] for k in range(3)]
+        return self
+
+    def diagram(self, idx, ns=25):
+        L, c, s, kl, T, q0, dof, wx, wy = self._cache[idx]
+        m = self.members[idx]; q = self.mf[idx]
+        EI = m['E'] * m['I']
+        ug = [self.U[d] for d in dof]
+        ul = [sum(T[r][k] * ug[k] for k in range(6)) for r in range(6)]
+        vi, ti, vj, tj = ul[1], ul[2], ul[4], ul[5]
+        out = []
+        for k in range(ns + 1):
+            x = L * k / ns; xi = x / L
+            N = -(q[0] + wx * x)
+            V = q[1] + wy * x
+            M = -q[2] + q[1] * x + wy * x * x / 2
+            h1 = 1 - 3 * xi ** 2 + 2 * xi ** 3; h2 = L * (xi - 2 * xi ** 2 + xi ** 3)
+            h3 = 3 * xi ** 2 - 2 * xi ** 3; h4 = L * (-xi ** 2 + xi ** 3)
+            d = h1 * vi + h2 * ti + h3 * vj + h4 * tj + wy * x * x * (L - x) ** 2 / (24 * EI)
+            out.append(dict(x=x, N=N, V=V, M=M, d=d * 1000.0))  # d in mm
+        return out
+
+# =============================== ACI 318M-14 ================================
+ES = 200000.0
+BARS = [10, 12, 16, 20, 25, 32, 40]
+def ab(db): return math.pi * db * db / 4.0
+
+def beta1(fc):
+    if fc <= 28: return 0.85
+    return max(0.65, 0.85 - 0.05 * (fc - 28) / 7.0)
+
+def phi_flex(et, fy=420.0):
+    ety = fy / ES
+    if et <= ety: return 0.65
+    if et >= ety + 0.003: return 0.90
+    return 0.65 + 0.25 * (et - ety) / 0.003
+
+def as_min(fc, fy, b, d):
+    return max(0.25 * math.sqrt(fc) / fy, 1.4 / fy) * b * d
+
+def bars_per_layer(width, db, cover=40.0, ds=10.0, dagg=20.0):
+    """كم سيخاً يتسع بصفّ واحد — ACI 318M-14 المادة 25.2.1:
+    الخلوص الصافي بين الأسياخ لا يقل عن الأكبر من [ 25 مم , db , (4/3)·dagg ].
+    كان هذا الحدّ غائباً عن اختيار الأسياخ فكانت تُرصف أكثر مما يتسع فعلاً."""
+    clear = max(25.0, db, 4.0 * dagg / 3.0)
+    avail = width - 2.0 * cover - 2.0 * ds
+    n = int(math.floor((avail + clear) / (db + clear)))
+    return max(2, n), clear
+
+def pick_bars(As_req, dbs=(12, 16, 20, 25, 32), nmin=2, nmax=24, width=None,
+              cover=40.0, ds=10.0, dagg=20.0, max_layers=3, h=None):
+    """يختار عدد وقطر الأسياخ بحيث **تتسع فعلاً** بعرض المقطع.
+
+    يرجع مع الاختيار: عدد الطبقات · عدد الأسياخ بكل طبقة · الخلوص الصافي ·
+    وانزياح مركز ثقل الحديد `dy` لتُصحَّح به d عند تعدّد الطبقات — وبدونه
+    كان العمق الفعّال يُحسب أكبر من الحقيقي فيخرج الحديد ناقصاً."""
+    cands = []
+    for db in dbs:
+        n = max(nmin, int(math.ceil(As_req / ab(db) - 1e-9)))
+        if n > nmax:
+            continue
+        if width:
+            per, clear = bars_per_layer(width, db, cover, ds, dagg)
+            lay = int(math.ceil(n / float(per)))
+            if lay > max_layers:
+                continue
+            # المسافة بين الطبقات ≥ 25 مم (ACI 25.2.2)
+            gap = max(25.0, db)
+            dy = 0.0 if lay <= 1 else (gap + db) * (lay - 1) / 2.0
+        else:
+            per, clear, lay, dy = n, max(25.0, db), 1, 0.0
+        cands.append(dict(n=n, db=db, As=n * ab(db), per_layer=per, layers=lay,
+                          clear=clear, dy=dy))
+    if not cands:                       # لا شيء يتسع: أكبر قطر بثلاث طبقات وتنبيه
+        db = dbs[-1]; n = max(nmin, int(math.ceil(As_req / ab(db))))
+        per, clear = bars_per_layer(width or 300.0, db, cover, ds, dagg)
+        lay = int(math.ceil(n / float(per)))
+        cands = [dict(n=n, db=db, As=n * ab(db), per_layer=per, layers=lay,
+                      clear=clear, dy=(max(25.0, db) + db) * (lay - 1) / 2.0,
+                      crowded=True)]
+    mn = min(c['As'] for c in cands)
+    ok = [c for c in cands if c['As'] <= mn * 1.15]
+    # الأفضل: أقل طبقات ثم أقل عدد أسياخ ثم أقل حديد
+    best = min(ok, key=lambda c: (c['layers'], c['n'], c['As']))
+    best['label'] = "%dØ%d%s" % (best['n'], best['db'],
+                                 '' if best['layers'] <= 1 else
+                                 ' على %d طبقات' % best['layers'])
+    best['clause'] = 'ACI 318M-14 25.2.1 (الخلوص) و25.2.2 (بين الطبقات)'
+    return best
+
+def bar_spacing(As, dbs=(10, 12, 16, 20, 25, 32), smin=100.0, smax=300.0, target=200.0):
+    """يختار قطر السيخ وتباعده لشبكة (As بـ مم²/م) — أقرب تباعد عملي إلى 200 مم."""
+    best = None
+    for db in dbs:
+        s = math.floor(1000.0 * ab(db) / As / 25.0) * 25.0
+        if s < smin:
+            continue
+        s = min(s, smax)
+        cand = dict(db=db, s=s, As=1000.0 * ab(db) / s,
+                    label="Ø%d @ %d مم" % (db, int(s)))
+        if best is None or abs(s - target) < abs(best['s'] - target) - 1e-9:
+            best = cand
+    if best is None:
+        db = dbs[-1]
+        best = dict(db=db, s=smin, As=1000.0 * ab(db) / smin,
+                    label="Ø%d @ %d مم" % (db, int(smin)))
+    return best
+
+def flexure(Mu, b, d, fc, fy, h=None, min_rule='beam'):
+    """Mu kN.m ; b,d,h mm.  min_rule: 'beam' = ACI 9.6.1.2 ،
+    'slab' = حديد الانكماش 0.0018bh للبلاطات والأسس (ACI 7.6.1.1 / 13.3.2.1)."""
+    def _min(b_, d_):
+        if min_rule == 'slab':
+            return 0.0018 * b_ * (h if h else d_ / 0.9)
+        return as_min(fc, fy, b_, d_)
+    Mu = abs(Mu)
+    r = dict(Mu=Mu, b=b, d=d, fc=fc, fy=fy)
+    if Mu < 1e-9:
+        As = _min(b, d)
+        r.update(As_req=As, As_min=As, doubly=False, phi=0.9, et=0.05,
+                 ok=True, note="أقل حديد (عزم مهمل)")
+        r['bars'] = pick_bars(As, width=b); r['phiMn'] = 0.0; r['ratio'] = 0.0
+        return r
+    Mn_u = Mu * 1e6  # N.mm  (phi applied by iteration)
+    b1 = beta1(fc)
+    # limit c for et = 0.004 (min for flexural members ACI 9.3.3.1)
+    c_lim = 0.003 * d / (0.003 + 0.004)
+    Mn_lim = 0.85 * fc * b1 * c_lim * b * (d - b1 * c_lim / 2)
+    phi = 0.9
+    for _ in range(40):
+        Rn = (Mu * 1e6) / (phi * b * d * d)
+        rad = 1 - 2 * Rn / (0.85 * fc)
+        if rad < 0:
+            break
+        rho = 0.85 * fc / fy * (1 - math.sqrt(rad))
+        As = rho * b * d
+        a = As * fy / (0.85 * fc * b); c = a / b1
+        et = 0.003 * (d - c) / c
+        ph2 = phi_flex(et, fy)
+        if abs(ph2 - phi) < 1e-4: break
+        phi = ph2
+    if rad < 0 or Mu * 1e6 > 0.9 * Mn_lim:
+        # doubly reinforced
+        dp = 60.0
+        phi = 0.9
+        As1 = 0.85 * fc * b1 * c_lim * b / fy
+        Mn1 = 0.85 * fc * b1 * c_lim * b * (d - b1 * c_lim / 2)
+        Mn2 = max(0.0, Mu * 1e6 / phi - Mn1)
+        fsp = min(fy, ES * 0.003 * (c_lim - dp) / c_lim)
+        As2 = Mn2 / (fy * (d - dp))
+        Asp = Mn2 / (fsp * (d - dp)) if Mn2 > 0 else 0.0
+        As = As1 + As2
+        r.update(doubly=True, As_comp=Asp, phi=phi, et=0.004)
+        r['bars_comp'] = pick_bars(Asp) if Asp > 0 else None
+    else:
+        r.update(doubly=False, phi=phi, et=et)
+    Asmin = _min(b, d)
+    As = max(As, Asmin)
+    r['As_req'] = As; r['As_min'] = Asmin
+    r['bars'] = pick_bars(As, width=b)
+    # تعدّد الطبقات ينزل بمركز ثقل الحديد فيقلّ العمق الفعّال — يُعاد الحساب عليه
+    if r['bars'].get('dy', 0.0) > 0.1:
+        d = max(0.5 * d, d - r['bars']['dy'])
+        r['d_eff'] = d
+        r['layers_note'] = ('الحديد على %d طبقات — العمق الفعّال نزل %d مم '
+                            'وأُعيد الحساب عليه (ACI 25.2.2)'
+                            % (r['bars']['layers'], int(r['bars']['dy'])))
+        As = max(As, Mu * 1e6 / (0.9 * fy * 0.9 * d))
+        r['As_req'] = As
+        r['bars'] = pick_bars(As, width=b)
+    Asp = r['bars']['As']
+    a = min(Asp, 0.85 * fc * b1 * (0.003 * d / 0.003) * b / fy) * fy / (0.85 * fc * b)
+    c = a / beta1(fc); et = 0.003 * (d - c) / c
+    ph = phi_flex(et, fy)
+    r['phiMn'] = ph * Asp * fy * (d - a / 2) / 1e6
+    if r.get('doubly'):
+        r['phiMn'] += ph * (r.get('As_comp', 0.0)) * fy * (d - 60.0) / 1e6
+    r['rho'] = As / (b * d)
+    r['ratio'] = Mu / r['phiMn'] if r['phiMn'] > 0 else 9.9
+    r['ok'] = r['ratio'] <= 1.001
+    r['note'] = ("مقطع مزدوج التسليح" if r.get('doubly')
+                 else "مقطع مفرد التسليح")
+    return r
+
+def lambda_s(d):
+    """معامل أثر الحجم λs.
+
+    **ليس من ACI 318M-14** — النسخة المترية 2014 لا تعرف λs، وتعطي
+    Vc = 0.17·λ·√f'c·bw·d للمقطع مهما عمُق. أُضيف في ACI 318-19 (22.5.5.1.3):
+        λs = √( 2 / (1 + d/250) ) ≤ 1.0
+    وهو **يُنقص** المقاومة للمقاطع العميقة، فتطبيقه تحفّظ فوق 318M-14 لا مخالفة له.
+    بدونه كانت مقاومة قص البلاطات والأسس السميكة تُحسب أعلى مما تتحمّله فعلاً."""
+    return min(1.0, math.sqrt(2.0 / (1.0 + d / 250.0)))
+
+def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0,
+          rho_w=None, Nu=0.0, Ag=None, min_stirrups=True):
+    """قص باتجاه واحد — **الأصغر** من صيغتَي ACI 318M-14 وACI 318-19.
+
+    ACI 318M-14 المعادلة 22.5.5.1:   Vc = 0.17·λ·√f'c·bw·d
+      ومع ضغط محوري (22.5.6.1):      Vc = 0.17·(1 + Nu/(14·Ag))·λ·√f'c·bw·d
+      ومع شدّ محوري (22.5.7.1):      Vc = 0.17·(1 + Nu/(3.5·Ag))·λ·√f'c·bw·d ≥ 0
+    ACI 318-19 جدول 22.5.5.1:        Vc = [0.17·λ·√f'c + Nu/(6·Ag)]·bw·d
+      وبلا أساور:                    Vc = [0.66·λs·λ·ρw^(1/3)·√f'c + Nu/(6·Ag)]·bw·d
+
+    صيغة 2019 للضغط المحوري **أسخى** من 318M-14 (عند Nu/Ag = 5 ميغا و f'c = 25:
+    1.68 مقابل 1.15 ميغا)، فالأخذ بالأصغر يجعل الحساب مطابقاً للنسختين معاً.
+    والسقف Vc ≤ 0.42·λ·√f'c·bw·d قائم بالنسختين.
+    Vu وNu بالكيلونيوتن · الأبعاد بالمليمتر · Ag بالمليمتر المربّع."""
+    Vu = abs(Vu); phi = 0.75
+    root = math.sqrt(fc)
+    # Nu بالكيلونيوتن ← نيوتن، موجب ضغطاً وسالب شدّاً
+    n_ag = (Nu * 1000.0 / Ag) if (Ag and Ag > 0) else 0.0       # MPa
+    # --- صيغة 318-19: إضافة إجهاد محوري مستقل
+    ax19 = n_ag / 6.0
+    ax19 = max(ax19, -0.17 * lam * root)                       # لا تتجاوز إلغاء Vc
+    # --- صيغة 318M-14: مضاعِف على 0.17λ√f'c (22.5.6.1 ضغطاً · 22.5.7.1 شدّاً)
+    f14 = (1.0 + n_ag / 14.0) if n_ag >= 0 else max(0.0, 1.0 + n_ag / 3.5)
+    if min_stirrups:
+        ls = 1.0
+        vc = min(0.17 * lam * root + ax19,                     # 318-19
+                 0.17 * f14 * lam * root)                      # 318M-14
+    else:
+        ls = lambda_s(d)
+        rw = max(0.0025, min(0.02, rho_w if rho_w else 0.01))
+        vc = min(0.66 * ls * lam * (rw ** (1.0 / 3.0)) * root + ax19,   # 318-19
+                 0.17 * f14 * ls * lam * root)                          # 318M-14 + λs
+    vc = max(0.0, min(vc, 0.42 * lam * root))                  # ACI 22.5.5.1.1
+    Vc = vc * bw * d / 1000.0                                  # kN
+    Vsmax = 0.66 * math.sqrt(fc) * bw * d / 1000.0
+    r = dict(Vu=Vu, Vc=Vc, phiVc=phi * Vc, ok=True, lambda_s=ls, vc=vc,
+             clause='ACI 318M-14 22.5.5.1 (والأصغر مع جدول 318-19 22.5.5.1)'
+                    + ('' if min_stirrups else ' — بلا أساور، بأثر الحجم λs'))
+    Av = legs * ab(db_stirrup)
+    if Vu <= 0.5 * phi * Vc:
+        r.update(case="لا يحتاج أساور (يوضع الحد الأدنى)", Vs=0.0)
+        s = min(d / 2, 600)
+    elif Vu <= phi * Vc:
+        r.update(case="أساور بالحد الأدنى", Vs=0.0)
+        s = min(d / 2, 600)
+    else:
+        Vs = Vu / phi - Vc
+        r['Vs'] = Vs
+        if Vs > Vsmax:
+            r['ok'] = False
+            r['case'] = "المقطع غير كافٍ للقص — زد الأبعاد"
+            s = 100.0
+        else:
+            r['case'] = "أساور محسوبة"
+            s = Av * fyt * d / (Vs * 1000.0)
+            smax = min(d / 2, 600) if Vs <= 0.33 * math.sqrt(fc) * bw * d / 1000.0 else min(d / 4, 300)
+            s = min(s, smax)
+    s_minreq = Av * fyt / max(0.062 * math.sqrt(fc) * bw, 0.35 * bw)
+    s = min(s, s_minreq)
+    s = max(75.0, math.floor(s / 25.0) * 25.0)
+    r['s'] = s; r['Av'] = Av; r['db_stirrup'] = db_stirrup; r['legs'] = legs
+    r['phiVn'] = phi * (Vc + Av * fyt * d / (s * 1000.0))
+    r['ratio'] = Vu / r['phiVn'] if r['phiVn'] > 0 else 9.9
+    r['ok'] = r['ok'] and r['ratio'] <= 1.001
+    r['label'] = "Ø%d@%d (%dأرجل)" % (db_stirrup, int(s), legs)
+    return r
+
+# ------------------------------- الالتواء 22.7 -------------------------------
+def torsion(Tu, Vu, bw, h, fc, fy, fyt=420.0, cover=40.0, ds=10.0, d=None,
+            lam=1.0, Nu=0.0, Vc=None, hollow=False, Ag=None):
+    """تصميم الالتواء — ACI 318M-14 الباب 22.7 مع تفاصيل 9.6.4 و9.7.5 و9.7.6.3.
+
+    كان **غائباً كلياً**، والجسر الطرفي والجسر الحامل لبلاطة من جهة واحدة
+    (الشناشيل والبلكونات ودرابزين السلّم) يتعرّض لالتواء حقيقي؛ بلا هذا الباب
+    كانت الأساور تُحسب للقص وحده فتنقص فعلياً.
+
+    Tu بالـ kN·m · Vu بالـ kN · الأبعاد بالمليمتر · fc وfy بالميغاباسكال.
+
+    الخطوات كما بالكود بالضبط:
+      Acp = مساحة المقطع الكاملة · pcp = محيطه (22.7.4.1)
+      عزم العتبة (22.7.4.1 جدول أ):  Tth = 0.083·λ·√f'c·(Acp²/pcp)·√(1+Nu/(0.33·Ag·λ·√f'c))
+      عزم التشقق (22.7.5.1):         Tcr = 0.33·λ·√f'c·(Acp²/pcp)·√(1+…)
+      إن كان Tu < φ·Tth أُهمل الالتواء كلياً (22.7.1.1) — وهذا حال أغلب الجسور.
+      Aoh = مساحة داخل مركز الكانة المغلقة الخارجية · ph = محيطها
+      Ao = 0.85·Aoh (22.7.6.1.1) · θ = 45° للخرسانة غير المسبقة الإجهاد (22.7.6.1.2)
+      At/s = Tu/(φ·2·Ao·fyt·cotθ)               من (22.7.6.1a)
+      Aℓ  = (At/s)·ph·(fyt/fy)·cot²θ            من (22.7.6.1b)
+      الحد الأدنى العرضي (9.6.4.2):  (Av+2At)/s ≥ الأكبر من 0.062√f'c·bw/fyt و 0.35·bw/fyt
+      الحد الأدنى الطولي (9.6.4.3):  الأصغر من الصيغتين (أ) و(ب)
+      حدّ المقطع (22.7.7.1a للمصمت):
+          √[ (Vu/(bw·d))² + (Tu·ph/(1.7·Aoh²))² ] ≤ φ·[ Vc/(bw·d) + 0.66·√f'c ]
+      تباعد الكانات (9.7.6.3.3): s ≤ الأصغر من ph/8 و300 مم
+      قطر السيخ الطولي (9.7.5.2): ≥ الأكبر من 0.042·s و10 مم، وسيخ بكل ركن (9.7.5.1)
+    """
+    phi = 0.75
+    d = d or (h - cover - ds - 8.0)
+    Ag = Ag or (bw * h)
+    root = math.sqrt(fc)
+    Acp = bw * h
+    pcp = 2.0 * (bw + h)
+    # معامل الحمل المحوري من الصفَّين (ج) بجدولَي 22.7.4.1 و22.7.5.1
+    axf = 1.0
+    if Nu:
+        q = 1.0 + (Nu * 1000.0) / (0.33 * Ag * lam * root)   # Nu kN → N
+        axf = math.sqrt(max(0.0, q))
+    base = (Acp ** 2) / pcp
+    if hollow:                       # جدول 22.7.4.1(ب): Acp تُستبدل بـ Ag لـ Tth فقط
+        base_th = (Ag ** 2) / pcp
+    else:
+        base_th = base
+    Tth = 0.083 * lam * root * base_th * axf / 1e6           # kN·m
+    Tcr = 0.33 * lam * root * base * axf / 1e6               # kN·m
+    Tu = abs(float(Tu))
+    r = dict(Tu=Tu, Tth=Tth, Tcr=Tcr, phiTth=phi * Tth, phiTcr=phi * Tcr,
+             Acp=Acp, pcp=pcp, theta=45.0, hollow=hollow,
+             clause='ACI 318M-14 22.7 (+ 9.6.4 · 9.7.5 · 9.7.6.3)')
+    if Tu < phi * Tth:
+        r.update(required=False, ok=True, ratio=Tu / (phi * Tth) if Tth > 0 else 0.0,
+                 case='الالتواء مهمل — Tu أقل من φ·Tth (المادة 22.7.1.1)',
+                 At_s=0.0, Al=0.0, Al_min=0.0, s_max=min(d / 2.0, 600.0))
+        return r
+    x1 = bw - 2.0 * cover - ds          # مركز إلى مركز أرجل الكانة
+    y1 = h - 2.0 * cover - ds
+    Aoh = max(1.0, x1 * y1)
+    ph = 2.0 * (x1 + y1)
+    Ao = 0.85 * Aoh
+    cot = 1.0                            # θ = 45°
+    TuN = Tu * 1e6                       # kN·m → N·mm
+    At_s = TuN / (phi * 2.0 * Ao * fyt * cot)                # mm²/mm لرِجل واحدة
+    Al = At_s * ph * (fyt / fy) * cot * cot                  # mm²
+    # الحد الأدنى الطولي 9.6.4.3 — الأصغر من (أ) و(ب)
+    a_min = 0.42 * root * Acp / fy - At_s * ph * (fyt / fy)
+    b_min = 0.42 * root * Acp / fy - (0.175 * bw / fyt) * ph * (fyt / fy)
+    Al_min = max(0.0, min(a_min, b_min))
+    Al = max(Al, Al_min)
+    # الحد الأدنى العرضي 9.6.4.2 — على (Av + 2At)/s
+    avat_min = max(0.062 * root * bw / fyt, 0.35 * bw / fyt)
+    s_max = min(ph / 8.0, 300.0)                             # 9.7.6.3.3
+    db_long = max(0.042 * s_max, 10.0)                       # 9.7.5.2
+    # حدّ المقطع 22.7.7.1
+    if Vc is None:
+        Vc = 0.17 * lam * root * bw * d / 1000.0             # kN
+    lhs_v = (Vu * 1000.0) / (bw * d)
+    lhs_t = TuN * ph / (1.7 * Aoh ** 2)
+    lhs = math.sqrt(lhs_v ** 2 + lhs_t ** 2) if not hollow else (lhs_v + lhs_t)
+    rhs = phi * ((Vc * 1000.0) / (bw * d) + 0.66 * root)
+    r.update(required=True, redistribute=(Tu >= phi * Tcr),
+             Aoh=Aoh, ph=ph, Ao=Ao, At_s=At_s, Al=Al, Al_min=Al_min,
+             avat_min=avat_min, s_max=s_max, db_long=db_long,
+             lhs=lhs, rhs=rhs, ok=lhs <= rhs * 1.001,
+             ratio=lhs / rhs if rhs > 0 else 9.9,
+             case=('التواء توازن — لا يجوز تخفيضه (22.7.3.1)' if Tu >= phi * Tcr
+                   else 'التواء توافق — يُصمَّم على Tu (22.7.3.2)'),
+             note=('حدّ المقطع %s: %.2f ≤ %.2f ميغا' %
+                   ('(22.7.7.1أ مصمت)' if not hollow else '(22.7.7.1ب مجوّف)', lhs, rhs)))
+    return r
+
+# ---------------------------- قص العقدة 18.8.4 ----------------------------
+JOINT_CONF = [('four', 'محصورة بجسور على الأوجه الأربعة', 1.7),
+              ('three', 'محصورة بجسور على ثلاثة أوجه أو وجهين متقابلين', 1.2),
+              ('other', 'غير ذلك (عقدة ركنية أو حافّية)', 1.0)]
+
+def joint_shear(Vu_j, col_b, col_h, beam_b, fc, conf='other', lam=1.0,
+                ecc=0.0, detail=False):
+    """قص العقدة بين الجسر والعمود — ACI 318M-14 المادة 18.8.4.
+
+    كان **غائباً**، والعقدة هي أول ما ينهار بالزلزال حين لا تُفحص. المقاومة:
+        Vn = γ·λ·√f'c·Aj      (جدول 18.8.4.1)
+        γ = 1.7 محصورة بجسور على الأوجه الأربعة
+          = 1.2 على ثلاثة أوجه أو وجهين متقابلين
+          = 1.0 غير ذلك
+        λ = 0.75 خرسانة خفيفة · 1.0 اعتيادية
+    و Aj = عمق العقدة (عمق العمود h) × العرض الفعّال (18.8.4.3)،
+    والعرض الفعّال = عرض العمود، إلا إذا دخل جسر بعمود أوسع فيؤخذ الأصغر من:
+        (أ) عرض الجسر + عمق العقدة   (ب) ضِعف أقرب مسافة عمودية من محور الجسر لجانب العمود
+    و Aj **لا يتجاوز مساحة مقطع العمود** أبداً (تعليق R18.8.4).
+    `ecc` = انزياح محور الجسر عن محور العمود بالمليمتر (صفر إذا كان مركزياً).
+    φ = 0.85 لقص العقد (21.2.4.3).  Vu_j بالـ kN."""
+    gam = dict((k, g) for k, _, g in JOINT_CONF).get(conf, 1.0)
+    # (ب): ضِعف أقرب مسافة عمودية من محور الجسر إلى جانب العمود
+    near = max(0.0, col_b / 2.0 - abs(float(ecc)))
+    wj = min(col_b, beam_b + col_h, 2.0 * near)
+    wj = max(1.0, min(wj, col_b))            # Aj ≤ مساحة العمود
+    Aj = col_h * wj
+    phi = 0.85                               # ACI 318M-14 21.2.4.3
+    Vn = gam * lam * math.sqrt(fc) * Aj / 1000.0            # kN
+    Vu_j = abs(float(Vu_j))
+    r = dict(Vu=Vu_j, Vn=Vn, phiVn=phi * Vn, Aj=Aj, wj=wj, gamma=gam, phi=phi,
+             conf=conf, ratio=Vu_j / (phi * Vn) if Vn > 0 else 9.9,
+             ok=Vu_j <= phi * Vn * 1.001,
+             clause='ACI 318M-14 18.8.4 (جدول 18.8.4.1 + 18.8.4.3)',
+             label=dict((k, t) for k, t, _ in JOINT_CONF).get(conf, ''))
+    if detail:
+        r['note'] = ('Aj = %d×%d = %.2f م² · Vn = %.1f·%.1f·√%d·Aj'
+                     % (int(col_h), int(wj), Aj / 1e6, gam, lam, int(fc)))
+    return r
+
+def joint_hook(db, fc, fy, lam=1.0):
+    """طول نشر العكفة **داخل العقدة الزلزالية** — ACI 318M-14 المادة 18.8.5.1:
+        ldh = fy·db/(5.4·λ·√f'c)  ≥ الأكبر من 8db و150 مم (خرسانة اعتيادية)
+                                  ≥ الأكبر من 10db و190 مم (خرسانة خفيفة)
+    وهو **أطول** من 25.4.3.1 لأنه يراعي انعكاس الأحمال الزلزالية، والعكفة
+    يجب أن تقع داخل اللبّ المُطوَّق للعمود ومثنيّة نحو داخل العقدة."""
+    l = fy * db / (5.4 * lam * math.sqrt(fc))
+    lo = max(8.0 * db, 150.0) if lam >= 1.0 else max(10.0 * db, 190.0)
+    return dict(ldh=max(l, lo), raw=l, floor=lo, clause='ACI 318M-14 18.8.5.1',
+                straight=max(l, lo) * 2.5)      # 18.8.5.3(أ) للسيخ المستقيم
+
+def joint_straight(db, fc, fy, lam=1.0, top=False):
+    """طول نشر السيخ **المستقيم** داخل العقدة الزلزالية — المادة 18.8.5.3:
+    الأكبر من 2.5×(18.8.5.1) إن كان الصبّ تحته ≤ 300 مم، و3.25× إن زاد (حديد علوي)."""
+    base = joint_hook(db, fc, fy, lam)['ldh']
+    return base * (3.25 if top else 2.5)
+
+# ------------------------- الترخيم طويل الأمد 24.2 -------------------------
+XI_TABLE = [(3, 1.0), (6, 1.2), (12, 1.4), (60, 2.0)]      # جدول 24.2.4.1.3
+
+def xi_factor(months=60):
+    """معامل الزمن ξ — ACI 318M-14 جدول 24.2.4.1.3 (3ش=1.0 · 6ش=1.2 · 12ش=1.4 · 60ش+=2.0)،
+    وبينها استيفاء خطّي كما بالشكل R24.2.4.1."""
+    m = max(0.0, float(months))
+    if m >= 60: return 2.0
+    if m <= 3: return 1.0                     # أدنى قيمة بالجدول
+    for (m0, x0), (m1, x1) in zip(XI_TABLE, XI_TABLE[1:]):
+        if m <= m1:
+            return x0 + (x1 - x0) * (m - m0) / (m1 - m0)
+    return 2.0
+
+DEFL_CASES = [
+    ('roof_free',  'سقف مستوٍ لا يحمل عناصر غير إنشائية', 180.0, 'فوري من الحمل الحي للسقف'),
+    ('floor_free', 'أرضية لا تحمل عناصر غير إنشائية',      360.0, 'فوري من الحمل الحي'),
+    ('attach_dmg', 'يحمل عناصر غير إنشائية **تتضرّر** بالترخيم', 480.0,
+     'ما يحدث بعد تثبيتها = طويل الأمد للأحمال الدائمة + فوري للحي الإضافي'),
+    ('attach_ok',  'يحمل عناصر غير إنشائية لا تتضرّر',      240.0,
+     'ما يحدث بعد تثبيتها = طويل الأمد للأحمال الدائمة + فوري للحي الإضافي'),
+]
+
+def long_term(d_sustained, rho_p=0.0, months=60):
+    """الترخيم الإضافي الزمني — ACI 318M-14 المعادلة 24.2.4.1.1:
+        λΔ = ξ / (1 + 50·ρ′)
+    مضروباً بالترخيم الفوري الناتج عن **الحمل الدائم** وحده (لا الكلي).
+    ρ′ = As′/(b·d) بوسط البحر (أو المسند للكابول) — المادة 24.2.4.1.2.
+    كان الحساب سابقاً يضرب الترخيم الكلي في 2.0 ثابتاً: يهمل أثر حديد الضغط
+    (يقلّل الترخيم حتى 33%) ويحمّل الحمل الحي زحفاً لا يحدث له."""
+    xi = xi_factor(months)
+    lam_d = xi / (1.0 + 50.0 * max(0.0, rho_p))
+    return dict(xi=xi, lambda_d=lam_d, rho_p=rho_p, months=months,
+                d_add=d_sustained * lam_d, clause='ACI 318M-14 24.2.4.1.1')
+
+def deflection_check(L, d_dead, d_live, rho_p=0.0, months=60, case='attach_ok'):
+    """فحص الترخيم مقابل **جدول 24.2.2** كاملاً بأربع حالاته.
+
+    L بالمتر · الترخيمات بالمليمتر (فورية، من تحليل حمل الخدمة).
+      • فوري من الحي           ≤ L/360  (أرضية بلا عناصر مُعلَّقة)
+      • فوري من الحي للسقف     ≤ L/180
+      • بعد التثبيت = λΔ·δ(دائم) + δ(حي)  ≤ L/480 إن كانت تتضرّر، وإلا L/240
+    الحالة الافتراضية `attach_ok` هي حدّ L/240 وهو ما كان مطبَّقاً وحده."""
+    lt = long_term(d_dead, rho_p, months)
+    d_after = lt['d_add'] + d_live
+    span = L * 1000.0
+    out = []
+    for key, label, den, what in DEFL_CASES:
+        val = d_live if key in ('roof_free', 'floor_free') else d_after
+        lim = span / den
+        out.append(dict(key=key, label=label, den=den, what=what, value=val,
+                        limit=lim, ok=abs(val) <= lim * 1.001,
+                        ratio=abs(val) / lim if lim > 0 else 9.9))
+    gov = dict((o['key'], o) for o in out).get(case, out[-1])
+    return dict(cases=out, case=case, gov=gov, long_term=lt,
+                d_dead=d_dead, d_live=d_live, d_after=d_after,
+                ok=gov['ok'], ratio=gov['ratio'],
+                clause='ACI 318M-14 جدول 24.2.2 + 24.2.3.5 + 24.2.4.1.1')
+
+BAR_STOCK = 12.0          # أقصى طول سيخ متوفر بالسوق (م)
+
+LAP_MODES = [('code', 'محسوب وفق ACI 25.5.2.1 (صنف B = 1.3·ld)'),
+             ('40db', 'قاعدة الموقع 40·db'), ('50db', 'قاعدة الموقع 50·db'),
+             ('60db', 'قاعدة الموقع 60·db'), ('max', 'الأكبر من الكودي و 60·db')]
+
+def lap_length(db, fc, fy, top=False, class_b=True, mode='code'):
+    """طول الوصلة (Lap Splice). الكودي: ACI 25.5.2.1 صنف B = 1.3·ld ≥ 300 مم.
+    وقواعد الموقع (40/50/60·db) متاحة كخيار."""
+    ld = dev_length(db, fc, fy, top=top)
+    code = max(300.0, (1.3 if class_b else 1.0) * ld)
+    site = {'40db': 40.0, '50db': 50.0, '60db': 60.0}.get(mode)
+    if site:
+        return max(300.0, site * db)
+    if mode == 'max':
+        return max(code, 60.0 * db)
+    return code
+
+def cut_run(total_len, lap, max_len=BAR_STOCK):
+    """تقطيع سيخ طويل على أطوال السوق مع وصلات — كل الأطوال بالمتر.
+    يرجع مواضع القطع وأطوالها وعدد الوصلات والهدر."""
+    lapm = lap / 1000.0
+    if total_len <= max_len + 1e-9:
+        return dict(n=1, piece=total_len, laps=0, lap=lapm, total_steel=total_len,
+                    waste=0.0, starts=[0.0], lengths=[total_len])
+    n = 1
+    while (total_len + (n - 1) * lapm) / n > max_len:
+        n += 1
+        if n > 200:
+            break
+    piece = (total_len + (n - 1) * lapm) / n
+    starts, lengths, x = [], [], 0.0
+    for i in range(n):
+        starts.append(x); lengths.append(piece)
+        x += piece - lapm
+    return dict(n=n, piece=piece, laps=n - 1, lap=lapm,
+                total_steel=total_len + (n - 1) * lapm,
+                waste=(n - 1) * lapm, starts=starts, lengths=lengths)
+
+def punching(Vu, c1, c2, d, fc, pos='interior', lam=1.0):
+    """قص الثقب (Two-way shear) — ACI 318M-14 جدول 22.6.5.2.
+    Vu بـ kN · c1,c2,d بالمليمتر · النتيجة kN."""
+    d = max(d, 50.0)
+    if pos == 'interior':
+        b0 = 2 * (c1 + d) + 2 * (c2 + d); als = 40.0
+    elif pos == 'edge':
+        b0 = 2 * (c1 + d / 2) + (c2 + d); als = 30.0
+    else:
+        b0 = (c1 + d / 2) + (c2 + d / 2); als = 20.0
+    beta = max(c1, c2) / min(c1, c2)
+    v1 = 0.33 * lam * math.sqrt(fc)
+    v2 = 0.17 * (1 + 2 / beta) * lam * math.sqrt(fc)
+    v3 = 0.083 * (2 + als * d / b0) * lam * math.sqrt(fc)
+    vc = min(v1, v2, v3)
+    phiVc = 0.75 * vc * b0 * d / 1000.0
+    r = Vu / phiVc if phiVc > 0 else 9.9
+    if r <= 1.0:
+        rec = 'مقبول'
+    elif r <= 1.3:
+        rec = 'زد سماكة العنصر 50–100 مم أو كبّر مقطع العمود'
+    else:
+        rec = 'يحتاج معالجة: زيادة السماكة أو رأس عمود (Drop Panel) أو مسامير قص (Shear Studs)'
+    return dict(b0=b0, d=d, beta=beta, alpha_s=als, pos=pos, vc=vc, phiVc=phiVc,
+                Vu=Vu, ratio=r, ok=r <= 1.0, rec=rec,
+                govern=('0.33√f\'c' if vc == v1 else ('0.17(1+2/β)√f\'c' if vc == v2 else '0.083(2+αs·d/b0)√f\'c')))
+
+#: أكبر قطر يُعدّ «قضيب رقم 19 فأصغر» بجدول ACI 318M-14 رقم 25.4.2.4.
+#: القضيب رقم 19 قطره الاسمي 19.1 مم، فـ Ø20 **فوقه** ويأخذ ψs = 1.0 لا 0.8.
+BAR19 = 19.1
+
+def psi_g(fy):
+    """معامل الإجهاد ψg.
+
+    **ليس من ACI 318M-14** — النسخة التي بيدنا (الطبعة المترية 2014) لا تحوي ψg
+    إطلاقاً؛ أُضيف في ACI 318-19 جدول 25.4.2.5. نُبقيه لأنه **يزيد** طول النشر
+    للحديد عالي الإجهاد (520 · 550 · 690) فهو تحفّظ فوق 318M-14 لا مخالفة له،
+    ولأن fy > 420 خارج نطاق 318M-14 أصلاً في معظم الأبواب.
+    عند fy ≤ 420 (وهو حال المشروع) يرجع 1.0 فلا أثر له على المطابقة."""
+    if fy <= 420.0:
+        return 1.0
+    if fy <= 550.0:
+        return 1.15
+    return 1.3
+
+def dev_length(db, fc, fy, top=False, epoxy=False, lam=1.0,
+               cover=40.0, spacing=None, Atr=0.0, s_tr=0.0, n_bars_tr=1,
+               excess=1.0, detail=False):
+    """طول النشر بالشدّ ld — ACI 318M-14 المعادلة 25.4.2.3(a):
+
+        ld = [ fy·ψt·ψe·ψs / (1.1·λ·√f'c·((cb+Ktr)/db)) ] · db   ≥ 300 مم
+
+    المعاملات من **جدول 25.4.2.4** (لا 25.4.2.5 — ذاك ترقيم 2019):
+      ψt = 1.3 إذا صُبّ تحت السيخ أكثر من 300 مم خرسانة طازجة (حديد علوي)
+      ψe = 1.5 مطلي إيبوكسي بغطاء < 3db أو خلوص < 6db · 1.2 مطلي غير ذلك · 1.0 غير مطلي
+      حاصل ψt·ψe ≤ 1.7 (حدّ الجدول نفسه)
+      ψs = 0.8 لقضيب **رقم 19 فأصغر** (أي db ≤ 19.1 مم) · 1.0 لما فوقه
+           — فـ Ø20 يأخذ 1.0. (كان الشرط db ≤ 20 فيعطي Ø20 خصماً 20% بلا وجه حق.)
+      (cb+Ktr)/db ≤ 2.5 (حدّ 25.4.2.3) — وتُحسب cb وKtr فعلاً لا تُفترض
+      Ktr = 40·Atr/(s·n) — المادة 25.4.2.3
+    و ψg مضروب زيادةً كتحفّظ من 318-19 (يساوي 1.0 عند fy ≤ 420 فلا يغيّر شيئاً).
+    و`excess` = As المطلوب ÷ As المنفَّذ (25.4.10.1) ولا يُستعمل بالوصلات (25.5.2.1)."""
+    pt = 1.3 if top else 1.0
+    if epoxy:
+        # جدول 25.4.2.4: غطاء < 3db أو خلوص بين السيخان < 6db ⇒ 1.5 وإلا 1.2
+        clear = (spacing - db) if spacing else None
+        tight = (cover < 3.0 * db) or (clear is not None and clear < 6.0 * db)
+        pe = 1.5 if tight else 1.2
+    else:
+        pe = 1.0
+    if pt * pe > 1.7:                                   # حدّ جدول 25.4.2.4
+        pe = 1.7 / pt
+    ps = 0.8 if db <= BAR19 else 1.0                    # قضيب رقم 19 فأصغر
+    pg = psi_g(fy)
+    # cb = الأصغر من: الغطاء لمركز السيخ · نصف المسافة بين مركزي سيخين
+    cb = cover + db / 2.0
+    if spacing:
+        cb = min(cb, spacing / 2.0)
+    Ktr = (40.0 * Atr / (s_tr * n_bars_tr)) if (s_tr > 0 and n_bars_tr > 0) else 0.0
+    conf = min(2.5, (cb + Ktr) / db)                    # ACI 25.4.2.3
+    ld = (fy * pt * pe * ps * pg / (1.1 * lam * math.sqrt(fc) * conf)) * db
+    ld = max(ld * max(0.0, min(1.0, excess)), 300.0)
+    if not detail:
+        return ld
+    return dict(ld=ld, psi_t=pt, psi_e=pe, psi_s=ps, psi_g=pg, cb=cb, Ktr=Ktr,
+                conf=conf, ratio_db=ld / db, clause='ACI 318M-14 (25.4.2.3a) + جدول 25.4.2.4',
+                note='(cb+Ktr)/db = %.2f (بحدّ 2.5) · ψt·ψe = %.2f (بحدّ 1.7)' % (conf, pt * pe))
+
+def hook_dev(db, fc, fy, epoxy=False, lam=1.0, confined=False, inside_col=False,
+             excess=1.0, detail=False):
+    """طول نشر السيخ **المعكوف** ldh — كان مفقوداً كلياً، وهو الحاكم عند
+    المسند الطرفي حيث لا يوجد طول مستقيم كافٍ لنشر حديد الجسر داخل العمود.
+
+    **الحاكم عندنا هو ACI 318M-14 المادة 25.4.3.1** — الأكبر من:
+        (0.24·fy·ψe·ψc·ψr / (λ·√f'c))·db   ·   8db   ·   150 مم
+    ومعاملات جدول 25.4.3.2:
+      ψe = 1.2 مطلي إيبوكسي · 1.0 غير مطلي
+      ψc = 0.7 إذا كان الغطاء الجانبي العمودي على مستوى العكفة ≥ 65 مم
+           (ولعكفة 90° غطاء على الامتداد ≥ 50 مم) · 1.0 غير ذلك
+      ψr = 0.8 لعكفة 90° بقضيب رقم 36 فأصغر مُطوَّق بكانات تباعدها ≤ 3db · 1.0 غير ذلك
+    (ψc وψr كانا **مفقودين** من فرع 2014 هنا، فكان الطول يُحسب أطول بنحو 44%
+     داخل العمود المُطوَّق — تحفّظ نعم لكنه ليس الكود، والاستهلاك يظهر بالكميات.)
+
+    ويُحسب معه شكل 318-19 (fy·ψe·ψr·ψo·ψc/(23λ√f'c))·db^1.5 ويُؤخذ **الأكبر**
+    تحفّظاً؛ وهو زيادة على 318M-14 لا مخالفة له."""
+    pe = 1.2 if epoxy else 1.0
+    # جدول 25.4.3.2 (318M-14): ψc غطاء جانبي · ψr تطويق بكانات
+    pc14 = 0.7 if inside_col else 1.0
+    pr14 = 0.8 if (confined and db <= 36.0) else 1.0
+    # جدول 25.4.3.2 (318-19): ψr = 1.0 مع التطويق و1.6 بدونه · ψo غطاء
+    pr = 1.0 if confined else 1.6
+    po = 1.0 if inside_col else 1.25
+    l19 = (fy * pe * pr * po / (23.0 * lam * math.sqrt(fc))) * (db ** 1.5)
+    l14 = 0.24 * fy * pe * pc14 * pr14 * db / (lam * math.sqrt(fc))
+    ldh = max(l19, l14) * max(0.0, min(1.0, excess))
+    ldh = max(ldh, 8.0 * db, 150.0)
+    if not detail:
+        return ldh
+    return dict(ldh=ldh, aci19=l19, aci14=l14, psi_e=pe, psi_c=pc14, psi_r14=pr14,
+                psi_r=pr, psi_o=po,
+                govern=('ACI 318-19 (25.4.3.1a) — أكبر فأُخذ' if l19 >= l14
+                        else 'ACI 318M-14 (25.4.3.1)'),
+                clause='ACI 318M-14 25.4.3.1 + جدول 25.4.3.2', ratio_db=ldh / db,
+                note='ψc=%.1f · ψr=%.1f · الحدّ الأدنى max(8db , 150 مم) = %d مم'
+                     % (pc14, pr14, int(max(8 * db, 150.0))))
+
+def dev_compression(db, fc, fy, lam=1.0, detail=False):
+    """طول النشر بالضغط ldc — ACI 318M-14 المادة 25.4.9.2:
+        ldc = الأكبر من [ 0.24·fy·ψr·db/(λ√f'c) , 0.043·fy·ψr·db ] ≥ 200 مم"""
+    a = 0.24 * fy * db / (lam * math.sqrt(fc))
+    b = 0.043 * fy * db
+    ldc = max(a, b, 200.0)
+    if not detail:
+        return ldc
+    return dict(ldc=ldc, a=a, b=b, clause='ACI 318M-14 25.4.9.2 + جدول 25.4.9.3', ratio_db=ldc / db)
+
+# --------------------------- column interaction ----------------------------
+def col_layers(b, h, nb, nh, db, cover=40, ds=10):
+    """bars on 4 faces: nb per top/bottom face, nh per side face (incl corners)."""
+    d1 = cover + ds + db / 2
+    layers = []
+    layers.append([d1, nb * ab(db)])
+    layers.append([h - d1, nb * ab(db)])
+    inner = max(0, nh - 2)
+    if inner > 0:
+        sp = (h - 2 * d1) / (inner + 1)
+        for k in range(1, inner + 1):
+            layers.append([d1 + sp * k, 2 * ab(db)])
+    return layers
+
+def circ_layers(D, n, db, cover=40, ds=10):
+    """أسياخ عمود دائري: موزّعة بالتساوي على دائرة، وعمق كل سيخ من ليف الضغط
+    الأقصى d = R − r·cos φ. تُدمج الأسياخ المتساوية العمق بطبقة واحدة."""
+    R = D / 2.0
+    r = max(R - cover - ds - db / 2.0, 1.0)
+    acc = {}
+    for k in range(max(4, int(n))):
+        phi = 2.0 * math.pi * k / max(4, int(n))
+        d = R - r * math.cos(phi)
+        key = round(d, 1)
+        acc[key] = acc.get(key, 0.0) + ab(db)
+    return sorted([[d, a] for d, a in acc.items()], key=lambda t: t[0])
+
+def _circ_block(D, a):
+    """قطعة الضغط بمقطع دائري: مساحتها وذراعها عن مركز الدائرة (a عمق الكتلة)."""
+    R = D / 2.0
+    a = max(0.0, min(a, D))
+    if a <= 0:
+        return 0.0, 0.0
+    if a >= D:
+        return math.pi * R * R, 0.0
+    th = math.acos(max(-1.0, min(1.0, (R - a) / R)))       # نصف الزاوية المركزية
+    A = R * R * (th - math.sin(th) * math.cos(th))
+    if A <= 1e-9:
+        return 0.0, 0.0
+    ybar = (2.0 * R ** 3 * math.sin(th) ** 3) / (3.0 * A)  # عن مركز الدائرة
+    return A, ybar
+
+def col_interaction(b, h, fc, fy, layers, npts=40, shape='rect', D=None):
+    """منحني التفاعل P–M. shape='circ' يستعمل هندسة القطعة الدائرية الحقيقية
+    (مساحة القطعة الدائرية وذراعها) بدل كتلة مستطيلة — فالعمود الدائري يُصمَّم
+    على مقطعه لا على مربع مكافئ."""
+    b1 = beta1(fc)
+    circ = (shape == 'circ' and D)
+    if circ:
+        h = float(D)
+    Ast = sum(l[1] for l in layers)
+    Ag = (math.pi * D * D / 4.0) if circ else (b * h)
+    P0 = 0.85 * fc * (Ag - Ast) + fy * Ast
+    dmax = max(l[0] for l in layers)
+    pts = []
+    # pure compression
+    pts.append(dict(P=0.65 * 0.80 * P0 / 1000.0, M=0.0, phi=0.65, et=0.0,
+                    Pn=P0 / 1000.0, Mn=0.0))
+    cs = [dmax * (3.0 - 2.9 * i / (npts - 1.0)) for i in range(npts)]
+    for c in cs:
+        a = min(b1 * c, h)
+        if circ:
+            Ac, ybar = _circ_block(D, a)
+            Cc = 0.85 * fc * Ac
+            Pn = Cc; Mn = Cc * ybar
+        else:
+            Cc = 0.85 * fc * a * b
+            Pn = Cc; Mn = Cc * (h / 2 - a / 2)
+        for d_i, As_i in layers:
+            e = 0.003 * (c - d_i) / c
+            fs = max(-fy, min(fy, ES * e))
+            if d_i <= a:
+                fs -= 0.85 * fc
+            Pn += As_i * fs
+            Mn += As_i * fs * (h / 2 - d_i)
+        et = 0.003 * (dmax - c) / c
+        ph = phi_flex(et, fy)
+        Pn_k = Pn / 1000.0; Mn_k = Mn / 1e6
+        Pmax = 0.80 * P0 / 1000.0
+        pts.append(dict(P=min(ph * Pn_k, 0.65 * Pmax) if et < fy / ES else ph * Pn_k,
+                        M=ph * Mn_k, phi=ph, et=et, Pn=Pn_k, Mn=Mn_k))
+    # pure tension
+    pts.append(dict(P=-0.9 * Ast * fy / 1000.0, M=0.0, phi=0.9, et=0.05,
+                    Pn=-Ast * fy / 1000.0, Mn=0.0))
+    pts.sort(key=lambda p: -p['P'])
+    return pts, P0 / 1000.0, Ast
+
+def col_check(Pu, Mu, pts):
+    """Return phiMn at Pu and utilization."""
+    Pu = float(Pu); Mu = abs(float(Mu))
+    lo = None
+    for i in range(len(pts) - 1):
+        a, b_ = pts[i], pts[i + 1]
+        if (a['P'] - Pu) * (b_['P'] - Pu) <= 0 and abs(a['P'] - b_['P']) > 1e-9:
+            t = (Pu - a['P']) / (b_['P'] - a['P'])
+            lo = a['M'] + t * (b_['M'] - a['M'])
+            break
+    if lo is None:
+        lo = 0.0
+    ratio = 9.9 if lo <= 1e-6 else Mu / lo
+    if Pu > pts[0]['P']:
+        ratio = max(ratio, Pu / pts[0]['P'])
+    return lo, ratio
+
+# ======================= Iraqi Code — loads & materials =====================
+LIVE = [  # الكود العراقي للأحمال والقوى — أحمال حية kN/m2
+    ("سكني / غرف نوم", 2.0), ("مكاتب", 2.5), ("صفوف دراسية", 3.0),
+    ("ممرات وأدراج ومخارج", 4.0), ("شرفات (بلكونات)", 4.0),
+    ("قاعات اجتماعات - مقاعد ثابتة", 4.0), ("قاعات اجتماعات - بدون مقاعد", 5.0),
+    ("مستشفى - غرف مرضى", 2.0), ("مستشفى - عمليات ومختبرات", 3.0),
+    ("محلات تجارية - طابق أرضي", 5.0), ("محلات تجارية - طوابق عليا", 4.0),
+    ("مخازن خفيفة", 6.0), ("مخازن ثقيلة", 12.0), ("مصانع خفيفة", 6.0),
+    ("مواقف سيارات خاصة", 2.5), ("مكتبة - قاعة مطالعة", 3.0),
+    ("مكتبة - رفوف كتب", 7.5), ("سطح غير قابل للاستخدام", 1.0),
+    ("سطح قابل للاستخدام", 2.0), ("مطاعم", 4.0),
+]
+DENS = [  # kN/m3
+    ("خرسانة مسلحة", 24.0), ("خرسانة عادية", 23.0), ("طابوق (بناء)", 18.0),
+    ("بلوك خرساني", 14.0), ("ثرمستون", 8.0), ("بلاستر / جص", 17.0),
+    ("مونة إسمنت", 21.0), ("كاشي / سيراميك", 23.0), ("رمل", 18.0),
+    ("حصى (سبيس)", 20.0), ("تراب مدكوك", 18.0), ("حديد", 78.5), ("ماء", 10.0),
+]
+SEISMIC_CITIES = {  # قيم استرشادية Ss,S1 (g) — تُدقق مع خرائط الكود العراقي
+    "بغداد": (0.20, 0.08), "البصرة": (0.15, 0.06), "الموصل": (0.35, 0.12),
+    "أربيل": (0.40, 0.15), "السليمانية": (0.50, 0.18), "دهوك": (0.40, 0.15),
+    "كركوك": (0.30, 0.11), "ديالى": (0.25, 0.10), "الأنبار": (0.15, 0.06),
+    "النجف": (0.15, 0.06), "كربلاء": (0.15, 0.06), "بابل": (0.17, 0.07),
+    "واسط": (0.20, 0.08), "ميسان": (0.17, 0.07), "ذي قار": (0.15, 0.06),
+    "المثنى": (0.13, 0.05), "صلاح الدين": (0.28, 0.10), "القادسية": (0.15, 0.06),
+}
+SYSTEMS = {
+    "إطارات خرسانية مقاومة للعزوم - عادية (OMF)": dict(R=3.0, Cd=2.5, O=3.0, Ct=0.0466, x=0.9),
+    "إطارات خرسانية مقاومة للعزوم - متوسطة (IMF)": dict(R=5.0, Cd=4.5, O=3.0, Ct=0.0466, x=0.9),
+    "إطارات خرسانية مقاومة للعزوم - خاصة (SMF)": dict(R=8.0, Cd=5.5, O=3.0, Ct=0.0466, x=0.9),
+    "جدران قص خرسانية عادية": dict(R=4.0, Cd=4.0, O=2.5, Ct=0.0488, x=0.75),
+    "جدران قص خرسانية خاصة": dict(R=5.0, Cd=5.0, O=2.5, Ct=0.0488, x=0.75),
+    "نظام ثنائي: جدران خاصة + إطارات خاصة": dict(R=7.0, Cd=5.5, O=2.5, Ct=0.0488, x=0.75),
+}
+FA = {"A": [0.8]*5, "B": [0.9, 0.9, 1.0, 1.0, 1.0], "C": [1.3, 1.3, 1.2, 1.2, 1.2],
+      "D": [1.6, 1.4, 1.2, 1.1, 1.0], "E": [2.4, 1.7, 1.3, 1.1, 0.9]}
+FV = {"A": [0.8]*5, "B": [0.8, 0.8, 0.8, 0.8, 0.8], "C": [1.5, 1.5, 1.5, 1.5, 1.4],
+      "D": [2.4, 2.2, 2.0, 1.9, 1.8], "E": [4.2, 3.3, 2.8, 2.4, 2.4]}
+SS_PTS = [0.25, 0.5, 0.75, 1.0, 1.25]; S1_PTS = [0.1, 0.2, 0.3, 0.4, 0.5]
+
+def _interp(xs, ys, x):
+    if x <= xs[0]: return ys[0]
+    if x >= xs[-1]: return ys[-1]
+    for i in range(len(xs) - 1):
+        if xs[i] <= x <= xs[i + 1]:
+            t = (x - xs[i]) / (xs[i + 1] - xs[i])
+            return ys[i] + t * (ys[i + 1] - ys[i])
+    return ys[-1]
+
+def seismic(p):
+    city = p.get('city', 'بغداد')
+    Ss, S1 = SEISMIC_CITIES.get(city, (0.20, 0.08))
+    Ss = float(p.get('Ss') or Ss); S1 = float(p.get('S1') or S1)
+    sc = p.get('site', 'D'); sysname = p.get('system', list(SYSTEMS)[1])
+    sy = SYSTEMS.get(sysname, list(SYSTEMS.values())[1])
+    Ie = float(p.get('Ie', 1.0)); hn = float(p['hn']); W = float(p['W'])
+    Fa = _interp(SS_PTS, FA[sc], Ss); Fv = _interp(S1_PTS, FV[sc], S1)
+    SMS = Fa * Ss; SM1 = Fv * S1; SDS = 2 * SMS / 3.0; SD1 = 2 * SM1 / 3.0
+    Ta = sy['Ct'] * hn ** sy['x']
+    T = float(p.get('T') or Ta)
+    R = float(p.get('R') or sy['R'])
+    Cs = SDS / (R / Ie)
+    Cs_max = SD1 / (T * (R / Ie))
+    Cs_min = max(0.044 * SDS * Ie, 0.01)
+    Cs_use = max(min(Cs, Cs_max), Cs_min)
+    V = Cs_use * W
+    k = 1.0 if T <= 0.5 else (2.0 if T >= 2.5 else 1.0 + (T - 0.5) / 2.0)
+    ws = p.get('stories') or []
+    tot = sum(s['w'] * s['h'] ** k for s in ws) if ws else 0
+    dist = []
+    for s in ws:
+        cvx = (s['w'] * s['h'] ** k / tot) if tot else 0
+        dist.append(dict(level=s.get('name', ''), h=s['h'], w=s['w'],
+                         cvx=cvx, Fx=cvx * V))
+    acc = 0.0
+    for d in reversed(dist):
+        acc += d['Fx']; d['Vx'] = acc
+    sdc = "A"
+    for lim, cat in ((0.167, "B"), (0.33, "C"), (0.50, "D")):
+        if SDS >= lim: sdc = cat
+    return dict(city=city, Ss=Ss, S1=S1, site=sc, Fa=Fa, Fv=Fv, SMS=SMS, SM1=SM1,
+                SDS=SDS, SD1=SD1, Ta=Ta, T=T, R=R, Ie=Ie, Cs=Cs, Cs_max=Cs_max,
+                Cs_min=Cs_min, Cs_use=Cs_use, V=V, k=k, W=W, dist=dist, sdc=sdc,
+                system=sysname, note="قيم Ss,S1 استرشادية — تُدقق مع خرائط الكود العراقي للمقاومة الزلزالية")
+
+def wind(p):
+    V = float(p.get('V', 34.0)); exp = p.get('exposure', 'B')
+    h = float(p.get('h', 12.0)); B = float(p.get('B', 20.0))
+    zg, al = {"B": (365.76, 7.0), "C": (274.32, 9.5), "D": (213.36, 11.5)}[exp]
+    Kd = 0.85; Kzt = 1.0; G = 0.85
+    lv = []
+    z = 0.0; step = max(1.0, h / 8.0)
+    while z < h + 1e-9:
+        zz = max(z, 4.6)
+        Kz = 2.01 * (zz / zg) ** (2.0 / al)
+        qz = 0.613 * Kz * Kzt * Kd * V * V / 1000.0   # kPa
+        lv.append(dict(z=round(z, 2), Kz=Kz, qz=qz, pw=G * 0.8 * qz))
+        z += step
+    qh = lv[-1]['qz']
+    pl = G * (-0.5) * qh
+    Ftot = sum((lv[i]['pw'] + abs(pl)) * B * step for i in range(len(lv))) * 0.5
+    return dict(V=V, exposure=exp, levels=lv, qh=qh, p_lee=pl, B=B, h=h,
+                F_total=Ftot, note="ضغط الرياح وفق ASCE 7 / الكود العراقي - طريقة الاتجاه")
+
+def floor_load(p):
+    t = float(p.get('slab', 150)); items = []
+    items.append(("بلاطة خرسانية %d مم" % t, t / 1000.0 * 24.0))
+    for nm, th, g in (("رمل", p.get('sand', 50), 18.0), ("مونة", p.get('mortar', 25), 21.0),
+                      ("كاشي/سيراميك", p.get('tiles', 25), 23.0),
+                      ("بلاستر سقف", p.get('plaster', 20), 17.0)):
+        th = float(th or 0)
+        if th > 0: items.append(("%s %d مم" % (nm, int(th)), th / 1000.0 * g))
+    part = float(p.get('partitions', 1.0))
+    if part > 0: items.append(("قواطع", part))
+    extra = float(p.get('extra', 0.0))
+    if extra > 0: items.append(("أحمال إضافية", extra))
+    D = sum(i[1] for i in items)
+    L = float(p.get('live', 2.0))
+    combos = [("1.4D", 1.4 * D), ("1.2D + 1.6L", 1.2 * D + 1.6 * L),
+              ("1.2D + 1.0L (زلزالي)", 1.2 * D + 1.0 * L), ("D + L (تشغيلي)", D + L)]
+    return dict(items=[dict(name=a, v=b) for a, b in items], D=D, L=L,
+                wu=1.2 * D + 1.6 * L, ws=D + L,
+                combos=[dict(name=a, v=b) for a, b in combos])
+
+# ================================= modules =================================
+def Ec(fc): return 4700.0 * math.sqrt(fc)          # MPa
+def _EI(fc, b, h): return Ec(fc) * 1000.0, b * h ** 3 / 12.0 / 1e12   # kN/m2 , m4
+
+def cracked_I(b, h, d, As, fc, Ma, lam=1.0):
+    """Effective moment of inertia (ACI 24.2.3, Branson). mm^4, Ma kN.m"""
+    Ig = b * h ** 3 / 12.0
+    fr = 0.62 * lam * math.sqrt(fc)
+    Mcr = fr * Ig / (h / 2.0) / 1e6
+    n = ES / Ec(fc)
+    A = b / 2.0; B = n * As; C = -n * As * d
+    kd = (-B + math.sqrt(B * B - 4 * A * C)) / (2 * A)
+    Icr = b * kd ** 3 / 3.0 + n * As * (d - kd) ** 2
+    if Ma <= Mcr or Ma <= 0: return Ig, Ig, Icr, Mcr
+    r = (Mcr / Ma) ** 3
+    Ie = min(Ig, r * Ig + (1 - r) * Icr)
+    return Ie, Ig, Icr, Mcr
+
+def min_h_beam(L, cond, fy=420.0):
+    f = {"simple": 16.0, "one_end": 18.5, "both": 21.0, "cant": 8.0}.get(cond, 18.5)
+    return L * 1000.0 / f * (0.4 + fy / 700.0)
+
+def beam_module(p):
+    sp = p['spans']; b = float(p['b']); h = float(p['h'])
+    fc = float(p['fc']); fy = float(p['fy']); cov = float(p.get('cover', 40))
+    dbs = float(p.get('db_stirrup', 10)); dbm = float(p.get('db_main', 16))
+    # حالة الترخيم بجدول 24.2.2 — الافتراضي «يحمل عناصر تتضرّر بالترخيم»
+    # لأن القواطع البلوكية بالبناء العراقي تقف على الجسور وتتشقّق فعلاً، وحدّها L/480.
+    defl_case = p.get('defl_case', 'attach_dmg')
+    d = h - cov - dbs - dbm / 2.0
+    E, I = _EI(fc, b, h)
+    sw = b * h / 1e6 * 24.0                      # kN/m self weight
+    lf = bool(p.get('fix_left')); rf = bool(p.get('fix_right'))
+    n = len(sp)
+    def build(fac):
+        f = Frame(); x = 0.0; nd = [f.node(0, 0)]
+        for s in sp:
+            x += float(s['L']); nd.append(f.node(x, 0))
+        for k, s in enumerate(sp):
+            wD = float(s['wD']) + sw; wL = float(s['wL'])
+            f.member(nd[k], nd[k + 1], E, b * h / 1e6, I, qy=-(fac[k][0] * wD + fac[k][1] * wL))
+        f.support(nd[0], 1, 1, 1 if lf else 0)
+        f.support(nd[n], 0, 1, 1 if rf else 0)
+        for k in range(1, n):
+            f.support(nd[k], 0, 1, 0)
+        return f.run()
+    pats = [[(1.2, 1.6)] * n,
+            [((1.2, 1.6) if k % 2 == 0 else (1.2, 0.0)) for k in range(n)],
+            [((1.2, 1.6) if k % 2 == 1 else (1.2, 0.0)) for k in range(n)],
+            [(1.4, 0.0)] * n]
+    NS = 40
+    env = []; xoff = 0.0
+    for k, s in enumerate(sp):
+        env.append([dict(x=xoff + float(s['L']) * i / NS, Mmax=-1e18, Mmin=1e18,
+                         Vmax=0.0, V=0.0, M=0.0) for i in range(NS + 1)])
+        xoff += float(s['L'])
+    for fac in pats:
+        fr = build(fac)
+        for k in range(n):
+            dg = fr.diagram(k, NS)
+            for i, pt in enumerate(dg):
+                e = env[k][i]
+                e['Mmax'] = max(e['Mmax'], pt['M']); e['Mmin'] = min(e['Mmin'], pt['M'])
+                if abs(pt['V']) > abs(e['Vmax']): e['Vmax'] = pt['V']
+    fr1 = build(pats[0])
+    for k in range(n):
+        for i, pt in enumerate(fr1.diagram(k, NS)):
+            env[k][i]['M'] = pt['M']; env[k][i]['V'] = pt['V']
+    # service run for deflection
+    frs = build([(1.0, 1.0)] * n)
+    defl = []; dmax = 0.0; span_defl = []
+    for k in range(n):
+        dg = frs.diagram(k, NS)
+        dd = min(pt['d'] for pt in dg)
+        span_defl.append(dd)
+        defl.append([dict(x=env[k][i]['x'], d=pt['d']) for i, pt in enumerate(dg)])
+        dmax = min(dmax, dd)
+    # design
+    des = []
+    for k, s in enumerate(sp):
+        L = float(s['L'])
+        Mpos = max(e['Mmax'] for e in env[k]); Mpos = max(Mpos, 0.0)
+        fl = flexure(Mpos, b, d, fc, fy, h)
+        fl['bars'] = pick_bars(fl['As_req'], width=b)
+        i_d = min(NS, max(1, int(round(d / 1000.0 / L * NS))))
+        Vu = max(abs(env[k][i_d]['Vmax']), abs(env[k][NS - i_d]['Vmax']))
+        sh = shear(Vu, b, d, fc, fy, db_stirrup=int(dbs))
+        Ma = max(abs(max(e['M'] for e in env[k])), 1.0)     # service moment
+        Ie, Ig, Icr, Mcr = cracked_I(b, h, d, fl['bars']['As'], fc, Ma)
+        dserv = span_defl[k] * (Ig / Ie if Ie > 0 else 1.0)
+        # فصل الدائم عن الحي — التحليل خطّي والحمل موزّع، فالقسمة بالنسبة دقيقة
+        wD_k = float(sp[k]['wD']) + sw; wL_k = float(sp[k]['wL'])
+        share = wD_k / max(1e-6, wD_k + wL_k)
+        dchk = deflection_check(L, abs(dserv) * share, abs(dserv) * (1.0 - share),
+                                rho_p=0.0, months=60, case=defl_case)
+        lim = dchk['gov']['limit']
+        des.append(dict(idx=k + 1, L=L, Mpos=Mpos, flex=fl, Vu=Vu, shear=sh,
+                        d_imm=dserv, d_long=dchk['d_after'], d_limit=lim,
+                        defl=dchk, defl_ok=dchk['ok'],
+                        h_min=min_h_beam(L, "both" if n > 1 else ("simple" if not (lf or rf) else "one_end"), fy),
+                        Ie=Ie, Ig=Ig, Mcr=Mcr))
+    sup = []
+    for k in range(n + 1):
+        M = 0.0
+        if k > 0: M = min(M, env[k - 1][NS]['Mmin'])
+        if k < n: M = min(M, env[k][0]['Mmin'])
+        if k == 0 and not lf: M = min(M, 0.0)
+        if abs(M) < 1e-6:
+            sup.append(dict(idx=k, M=0.0, flex=None)); continue
+        _f = flexure(M, b, d, fc, fy, h)
+        _f['bars'] = pick_bars(_f['As_req'], width=b)
+        sup.append(dict(idx=k, M=M, flex=_f))
+    ld = dev_length(dbm, fc, fy, top=True)
+    return dict(b=b, h=h, d=d, fc=fc, fy=fy, sw=sw, env=env, defl=defl,
+                spans=[float(s['L']) for s in sp], design=des, supports=sup,
+                ld_top=ld, ld_bot=dev_length(dbm, fc, fy), Ec=Ec(fc),
+                total_L=sum(float(s['L']) for s in sp))
+
+def column_module(p):
+    b = float(p['b']); h = float(p['h']); fc = float(p['fc']); fy = float(p['fy'])
+    nb = int(p.get('nb', 3)); nh = int(p.get('nh', 3)); db = float(p.get('db', 20))
+    Pu = float(p['Pu']); Mu = float(p['Mu'])
+    lu = float(p.get('lu', 3.0)); kf = float(p.get('k', 1.0))
+    braced = bool(p.get('braced', True)); M1 = float(p.get('M1', 0.0))
+    layers = col_layers(b, h, nb, nh, db)
+    pts, P0, Ast = col_interaction(b, h, fc, fy, layers)
+    rho = Ast / (b * h)
+    r = 0.3 * h / 1000.0
+    slend = kf * lu / r
+    lim = min(40.0, 34 - 12 * (M1 / Mu if Mu else 0.0)) if braced else 22.0
+    delta = 1.0; Mc = abs(Mu)
+    if slend > lim:
+        EIe = 0.4 * Ec(fc) * (b * h ** 3 / 12.0) / 1e6      # kN.m2
+        Pc = math.pi ** 2 * EIe / (kf * lu) ** 2
+        Cm = max(0.4, 0.6 + 0.4 * (M1 / Mu if Mu else 0.0)) if braced else 1.0
+        delta = max(1.0, Cm / max(0.05, 1 - Pu / (0.75 * Pc)))
+        Mc = delta * abs(Mu)
+    phiMn, ratio = col_check(Pu, Mc, pts)
+    dbt = 10 if db <= 32 else 12
+    s_tie = min(16 * db, 48 * dbt, min(b, h))
+    s_tie = math.floor(s_tie / 25.0) * 25.0
+    return dict(b=b, h=h, fc=fc, fy=fy, Ast=Ast, rho=rho, P0=P0, pts=pts,
+                Pu=Pu, Mu=Mu, Mc=Mc, delta=delta, slend=slend, slend_lim=lim,
+                slender=slend > lim, phiMn=phiMn, ratio=ratio, ok=ratio <= 1.001,
+                bars="%d Ø%d" % (2 * nb + 2 * (nh - 2) if nh > 2 else 2 * nb, db),
+                nbars=2 * nb + 2 * max(0, nh - 2), db=db,
+                ties="Ø%d @ %d mm" % (dbt, int(s_tie)), s_tie=s_tie,
+                rho_ok=0.01 <= rho <= 0.08, phiPn_max=pts[0]['P'],
+                Ag=b * h, layers=layers)
+
+def footing_module(p):
+    PD = float(p['PD']); PL = float(p['PL']); M = float(p.get('M', 0.0))
+    qa = float(p['qa']); fc = float(p['fc']); fy = float(p['fy'])
+    cx = float(p.get('cx', 400)); cy = float(p.get('cy', 400))
+    Df = float(p.get('Df', 1.5)); cov = 75.0
+    Ps = PD + PL; Pu = 1.2 * PD + 1.6 * PL; Mu = 1.6 * M
+    q_net = qa - Df * 20.0
+    A = Ps * 1.08 / max(q_net, 1.0)
+    B = math.ceil(math.sqrt(A) * 20) / 20.0                     # 50 mm steps
+    if M > 0:
+        for _ in range(60):
+            e = M / Ps
+            if e <= B / 6.0 and Ps / (B * B) * (1 + 6 * e / B) <= q_net: break
+            B += 0.05
+    Bm = B * 1000.0
+    qu = Pu / (B * B); qu_max = qu
+    e = Mu / Pu if Pu else 0.0
+    if e > 1e-6:
+        qu_max = Pu / (B * B) * (1 + 6 * e / B) if e <= B / 6 else 2 * Pu / (3 * B * (B / 2 - e))
+    h = 300.0
+    for _ in range(60):
+        d = h - cov - 16.0
+        b0 = 2 * (cx + d) + 2 * (cy + d)
+        beta = max(cx, cy) / min(cx, cy)
+        vc = min(0.33, 0.17 * (1 + 2 / beta), 0.083 * (2 + 40 * d / b0)) * math.sqrt(fc)
+        phiVc2 = 0.75 * vc * b0 * d / 1000.0
+        Vu2 = qu_max * (B * B - (cx + d) * (cy + d) / 1e6)
+        arm = (Bm - cx) / 2.0 - d
+        Vu1 = qu_max * B * max(arm, 0.0) / 1000.0
+        phiVc1 = 0.75 * 0.17 * math.sqrt(fc) * Bm * d / 1000.0
+        if phiVc2 >= Vu2 and phiVc1 >= Vu1: break
+        h += 25.0
+    armf = (Bm - cx) / 2000.0
+    Mu_f = qu_max * B * armf ** 2 / 2.0
+    fl = flexure(Mu_f / B, 1000.0, d, fc, fy, h, min_rule='slab')
+    As_min = 0.0018 * 1000.0 * h
+    As = max(fl['As_req'], As_min)
+    bar = bar_spacing(As, smax=min(3 * h, 300.0))
+    s = bar['s']
+    nb_tot = int(B * 1000.0 / s) + 1
+    Ab_col = cx * cy
+    phi_br = 0.65 * 0.85 * fc * Ab_col / 1000.0 * min(2.0, math.sqrt(B * B * 1e6 / Ab_col))
+    return dict(B=B, h=h, d=d, qu=qu, qu_max=qu_max, q_net=q_net, Ps=Ps, Pu=Pu,
+                Vu2=Vu2, phiVc2=phiVc2, Vu1=Vu1, phiVc1=phiVc1, Mu=Mu_f,
+                As=As, As_min=As_min, bar=bar, spacing=s, nbars=nb_tot,
+                bars_label="%s بالاتجاهين" % bar['label'], bar_db=bar['db'],
+                punch_ratio=Vu2 / phiVc2 if phiVc2 else 9.9,
+                oneway_ratio=Vu1 / phiVc1 if phiVc1 else 9.9,
+                bearing=phi_br, dowels=0.005 * Ab_col, conc=B * B * h / 1000.0,
+                ok=(Vu2 <= phiVc2 and Vu1 <= phiVc1), cx=cx, cy=cy, Df=Df, fc=fc, fy=fy)
+
+def slab_module(p):
+    kind = p.get('kind', 'one'); fc = float(p['fc']); fy = float(p['fy'])
+    Lx = float(p['Lx']); Ly = float(p.get('Ly', Lx)); nsp = int(p.get('nspans', 3))
+    wD = float(p['wD']); wL = float(p['wL']); cov = float(p.get('cover', 20))
+    if kind == 'one':
+        hmin = min_h_beam(Lx, "both" if nsp > 2 else "one_end", fy) / (16.0 / 20.0)
+        hmin = Lx * 1000.0 / (24.0 if nsp > 1 else 20.0) * (0.4 + fy / 700.0)
+        h = float(p.get('h') or math.ceil(hmin / 10.0) * 10.0)
+        sw = h / 1000.0 * 24.0
+        wu = 1.2 * (wD + sw) + 1.6 * wL
+        ln = Lx
+        cases = [("عزم موجب - الفضاء الطرفي", wu * ln ** 2 / 14.0, 1),
+                 ("عزم موجب - الفضاء الداخلي", wu * ln ** 2 / 16.0, 1),
+                 ("عزم سالب - وجه أول مسند داخلي", -wu * ln ** 2 / (9.0 if nsp == 2 else 10.0), -1),
+                 ("عزم سالب - مساند داخلية أخرى", -wu * ln ** 2 / 11.0, -1),
+                 ("عزم سالب - المسند الخارجي", -wu * ln ** 2 / 24.0, -1)]
+        d = h - cov - 6.0
+        res = []
+        for nm, M, sgn in cases:
+            fl = flexure(M, 1000.0, d, fc, fy, h, min_rule='slab')
+            As = max(fl['As_req'], 0.0018 * 1000.0 * h)
+            bar = bar_spacing(As, dbs=(10, 12, 16, 20), smax=min(3 * h, 450))
+            res.append(dict(name=nm, M=M, As=As, db=bar['db'], s=bar['s'], label=bar['label']))
+        Ash = 0.0018 * 1000.0 * h
+        bsp = bar_spacing(Ash, dbs=(10, 12), smax=min(5 * h, 450))
+        bs = dict(db=bsp['db']); ssh = bsp['s']
+        V = 1.15 * wu * ln / 2.0
+        phiVc = 0.75 * 0.17 * math.sqrt(fc) * 1000.0 * d / 1000.0
+        return dict(kind=kind, h=h, hmin=hmin, d=d, sw=sw, wu=wu, results=res,
+                    shrink=dict(As=Ash, label="Ø%d @ %d مم" % (bs['db'], int(ssh))),
+                    V=V, phiVc=phiVc, shear_ok=V <= phiVc, Lx=Lx, fc=fc, fy=fy)
+    else:
+        L1, L2 = max(Lx, Ly), min(Lx, Ly)
+        beta = L1 / L2
+        hmin = (L1 * 1000.0) * (0.8 + fy / 1400.0) / 36.0
+        h = float(p.get('h') or math.ceil(hmin / 10.0) * 10.0)
+        sw = h / 1000.0 * 24.0
+        wu = 1.2 * (wD + sw) + 1.6 * wL
+        d = h - cov - 10.0
+        out = []
+        cw = float(p.get('col', 0.4))
+        for nm, ln, l2 in (("الاتجاه الطويل L1", L1, L2), ("الاتجاه القصير L2", L2, L1)):
+            Mo = wu * l2 * max(ln - cw, 0.65 * ln) ** 2 / 8.0
+            rows = [("مسند داخلي (سالب)", -0.65 * Mo), ("فضاء داخلي (موجب)", 0.35 * Mo),
+                    ("مسند خارجي (سالب)", -0.26 * Mo), ("فضاء طرفي (موجب)", 0.52 * Mo)]
+            det = []
+            for r_, M in rows:
+                Mcs = 0.75 * M if M < 0 else 0.60 * M     # column strip share
+                bstrip = min(0.25 * ln, 0.25 * l2) * 2 * 1000.0
+                fl = flexure(Mcs, bstrip, d, fc, fy, h, min_rule='slab')
+                As = max(fl['As_req'], 0.0018 * bstrip * h)
+                Asm = As / (bstrip / 1000.0)                 # مم²/م
+                bar = bar_spacing(Asm, dbs=(10, 12, 16, 20), smax=min(2 * h, 450))
+                det.append(dict(name=r_, M=M, Mcs=Mcs, As=As, As_m=Asm,
+                                db=bar['db'], s=bar['s'], label=bar['label']))
+            out.append(dict(dir=nm, Mo=Mo, rows=det))
+        return dict(kind=kind, h=h, hmin=hmin, d=d, sw=sw, wu=wu, beta=beta,
+                    L1=L1, L2=L2, dirs=out, fc=fc, fy=fy,
+                    two_way=beta <= 2.0)
+
+# ============================== X-RAY (full frame) ==========================
+def rebar_zones(span, h, d, bw, col_w, db_top, db_bot, n_bot, fc, fy, sh):
+    """**خريطة الحديد على طول البحر** — تُرسم بالأشعة الإنشائية كشريط مناطق.
+
+    الجسر ليس مقطعاً واحداً: على طوله مناطق يختلف فيها ما يجب أن يُنفَّذ، وأخطاء
+    التنفيذ كلها تقع بحدود هذه المناطق لا بالحساب. الدالة تعيد كل منطقة بموقعها
+    من مركز المسند الأيسر (بالمتر) ولونها ونصّها والبند الذي أوجدها:
+
+      * منطقة التكثيف (18.6.4.2)  : 2h من وجه كل مسند — أساور بتباعد مخفَّض
+      * منطقة منع الوصل (18.6.3.3): داخل العقدة + 2h من وجهها
+      * منطقة الوصل المسموحة       : ما بينهما حول وسط البحر
+      * نقطة الانقلاب              : ≈ 0.146·ln بالبحر المستمر
+      * قطع الحديد العلوي (9.7.3.8.4): الانقلاب + الأكبر من d و12db و ln/16
+      * قطع الحديد السفلي (9.7.3.3)  : L/7 للثني، وما يدخل المسند (9.7.3.8.2)
+    """
+    sup = col_w / 1000.0
+    ln = max(0.5, span - sup)
+    h_m = h / 1000.0
+    conf = min(2.0 * h_m, ln / 2.0)                      # منطقة التكثيف من وجه المسند
+    ban = sup / 2.0 + 2.0 * h_m                          # منع الوصل من مركز المسند
+    infl = sup / 2.0 + 0.146 * ln
+    cut_top = infl + max(d, 12.0 * db_top, ln * 1000.0 / 16.0) / 1000.0
+    s_crit = min(d / 4.0, 8.0 * db_bot, 24.0 * (sh.get('db_stirrup') or 10), 300.0)
+    zones = [
+        dict(k='conf', a=0.0, b=sup / 2.0 + conf, color='#f97316',
+             name='تكثيف الأساور', clause='18.6.4.2',
+             text='Ø%d @ %d مم على 2h = %.2f م من وجه المسند'
+                  % (int(sh.get('db_stirrup') or 10), int(s_crit), 2.0 * h_m),
+             why='المفصل اللدن يتكوّن عند وجه العمود بالزلزال — والتكثيف يحصر '
+                 'الخرسانة هناك فتدور المقطع بلا انهيار'),
+        dict(k='mid', a=sup / 2.0 + conf, b=span - sup / 2.0 - conf, color='#0ea5e9',
+             name='أساور الوسط', clause='9.7.6.2.2',
+             text='%s — الحدّ d/2 = %d مم' % (sh.get('label', ''), int(d / 2.0)),
+             why='القص أقل بالوسط، فالتباعد يعود للحدّ الاعتيادي'),
+        dict(k='conf2', a=span - sup / 2.0 - conf, b=span, color='#f97316',
+             name='تكثيف الأساور', clause='18.6.4.2',
+             text='مماثل للطرف الآخر', why='الطرفان متماثلان'),
+    ]
+    splice = dict(ban=ban, a=ban, b=span - ban, ok=(span - ban) > ban + 0.3,
+                  s_hoop=min(d / 4.0, 100.0), clause='18.6.3.3')
+    marks = [
+        dict(x=sup / 2.0, name='وجه المسند', clause='—',
+             text='هنا أقصى عزم سالب وأقصى قص'),
+        dict(x=infl, name='نقطة الانقلاب', clause='9.7.3.8.4',
+             text='العزم يتحوّل من سالب إلى موجب — ولا يُقطع الحديد عندها بل بعدها'),
+        dict(x=cut_top, name='قطع الحديد العلوي', clause='9.7.3.8.4',
+             text='ثلث العلوي يتجاوز الانقلاب بـ %.2f م' % (cut_top - infl)),
+        dict(x=ln / 7.0 + sup / 2.0, name='ثني السفلي 45°', clause='9.7.3.8',
+             text='نقطة الثني التقليدية عند ln/7'),
+        dict(x=span / 2.0, name='وسط البحر', clause='—',
+             text='أقصى عزم موجب — وأفضل موضع للوصلة'),
+    ]
+    return dict(span=span, ln=ln, h=h, sup=sup, zones=zones, splice=splice,
+                marks=[m for m in marks if 0 <= m['x'] <= span],
+                s_crit=s_crit, s_mid=sh.get('s'), conf_len=conf,
+                clause='ACI 318M-14 9.7.3 · 18.6.3.3 · 18.6.4.2')
+
+
+def xray(p):
+    bays = [float(x) for x in p['bays']]
+    hts = [float(x) for x in p['heights']]
+    bb, hb = float(p['beam_b']), float(p['beam_h'])
+    bc, hc = float(p['col_b']), float(p['col_h'])
+    fc = float(p['fc']); fy = float(p['fy'])
+    wD = float(p['wD']); wL = float(p['wL']); trib = float(p.get('trib', 4.0))
+    cov = 40.0; dbm = 16.0
+    E = Ec(fc) * 1000.0
+    Ib = bb * hb ** 3 / 12.0 / 1e12 * 0.35     # cracked stiffness ACI 6.6.3.1.1
+    Ic = bc * hc ** 3 / 12.0 / 1e12 * 0.70
+    Ab = bb * hb / 1e6; Ac = bc * hc / 1e6
+    nb = len(bays); ns = len(hts)
+    xs = [0.0]
+    for b in bays: xs.append(xs[-1] + b)
+    ys = [0.0]
+    for h in hts: ys.append(ys[-1] + h)
+    swb = Ab * 24.0
+    gD = wD * trib + swb
+    gL = wL * trib
+    W_floor = (wD + 0.25 * wL) * trib * xs[-1]
+    seis = None; F = [0.0] * (ns + 1)
+    if p.get('seismic'):
+        st = [dict(name="طابق %d" % i, w=W_floor, h=ys[i]) for i in range(1, ns + 1)]
+        seis = seismic(dict(city=p.get('city', 'بغداد'), site=p.get('site', 'D'),
+                            system=p.get('system', list(SYSTEMS)[1]),
+                            hn=ys[-1], W=W_floor * ns, stories=st))
+        for i, d in enumerate(seis['dist']):
+            F[i + 1] = d['Fx']
+    def build(cD, cL, cE):
+        f = Frame(); nid = {}
+        for j in range(ns + 1):
+            for i in range(nb + 1):
+                nid[(i, j)] = f.node(xs[i], ys[j])
+        mem = []
+        for j in range(ns):
+            for i in range(nb + 1):
+                idx = f.member(nid[(i, j)], nid[(i, j + 1)], E, Ac, Ic, tag="col",
+                               meta=dict(story=j + 1, line=i + 1))
+                mem.append(('col', j + 1, i + 1, idx))
+        for j in range(1, ns + 1):
+            for i in range(nb):
+                idx = f.member(nid[(i, j)], nid[(i + 1, j)], E, Ab, Ib,
+                               qy=-(cD * gD + cL * gL), tag="beam",
+                               meta=dict(story=j, bay=i + 1))
+                mem.append(('beam', j, i + 1, idx))
+        for i in range(nb + 1):
+            f.support(nid[(i, 0)])
+        if cE:
+            for j in range(1, ns + 1):
+                f.load(nid[(0, j)], Fx=cE * F[j])
+        return f.run(), mem
+    combos = [("1.4D", 1.4, 0.0, 0.0), ("1.2D+1.6L", 1.2, 1.6, 0.0)]
+    if seis:
+        combos += [("1.2D+1.0L+1.0E", 1.2, 1.0, 1.0), ("1.2D+1.0L-1.0E", 1.2, 1.0, -1.0),
+                   ("0.9D+1.0E", 0.9, 0.0, 1.0), ("0.9D-1.0E", 0.9, 0.0, -1.0)]
+    env = {}; drift = [0.0] * (ns + 1); base = 0.0
+    for nm, cD, cL, cE in combos:
+        fr, mem = build(cD, cL, cE)
+        for kind, a, b_, idx in mem:
+            key = (kind, a, b_)
+            dg = fr.diagram(idx, 12)
+            Mx = max(pt['M'] for pt in dg); Mn_ = min(pt['M'] for pt in dg)
+            Vx = max(abs(pt['V']) for pt in dg); Nx = min(pt['N'] for pt in dg)
+            Nt = max(pt['N'] for pt in dg)
+            e_ = env.setdefault(key, dict(Mmax=-1e18, Mmin=1e18, V=0.0, Nc=0.0, Nt=0.0,
+                                          i=fr.members[idx]['i'], j=fr.members[idx]['j']))
+            e_['Mmax'] = max(e_['Mmax'], Mx); e_['Mmin'] = min(e_['Mmin'], Mn_)
+            e_['V'] = max(e_['V'], Vx); e_['Nc'] = min(e_['Nc'], Nx); e_['Nt'] = max(e_['Nt'], Nt)
+        if cE:
+            for j in range(1, ns + 1):
+                drift[j] = max(drift[j], abs(fr.U[3 * (j * (nb + 1))] * 1000.0))
+        if nm == "1.2D+1.6L":
+            base = sum(fr.reactions[n][1] for n in fr.reactions)
+    dcol = hc - cov - 10 - 20 / 2.0
+    dbeam = hb - cov - 10 - dbm / 2.0
+    layers = col_layers(bc, hc, int(p.get('nb_bars', 3)), int(p.get('nh_bars', 3)),
+                        float(p.get('db_col', 20)))
+    pts, P0, Ast = col_interaction(bc, hc, fc, fy, layers)
+    members = []; worst = 0.0
+    for (kind, a, b_), e_ in sorted(env.items()):
+        if kind == 'beam':
+            Mpos = max(0.0, e_['Mmax']); Mneg = abs(min(0.0, e_['Mmin']))
+            f1 = flexure(Mpos, bb, dbeam, fc, fy, hb); f1['bars'] = pick_bars(f1['As_req'], width=bb)
+            f2 = flexure(Mneg, bb, dbeam, fc, fy, hb); f2['bars'] = pick_bars(f2['As_req'], width=bb)
+            sh = shear(e_['V'], bb, dbeam, fc, fy)
+            ratio = max(f1['ratio'], f2['ratio'], sh['ratio'])
+            det = dict(bot=f1['bars']['label'], top=f2['bars']['label'], stirrups=sh['label'],
+                       Mpos=Mpos, Mneg=-Mneg, V=e_['V'], phiMn=f1['phiMn'], phiVn=sh['phiVn'])
+            det['zones'] = rebar_zones(bays[b_ - 1], hb, dbeam, bb, bc,
+                                       f2['bars']['db'], f1['bars']['db'],
+                                       f1['bars']['n'], fc, fy, sh)
+        else:
+            Pu = abs(e_['Nc']); Mu = max(abs(e_['Mmax']), abs(e_['Mmin']))
+            phiMn, ratio = col_check(Pu, Mu, pts)
+            det = dict(P=Pu, M=Mu, phiMn=phiMn, phiPn_max=pts[0]['P'],
+                       bars="%d Ø%d" % (len(layers) and (2 * int(p.get('nb_bars', 3)) +
+                            2 * max(0, int(p.get('nh_bars', 3)) - 2)), int(p.get('db_col', 20))))
+        worst = max(worst, ratio)
+        members.append(dict(kind=kind, story=a, pos=b_, ratio=ratio,
+                            xi=None, det=det, forces=dict(Mmax=e_['Mmax'], Mmin=e_['Mmin'],
+                            V=e_['V'], Nc=e_['Nc'], Nt=e_['Nt']), ni=e_['i'], nj=e_['j']))
+    nodes = []
+    for j in range(ns + 1):
+        for i in range(nb + 1):
+            nodes.append(dict(x=xs[i], y=ys[j]))
+    Cd = SYSTEMS.get(p.get('system', list(SYSTEMS)[1]), list(SYSTEMS.values())[1])['Cd']
+    drift = [d * Cd for d in drift]
+    drift_lim = [0.02 * h * 1000.0 for h in hts]
+    conc = (sum(bays) * ns * Ab) + ((nb + 1) * sum(hts) * Ac)
+    return dict(nodes=nodes, nb=nb, ns=ns, xs=xs, ys=ys, members=members,
+                worst=worst, seismic=seis, drift=drift[1:], drift_lim=drift_lim,
+                base=base, gD=gD, gL=gL, W=W_floor * ns, conc=conc,
+                beam=dict(b=bb, h=hb, d=dbeam), col=dict(b=bc, h=hc, d=dcol),
+                col_pts=pts, fc=fc, fy=fy, combos=[c[0] for c in combos])
+
+# ================================== BOQ ====================================
+def boq(p):
+    rows = []
+    rate = p.get('rates', {})
+    r_c = float(rate.get('concrete', 150000)); r_s = float(rate.get('steel', 1200000))
+    r_f = float(rate.get('form', 25000)); r_e = float(rate.get('excav', 15000))
+    r_b = float(rate.get('block', 20000)); r_p = float(rate.get('plaster', 12000))
+    tot_c = tot_s = tot_f = 0.0
+    for it in p.get('items', []):
+        n = int(it.get('n', 1)); typ = it.get('type', 'beam')
+        b = float(it.get('b', 0)) / 1000.0; h = float(it.get('h', 0)) / 1000.0
+        L = float(it.get('L', 0))
+        if typ == 'slab':
+            v = float(it.get('area', 0)) * h * n
+            fa = float(it.get('area', 0)) * n
+            rho = float(it.get('rho', 90))
+        else:
+            v = b * h * L * n
+            fa = (2 * h + b) * L * n if typ == 'beam' else 2 * (b + h) * L * n
+            rho = float(it.get('rho', 120 if typ == 'beam' else 140))
+        st = v * rho / 1000.0    # ton (kg/m3 -> ton)
+        tot_c += v; tot_s += st; tot_f += fa
+        rows.append(dict(name=it.get('name', typ), n=n, conc=v, steel=st, form=fa,
+                         cost=v * r_c + st * 1000 * r_s / 1000.0 + fa * r_f))
+    exc = float(p.get('excav', 0.0)); blk = float(p.get('block', 0.0)); pl = float(p.get('plaster', 0.0))
+    extra = [dict(name="حفريات", q=exc, unit="م3", rate=r_e, cost=exc * r_e),
+             dict(name="بناء طابوق/بلوك", q=blk, unit="م2", rate=r_b, cost=blk * r_b),
+             dict(name="لبخ وإكساء", q=pl, unit="م2", rate=r_p, cost=pl * r_p)]
+    total = sum(r['cost'] for r in rows) + sum(e['cost'] for e in extra)
+    return dict(rows=rows, extra=extra, conc=tot_c, steel=tot_s, form=tot_f,
+                total=total, cement=tot_c * 7.0, sand=tot_c * 0.45, gravel=tot_c * 0.85,
+                rates=dict(concrete=r_c, steel=r_s, form=r_f, excav=r_e, block=r_b, plaster=r_p))

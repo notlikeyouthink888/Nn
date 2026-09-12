@@ -616,6 +616,7 @@ function v3bar(o) {
     <button id="btnHum" onclick="toggleHuman()">🧍 إنسان 1.85 م</button>
     <button id="btnPlan" onclick="togglePlan()">📐 مخطط DWG</button>
     <button id="btnSoil" onclick="toggleSoil()">🌍 التربة والطبقات</button>
+    <button id="btnSite" onclick="toggleSite()">🏗️ وضع البناء</button>
     <button id="btnStress" onclick="toggleStress()">🎨 الشد والضغط</button>
     <button id="btnAdd" onclick="toggleAddCol()">➕ أضف عمود</button>
     <button onclick="V3&&V3.zoomSel()">🔍 تقريب المحدد</button>
@@ -782,6 +783,42 @@ function tgl(id, st) { const b = $('#' + id); if (b) b.classList.toggle('hot', s
 let HUM_ON = false;
 function toggleHuman() { if (!V3 || !V3.human) return; HUM_ON = !HUM_ON; V3.human(HUM_ON); tgl('btnHum', HUM_ON); }
 let SOIL_ON = false;
+/* ---- وضع البناء الواقعي: أرض وعشب وشدّة وطابوق وظلال شمس ----
+   وشريط مراحل يمشي بترتيب التنفيذ لا بإظهار الطبقات. */
+let SITE_ON = false, SITE_STEP = 0;
+function toggleSite() {
+  if (!V3) return;
+  SITE_ON = !SITE_ON;
+  V3.site(SITE_ON);
+  tgl('btnSite', SITE_ON);
+  const bar = $('#siteBar');
+  if (bar) bar.hidden = !SITE_ON;
+  if (SITE_ON) { SITE_STEP = 0; siteStep(0); }
+  else if (bar) bar.innerHTML = '';
+}
+function siteStep(d) {
+  if (!V3 || !SITE_ON) return;
+  const sc = V3.movieScenes().filter(x => x.site);
+  SITE_STEP = Math.max(0, Math.min(sc.length - 1, SITE_STEP + d));
+  const s = sc[SITE_STEP];
+  V3.playScene(s, true);
+  const bar = $('#siteBar');
+  if (!bar) return;
+  bar.innerHTML = `
+    <button class="btn gh" onclick="siteStep(-1)" ${SITE_STEP ? '' : 'disabled'}>◀ السابق</button>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:13px;font-weight:700;color:var(--acc2)">${s.title}</div>
+      <div style="font-size:11.5px;color:var(--mut)">${s.sub || ''}</div>
+      <div style="height:5px;background:rgba(255,255,255,.09);border-radius:3px;margin-top:5px">
+        <div style="height:100%;width:${((SITE_STEP + 1) / sc.length * 100).toFixed(1)}%;
+          background:var(--acc);border-radius:3px"></div></div>
+    </div>
+    <span style="font-size:11px;color:var(--mut);align-self:center">
+      ${SITE_STEP + 1} / ${sc.length}</span>
+    <button class="btn gh" onclick="siteStep(1)"
+      ${SITE_STEP >= sc.length - 1 ? 'disabled' : ''}>التالي ▶</button>`;
+}
+
 function toggleSoil() {
   if (!V3 || !V3.soil) return;
   SOIL_ON = !SOIL_ON;
@@ -2341,6 +2378,8 @@ PAGES.wizard = {
              ['stairs', 'الدرج وتسليحه',
                (r.stairs && (r.stairs.flights || []).length) ? 1 : 0]])}
         </div>
+        <div class="row" id="siteBar" hidden style="gap:10px;align-items:stretch;
+          margin-top:8px;padding:9px 11px;background:var(--bg2);border-radius:10px"></div>
         <div class="info" id="v3info"></div>
         <div class="slider"><span style="font-size:11px;color:var(--mut)">قص المقطع</span>
           <input type="range" id="v3clip" min="-30" max="40" step="0.2">
@@ -2763,6 +2802,8 @@ PAGES.room = {
             `<label><input type="checkbox" data-g="${k}" ${o ? 'checked' : ''}
               onchange="V3&&V3.group('${k}',this.checked);refreshStats()"> ${t}</label>`).join('')}
         </div>
+        <div class="row" id="siteBar" hidden style="gap:10px;align-items:stretch;
+          margin-top:8px;padding:9px 11px;background:var(--bg2);border-radius:10px"></div>
         <div class="info" id="v3info"></div>
         <div class="slider"><span style="font-size:11px;color:var(--mut)">قص المقطع</span>
           <input type="range" id="v3clip" min="-20" max="20" step="0.1">

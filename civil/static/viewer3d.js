@@ -23,11 +23,12 @@ function Viewer3D(el, M, onPick) {
   const rn = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   rn.setSize(W, H); rn.setPixelRatio(Math.min(2, devicePixelRatio));
   rn.localClippingEnabled = true;
+  rn.shadowMap.enabled = true; rn.shadowMap.type = T.PCFSoftShadowMap;
   el.innerHTML = ''; el.appendChild(rn.domElement);
   const ctl = new T.OrbitControls(cam, rn.domElement);
   const mid = new T.Vector3(0, (nf * hs + fb) / 2, 0);
   ctl.target.copy(mid); ctl.enableDamping = true; ctl.dampingFactor = .08;
-  sc.add(new T.HemisphereLight(0xd7e8ff, 0x33291c, 1.0));
+  const hemi1 = new T.HemisphereLight(0xd7e8ff, 0x33291c, 1.0); sc.add(hemi1);
   const dl = new T.DirectionalLight(0xffffff, .7); dl.position.set(R, R * 1.6, R * .8); sc.add(dl);
   const dl2 = new T.DirectionalLight(0xffffff, .25); dl2.position.set(-R, R * .6, -R); sc.add(dl2);
   const gh = new T.GridHelper(R * 2.4, 24, 0x2b3d5c, 0x18243a);
@@ -36,7 +37,7 @@ function Viewer3D(el, M, onPick) {
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
   const GN = ['ghost', 'soil', 'stress', 'layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
               'canti', 'stairs', 'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl',
-              'human', 'plan'];
+              'human', 'plan', 'site'];
   const G = {}; GN.forEach(k => { G[k] = new T.Group(); G[k].name = k; sc.add(G[k]); });
   G.moments.visible = G.punch.visible = G.defl.visible = G.rebar.visible = G.extra.visible =
     G.chairs.visible = G.human.visible = G.plan.visible = G.ghost.visible =
@@ -1827,6 +1828,272 @@ function Viewer3D(el, M, onPick) {
     return { bars: bars, weight: weight, meshes: S.meshes, byGrp: S.byGrp };
   }
   let xrayOn = false;
+  /* ======================================================================
+     ============== وضع البناء الواقعي — الموقع بمراحله الفعلية ==============
+     ======================================================================
+     ليس إظهار/إخفاء طبقات: هنا **ترتيب التنفيذ** كما يجري بالموقع —
+     أرض عشب ← حفر ← ضنبان ← حديد أساس ← شدّة ← صبّ ← فكّ ← جسور أرضية ←
+     ردم رملي ← أقفاص أعمدة ← شدّة ← صبّ ← فكّ ← طابوق ← شدّة سقف ودعامات ←
+     حديد سقف ← صبّ ← الطابق التالي.
+     كل مرحلة مجموعة مستقلة تُظهَر بالتراكم، فالمشهد ينمو مثل البناء الحقيقي. */
+  const CO = {};                      // مجموعات المراحل: CO['كود المرحلة'] = Group
+  let siteBuilt = false, siteOn = false;
+  const skyDark = sc.background;
+
+  function coGrp(k) {
+    if (!CO[k]) { CO[k] = new T.Group(); CO[k].name = 'co_' + k; CO[k].visible = false;
+      G.site.add(CO[k]); }
+    return CO[k];
+  }
+
+  /* شمس ومساقط ظلال — تُنشأ مرة واحدة عند أول دخول لوضع البناء */
+  let sun = null, sky = null, hemi2 = null;
+  function siteLights() {
+    if (sun) return;
+    sun = new T.DirectionalLight(0xfff6e6, 0.95);
+    sun.position.set(R * 1.1, R * 1.9, R * .7);
+    sun.castShadow = true;
+    const sh = sun.shadow;
+    sh.mapSize.width = sh.mapSize.height = 2048;
+    sh.camera.near = 0.5; sh.camera.far = R * 6;
+    sh.camera.left = -R * 1.6; sh.camera.right = R * 1.6;
+    sh.camera.top = R * 1.6; sh.camera.bottom = -R * 1.6;
+    sh.bias = -0.0008;
+    sun.visible = false; sc.add(sun);
+    hemi2 = new T.HemisphereLight(0xbcd9ff, 0x7d6a4c, .52);
+    hemi2.visible = false; sc.add(hemi2);
+  }
+
+  /* الأرض الطبيعية — لوح عشب واسع يستقبل الظلال.
+     `holes` = فتحات الحُفَر: تُقصّ من اللوح فعلاً بـ THREE.Shape حتى تُرى
+     الحفرة فتحةً لا خطاً على السطح. */
+  function groundMesh(holes) {
+    const C = window.CONSTRUCT;
+    const w = Math.max(L, B) * 2.6;
+    const sh = new T.Shape();
+    sh.moveTo(-w / 2, -w / 2); sh.lineTo(w / 2, -w / 2);
+    sh.lineTo(w / 2, w / 2); sh.lineTo(-w / 2, w / 2); sh.closePath();
+    (holes || []).forEach(h2 => {
+      const p = new T.Path();
+      p.moveTo(h2.x - h2.w / 2, h2.z - h2.w / 2);
+      p.lineTo(h2.x + h2.w / 2, h2.z - h2.w / 2);
+      p.lineTo(h2.x + h2.w / 2, h2.z + h2.w / 2);
+      p.lineTo(h2.x - h2.w / 2, h2.z + h2.w / 2);
+      p.closePath(); sh.holes.push(p);
+    });
+    const geo = new T.ShapeGeometry(sh);
+    // إحداثيات الخامة: ShapeGeometry تعطي uv بالمقياس العالمي، فتُقسَم على الخطوة
+    const uv = geo.attributes.uv, pos = geo.attributes.position;
+    for (let i = 0; i < uv.count; i++)
+      uv.setXY(i, pos.getX(i) / 1.2, pos.getY(i) / 1.2);
+    uv.needsUpdate = true;
+    const m = new T.Mesh(geo, C.mat('grass', { rx: 1 }));
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = lv.existing - 0.01;
+    m.receiveShadow = true;
+    return m;
+  }
+
+  function buildGround(holes) {
+    const gp = coGrp('ground');
+    const gm = groundMesh(null);
+    gm.userData = { title: 'الأرض الطبيعية', kind: 'site', grp: 'site',
+      rows: [['المنسوب', lv.existing.toFixed(2) + ' م'],
+        ['المرحلة', 'قبل أي عمل — الموقع كما تسلّمته']] };
+    gp.add(gm); picks.push(gm);
+    // نسخة مثقوبة تظهر مع مرحلة الحفر وتُخفي المصمتة
+    const gd = coGrp('dig');
+    const gh2 = groundMesh(holes);
+    gh2.userData = { title: 'الأرض بعد الحفر', kind: 'site', grp: 'site',
+      rows: [['الحُفَر', (holes || []).length],
+        ['المرحلة', '١ · الحفر']] };
+    gd.add(gh2); picks.push(gh2);
+  }
+
+  /* مواقع الأسس بالمشروع (مركز كل عمود + مقاس الأساس) */
+  function footPts() {
+    const out = [];
+    const sizes = ((M.alts || {}).isolated || {}).sizes || [];
+    const typ = ((M.alts || {}).isolated || {}).typical || {};
+    (COLS || []).forEach((l, i) => {
+      const s2 = sizes[i] || sizes[0] || {};
+      out.push({ x: MAPX(l.x), z: MAPZ(l.y),
+        B: s2.B || typ.B || 1.6, h: (typ.h || 400) / 1000, kind: l.kind });
+    });
+    return out;
+  }
+
+  /* ------------------------- المراحل واحدة واحدة ------------------------- */
+  function buildSite() {
+    if (siteBuilt) return; siteBuilt = true;
+    const C = window.CONSTRUCT;
+    if (!C) return;
+    siteLights();
+    const cb2 = md.col.b / 1000, ch2 = md.col.h / 1000;
+    const fts = footPts();
+    const depth = lv.existing - fb;                      // عمق الحفر
+    const bl = 0.08;                                     // سماكة الضنبان
+    buildGround(fts.map(f => ({ x: f.x, z: f.z, w: f.B + .6 })));
+
+    // ١) الحفر — حفرة لكل أساس
+    const gDig = coGrp('dig');
+    fts.forEach((f, i) => {
+      const w = f.B + .6;
+      C.pit(gDig, w, w, depth, f.x, lv.existing, f.z, { clip: clip,
+        info: { title: 'حفرة أساس F' + (i + 1), kind: 'site', grp: 'site',
+          rows: [['المقاس', w.toFixed(2) + ' × ' + w.toFixed(2) + ' م (الأساس + 30 سم عمل)'],
+            ['العمق', depth.toFixed(2) + ' م من الأرض الطبيعية'],
+            ['المرحلة', '١ · الحفر']] } });
+    });
+
+    // ٢) الضنبان (خرسانة النظافة)
+    const gBl = coGrp('blind');
+    fts.forEach((f, i) => C.slab(gBl, f.B + .2, bl, f.B + .2, f.x, fb - bl / 2, f.z,
+      C.mat('blinding', { clip: clip }),
+      i ? null : { title: 'الضنبان — خرسانة النظافة', kind: 'site', grp: 'site',
+        rows: [['السماكة', (bl * 1000).toFixed(0) + ' مم'],
+          ['الغاية', 'سطح نظيف مستوٍ يُفرش عليه الحديد، ويمنع امتصاص التربة لماء الخلطة'],
+          ['الامتداد', '10 سم خارج حدّ الأساس لكل جهة'],
+          ['المرحلة', '٢ · الضنبان']] }));
+
+    // ٣) حديد الأساس + أشاير الأعمدة (تُستنسخ من مجموعة التسليح لاحقاً)
+    // ٤) شدّة الأسس
+    const gFf = coGrp('form_f');
+    fts.forEach((f, i) => C.formBox(gFf, f.B, f.B, f.h, f.x, fb + f.h / 2, f.z,
+      { clip: clip, info: { title: 'شدّة الأساس F' + (i + 1), kind: 'site', grp: 'site',
+        rows: [['اللوح', 'بليوود 25 مم'], ['الجنائب', 'كل 55 سم'],
+          ['المرحلة', '٤ · شدّة الأسس']] } }));
+
+    // ٥) صبّ الأسس
+    const gFc = coGrp('conc_f');
+    fts.forEach((f, i) => C.slab(gFc, f.B, f.h, f.B, f.x, fb + f.h / 2, f.z,
+      C.mat('concrete', { rx: f.B / 1.2, clip: clip }),
+      i ? null : { title: 'الأسس المصبوبة', kind: 'site', grp: 'site',
+        rows: [['العدد', fts.length + ' أساس'],
+          ['المقاس النموذجي', fts[0].B.toFixed(2) + ' × ' + fts[0].B.toFixed(2) +
+            ' × ' + (fts[0].h * 1000).toFixed(0) + ' مم'],
+          ['المرحلة', '٥ · صبّ الأسس']] }));
+
+    // ٦) الجسور الأرضية (Tie / Ground beams) — تربط الأسس بمحيط المبنى
+    const gGb = coGrp('gbeam'), gGbF = coGrp('form_gb');
+    // الجسر الأرضي يجلس **تحت منسوب الأرضية مباشرة** لا فوق قاعدة الأساس،
+    // فيُرى بالمشهد كما بالموقع ويحمل جدار الطابق الأرضي فوقه.
+    const gbH = .45, gbW = .30, gbY = lv.existing - .05 - gbH / 2;
+    const lines = [];
+    for (let j = 0; j <= g.ny; j++) lines.push({ dir: 'x', len: L, x: 0, z: pz(ys[j]) });
+    for (let i = 0; i <= g.nx; i++) lines.push({ dir: 'z', len: B, x: px(xs[i]), z: 0 });
+    lines.forEach((ln, i) => {
+      C.formBeam(gGbF, ln.len, gbW, gbH, ln.x, gbY, ln.z, ln.dir,
+        { clip: clip, info: i ? null : { title: 'شدّة الجسور الأرضية', kind: 'site',
+          grp: 'site', rows: [['المقطع', (gbW * 1000) + ' × ' + (gbH * 1000) + ' مم'],
+            ['المرحلة', '٦ · شدّة الجسور الأرضية']] } });
+      C.slab(gGb, ln.dir === 'x' ? ln.len : gbW, gbH, ln.dir === 'x' ? gbW : ln.len,
+        ln.x, gbY, ln.z, C.mat('concrete', { rx: ln.len / 1.2, clip: clip }),
+        i ? null : { title: 'الجسور الأرضية (Tie Beams)', kind: 'site', grp: 'site',
+          rows: [['المقطع', (gbW * 1000) + ' × ' + (gbH * 1000) + ' مم'],
+            ['الوظيفة', 'تربط الأسس فتمنع حركتها النسبية، وتحمل جدران الطابق الأرضي'],
+            ['المرحلة', '٧ · صبّ الجسور الأرضية']] });
+    });
+
+    // ٨) الردم الرملي داخل شبكة الجسور
+    const gSand = coGrp('sand');
+    const sTop = lv.existing + .01;                      // سطح الردم = منسوب الأرضية
+    const sm = C.slab(gSand, L - .1, Math.max(.25, sTop - fb), B - .1,
+      0, (fb + sTop) / 2, 0, C.mat('sand', { rx: L / 1.2, clip: clip }),
+      { title: 'الردم الرملي داخل الجسور', kind: 'site', grp: 'site',
+        rows: [['السماكة', (sTop - fb).toFixed(2) + ' م'],
+          ['الدكّ', 'طبقات 20–25 سم مدكوكة'],
+          ['الغاية', 'يستقبل أرضية الطابق الأرضي ويمنع هبوطها'],
+          ['المرحلة', '٨ · الردم والدكّ']] });
+    sm.receiveShadow = true;
+
+    // ٩–١٢) لكل طابق: أقفاص ← شدّة ← صبّ ← فكّ ← طابوق ← شدّة سقف ← صبّ
+    for (let f2 = 1; f2 <= nf; f2++) {
+      const z0 = f2 === 1 ? Math.max(gbY + gbH / 2, lv.existing) : (f2 - 1) * hs;
+      const z1 = f2 * hs;
+      const hcol = z1 - z0 - md.beams.x.h / 1000;
+      // شدّة الأعمدة
+      const gCf = coGrp('form_c' + f2), gCc = coGrp('conc_c' + f2);
+      (COLS || []).forEach((l, i) => {
+        const X = MAPX(l.x), Z = MAPZ(l.y);
+        C.formBox(gCf, cb2, ch2, hcol, X, z0 + hcol / 2, Z,
+          { clip: clip, info: i ? null : { title: 'شدّة الأعمدة — طابق ' + f2,
+            kind: 'site', grp: 'site',
+            rows: [['المقطع', md.col.b + ' × ' + md.col.h + ' مم'],
+              ['الارتفاع', hcol.toFixed(2) + ' م'],
+              ['المرحلة', '٩ · شدّة أعمدة الطابق ' + f2]] } });
+        C.slab(gCc, cb2, hcol, ch2, X, z0 + hcol / 2, Z,
+          C.mat('concrete', { rx: 2, clip: clip }),
+          i ? null : { title: 'أعمدة مصبوبة — طابق ' + f2, kind: 'site', grp: 'site',
+            rows: [['العدد', (COLS || []).length + ' عمود'],
+              ['المقطع', md.col.b + ' × ' + md.col.h + ' مم'],
+              ['المرحلة', '١٠ · صبّ أعمدة الطابق ' + f2]] });
+      });
+      // جدران الطابوق بين الأعمدة — على المحيط
+      const gBr = coGrp('brick' + f2);
+      const bh = hcol * .92, th2 = .24;
+      const per = [];
+      for (let i = 0; i < g.nx; i++) {
+        per.push({ dir: 'x', len: g.sx - cb2, x: px((xs[i] + xs[i + 1]) / 2), z: pz(ys[0]) });
+        per.push({ dir: 'x', len: g.sx - cb2, x: px((xs[i] + xs[i + 1]) / 2), z: pz(ys[g.ny]) });
+      }
+      for (let j = 0; j < g.ny; j++) {
+        per.push({ dir: 'z', len: g.sy - ch2, x: px(xs[0]), z: pz((ys[j] + ys[j + 1]) / 2) });
+        per.push({ dir: 'z', len: g.sy - ch2, x: px(xs[g.nx]), z: pz((ys[j] + ys[j + 1]) / 2) });
+      }
+      per.forEach((w2, i) => C.brickWall(gBr, w2.len, bh, th2, w2.x, z0 + bh / 2, w2.z,
+        w2.dir, { clip: clip, info: i ? null : { title: 'جدران الطابوق — طابق ' + f2,
+          kind: 'site', grp: 'site',
+          rows: [['السماكة', (th2 * 1000) + ' مم'], ['الارتفاع', bh.toFixed(2) + ' م'],
+            ['الموضع', 'بين الأعمدة على المحيط — جدار حشو لا يحمل'],
+            ['المرحلة', '١١ · بناء الطابوق بالطابق ' + f2]] } }));
+      // شدّة السقف: دك + عروق + دعامات
+      const gDk = coGrp('deck' + f2);
+      C.formDeck(gDk, L, B, 0, z1 - md.slab.h / 1000, 0, z1 - z0 - md.slab.h / 1000,
+        { clip: clip, info: { title: 'شدّة السقف ودعاماته — طابق ' + f2,
+          kind: 'site', grp: 'site',
+          rows: [['الدكّ', 'بليوود 20 مم'], ['العروق', 'كل 60 سم'],
+            ['الدعامات (الشمعات)', 'شبكة ~1.2 م'],
+            ['الملاحظة', 'لا تُفكّ قبل بلوغ الخرسانة قوتها — عادةً 14 يوماً للسقوف'],
+            ['المرحلة', '١٢ · شدّة سقف الطابق ' + f2]] } });
+      // السقف والجسور مصبوبة
+      const gSl = coGrp('conc_s' + f2);
+      const bh2 = md.beams.x.h / 1000, bw2 = md.beams.x.b / 1000;
+      lines.forEach(ln => C.slab(gSl, ln.dir === 'x' ? ln.len : bw2, bh2,
+        ln.dir === 'x' ? bw2 : ln.len, ln.x, z1 - md.slab.h / 1000 - bh2 / 2 + bh2, ln.z,
+        C.mat('concrete', { rx: ln.len / 1.2, clip: clip })));
+      C.slab(gSl, L, md.slab.h / 1000, B, 0, z1 - md.slab.h / 2000, 0,
+        C.mat('concrete', { rx: L / 1.5, clip: clip }),
+        { title: (md.slab.name || 'السقف') + ' — طابق ' + f2, kind: 'site', grp: 'site',
+          rows: [['السماكة', md.slab.h + ' مم'], ['النوع', md.slab.name || '—'],
+            ['المرحلة', '١٣ · صبّ سقف الطابق ' + f2]] });
+    }
+    G.site.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  }
+
+  /* تفعيل وضع البناء: سماء نهارية وشمس وظلال، وإخفاء العرض التحليلي */
+  function siteMode(v) {
+    siteBuilt || buildSite();
+    siteOn = !!v;
+    G.site.visible = siteOn;
+    if (sun) sun.visible = siteOn;
+    if (hemi2) hemi2.visible = siteOn;
+    // الإضاءة التحليلية تُطفأ بوضع البناء وإلا تراكمت مع الشمس وغسلت الألوان
+    hemi1.visible = !siteOn; dl.visible = !siteOn; dl2.visible = !siteOn;
+    sc.background = siteOn ? new T.Color(0xdce9f5) : skyDark;
+    gh.visible = !siteOn;
+    ['layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
+     'canti', 'stairs', 'soil'].forEach(k => { if (G[k]) G[k].visible = !siteOn && on[k] !== 0; });
+    if (siteOn) { G.rebar.visible = false; G.extra.visible = false; G.chairs.visible = false; }
+    return { on: siteOn, stages: Object.keys(CO).length };
+  }
+
+  /* إظهار المراحل حتى مرحلة معيّنة (تراكمياً) */
+  function siteUpTo(keys) {
+    Object.entries(CO).forEach(([k, v]) => { v.visible = keys.indexOf(k) >= 0; });
+  }
+
+
   const ret = {
     R: R, room: ROOM,
     group: (n, v) => { on[n] = v ? 1 : 0; if (G[n]) G[n].visible = !!v; applyVis(); return visStats(); },
@@ -1979,53 +2246,103 @@ function Viewer3D(el, M, onPick) {
       return h ? h.object.userData.title : null; },
     cam: () => [+cam.position.x.toFixed(3), +cam.position.y.toFixed(3), +cam.position.z.toFixed(3)],
     canvas: () => rn.domElement,
+    /* وضع البناء الواقعي: سماء نهارية وشمس وظلال وخامات موقع */
+    site: v => siteMode(v),
+    siteStages: () => Object.keys(CO),
+    siteUpTo: keys => siteUpTo(keys),
     /* ================= سيناريو فيديو البناء =================
-       يعيد قائمة المشاهد جاهزة للتشغيل: كل مشهد يقول ماذا يُظهر وأين تقف
-       الكاميرا وكم يدوم وما النصّ المعروض. التشغيل يتم من app.js ليقدر
-       المسجّل يتزامن معه. */
+       **ترتيب التنفيذ الحقيقي** لا إظهار طبقات: كل مشهد يضيف ما يُنفَّذ فعلاً
+       بالموقع بذلك اليوم، والمشهد ينمو بالتراكم مثل البناء. */
     movieScenes: () => {
-      const H = nf * hs, fb = (M.soil && M.soil.found_bot) || -1.8;
-      const mid2 = new T.Vector3(0, H / 2, 0);
+      siteBuilt || buildSite();
+      const H = nf * hs, digD = lv.existing - fb;
       const P = (a, b2, c2) => new T.Vector3(a, b2, c2);
-      const sc = [];
-      const add = (o) => sc.push(Object.assign({ dur: 3.2, spin: 0 }, o));
-      add({ id: 'soil', title: 'التربة — العمود الجيولوجي',
-        sub: (M.soil && M.soil.bearing_bed) ? 'الطبقة الحاملة: ' + M.soil.bearing_bed : '',
-        show: ['soil'], hide: ['columns', 'beams', 'slabs', 'canti', 'rebar', 'chairs',
-          'extra', 'raft', 'isolated', 'piles', 'layers', 'walls'],
-        cam: P(R * 1.2, Math.abs(fb) * .6, R * 1.2), look: P(0, fb * .8, 0), dur: 4.5 });
-      add({ id: 'dig', title: 'الحفر والردم المدكوك',
-        sub: 'طبقات الدكّ بسماكتها الفعلية', show: ['soil', 'layers'],
-        cam: P(R * .95, Math.abs(fb) * .9, -R * .95), look: P(0, fb, 0), dur: 3.6 });
-      add({ id: 'found', title: 'الأساس وتسليحه',
-        sub: (M.found && M.found.mode) || '', show: ['soil', 'layers', 'raft', 'isolated', 'piles'],
-        rebar: true, cam: P(R * .85, R * .35, R * .85), look: P(0, fb, 0), dur: 4.2 });
-      for (let f = 1; f <= nf; f++) {
-        add({ id: 'col' + f, title: 'أعمدة الطابق ' + f, sub: 'التسليح الطولي والأتاري',
-          show: ['soil', 'layers', 'raft', 'isolated', 'piles', 'columns'],
-          rebar: true, floor: f,
-          cam: P(R * .8, f * hs + hs * .8, R * .8), look: P(0, (f - .5) * hs, 0), dur: 2.6 });
-        add({ id: 'beam' + f, title: 'جسور الطابق ' + f, sub: 'الحديد العلوي والسفلي والأساور',
-          show: ['soil', 'layers', 'raft', 'isolated', 'piles', 'columns', 'beams'],
-          rebar: true, floor: f,
-          cam: P(-R * .7, f * hs + hs * .5, R * .8), look: P(0, f * hs - hs * .2, 0), dur: 2.6 });
-        add({ id: 'slab' + f, title: 'سقف الطابق ' + f,
-          sub: (M.slab && M.slab.name) || '',
-          show: ['soil', 'layers', 'raft', 'isolated', 'piles', 'columns', 'beams',
-            'slabs', 'stairs'], rebar: true, floor: f,
-          cam: P(R * .75, f * hs + hs * 1.0, -R * .75), look: P(0, f * hs, 0), dur: 2.6 });
+      const sc2 = [];
+      let acc = [];
+      const add = (o) => {
+        acc = acc.concat(o.add || []);
+        sc2.push(Object.assign({ dur: 3.0, spin: 0, site: true, stages: acc.slice() }, o));
+      };
+      /* الكاميرا بزاوية **ارتفاع** حقيقية حول نقطة النظر بدل ارتفاع مطلق —
+         وإلا صارت اللقطة أفقية فلا تُرى داخل الحُفَر ولا تُقرأ المساقط.
+         t = نقطة النظر · d = البعد بمضاعفات نصف قطر المبنى · az = السمت
+         · el = زاوية الارتفاع بالدرجات (25 قريبة · 55 علوية) */
+      const eye = (t, d, az, el) => {
+        const D = R * d, e = (el === undefined ? 32 : el) * Math.PI / 180;
+        const a = az === undefined ? .8 : az;
+        return P(t.x + Math.cos(a) * D * Math.cos(e), t.y + D * Math.sin(e),
+                 t.z + Math.sin(a) * D * Math.cos(e));
+      };
+
+      const T0 = P(0, lv.existing, 0), TF = P(0, fb + .3, 0);
+      add({ id: 'land', title: '١ · الأرض الطبيعية', sub: 'الموقع قبل أي عمل',
+        add: ['ground'], cam: eye(T0, 1.15, .8, 22), look: T0, dur: 3.4, spin: .35 });
+      add({ id: 'dig', title: '٢ · الحفر', sub: 'حفرة لكل أساس بعمق ' + digD.toFixed(2) + ' م',
+        add: ['dig'], drop: ['ground'],   // الأرض المصمتة تُستبدل بالمثقوبة
+        cam: eye(TF, .85, .8, 48), look: TF, dur: 3.6, spin: .25 });
+      add({ id: 'blind', title: '٣ · الضنبان — خرسانة النظافة',
+        sub: 'سطح نظيف يُفرش عليه الحديد ويمنع امتصاص التربة لماء الخلطة',
+        add: ['blind'], cam: eye(TF, .45, 1.9, 42), look: TF, dur: 3.4 });
+      add({ id: 'reb_f', title: '٤ · حديد الأسس وأشاير الأعمدة',
+        sub: 'الشبكة السفلية وأقفاص الانتظار قبل الشدّة',
+        add: [], rebar: ['isolated', 'raft', 'piles'],
+        cam: eye(TF, .55, 2.4, 40), look: TF, dur: 3.8, spin: .3 });
+      add({ id: 'form_f', title: '٥ · شدّة الأسس',
+        sub: 'بليوود 25 مم بجنائب كل 55 سم', add: ['form_f'], rebar: true,
+        rebar: ['isolated', 'raft', 'piles'], cam: eye(TF, .62, 0.5, 38), look: TF, dur: 3.2 });
+      add({ id: 'conc_f', title: '٦ · صبّ الأسس', sub: 'ثم تُفكّ الشدّة',
+        add: ['conc_f'], rebar: false, drop: ['form_f'],
+        cam: eye(TF, .75, .8, 44), look: TF, dur: 3.2, spin: .25 });
+      add({ id: 'form_gb', title: '٧ · شدّة الجسور الأرضية',
+        sub: 'الجسور الرابطة تمنع حركة الأسس النسبية', add: ['form_gb'],
+        cam: eye(P(0, fb + .5, 0), .85, 1.2, 34), look: P(0, fb + .5, 0), dur: 3.0 });
+      add({ id: 'gbeam', title: '٨ · صبّ الجسور الأرضية', sub: 'وفكّ الشدّة',
+        add: ['gbeam'], drop: ['form_gb'],
+        cam: eye(P(0, fb + .5, 0), .95, 2.1, 40), look: P(0, fb + .5, 0), dur: 3.0 });
+      add({ id: 'sand', title: '٩ · الردم الرملي والدكّ',
+        sub: 'طبقات 20–25 سم مدكوكة تستقبل أرضية الطابق الأرضي',
+        add: ['sand'], cam: eye(P(0, fb + .6, 0), .9, 2.8, 46), look: P(0, fb + .6, 0),
+        dur: 3.2, spin: .25 });
+
+      for (let f2 = 1; f2 <= nf; f2++) {
+        const yTop = f2 * hs, yMid = (f2 - .5) * hs;
+        add({ id: 'cage' + f2, title: '١٠ · أقفاص أعمدة الطابق ' + f2,
+          sub: 'الحديد الطولي والأتاري بعكفة زلزالية 135°',
+          add: [], rebar: ['columns'], floor: f2,
+          cam: eye(P(0, yMid, 0), .85, .9, 26), look: P(0, yMid, 0), dur: 3.0, spin: .3 });
+        add({ id: 'formc' + f2, title: '١١ · شدّة أعمدة الطابق ' + f2,
+          sub: 'ألواح بليوود بجنائب — تُفكّ بعد ٢٤–٤٨ ساعة',
+          add: ['form_c' + f2], rebar: ['columns'], floor: f2,
+          cam: eye(P(0, yMid, 0), .95, 1.6, 24), look: P(0, yMid, 0), dur: 2.8 });
+        add({ id: 'concc' + f2, title: '١٢ · صبّ أعمدة الطابق ' + f2, sub: 'وفكّ الشدّة',
+          add: ['conc_c' + f2], drop: ['form_c' + f2], rebar: false, floor: 'all',
+          cam: eye(P(0, yMid, 0), 1.15, 2.5, 28), look: P(0, yMid, 0), dur: 2.8 });
+        add({ id: 'brick' + f2, title: '١٣ · بناء الطابوق — طابق ' + f2,
+          sub: 'جدار حشو بين الأعمدة لا يحمل', add: ['brick' + f2],
+          cam: eye(P(0, yMid, 0), 1.30, .4, 24), look: P(0, yMid, 0), dur: 3.4, spin: .3 });
+        add({ id: 'deck' + f2, title: '١٤ · شدّة سقف الطابق ' + f2,
+          sub: 'دكّ + عروق كل 60 سم + دعامات (شمعات) بشبكة 1.2 م',
+          add: ['deck' + f2],
+          cam: eye(P(0, yTop - hs * .35, 0), 1.15, 2.0, 26),
+          look: P(0, yTop - hs * .35, 0), dur: 3.2 });
+        add({ id: 'rebs' + f2, title: '١٥ · حديد السقف والجسور — طابق ' + f2,
+          sub: 'الفرش ثم الغطاء ثم العلوي فوق المساند',
+          add: [], rebar: ['beams', 'slabs'], extra: true, floor: f2,
+          cam: eye(P(0, yTop, 0), .95, 1.1, 42), look: P(0, yTop, 0), dur: 3.2, spin: .3 });
+        add({ id: 'concs' + f2, title: '١٦ · صبّ سقف الطابق ' + f2,
+          sub: 'ولا تُفكّ الدعامات قبل ١٤ يوماً',
+          add: ['conc_s' + f2], drop: ['deck' + f2], rebar: false, floor: 'all',
+          cam: eye(P(0, yTop - hs * .2, 0), 1.25, 2.9, 34),
+          look: P(0, yTop - hs * .2, 0), dur: 3.0 });
       }
       if (M.stairs && (M.stairs.flights || []).length) {
-        const f0 = M.stairs.flights[0], bb = f0.bbox || [0, 0, 1, 1];
-        // مركز القلبة بالمشهد — الكاميرا تنظر إليها هي لا إلى مركز المبنى
+        const bb = (M.stairs.flights[0].bbox) || [0, 0, 1, 1];
         const sx2 = MAPX((bb[0] + bb[2]) / 2), sz2 = MAPZ((bb[1] + bb[3]) / 2);
-        const sy2 = hs * .55;
-        // السقف يُخفى بهذا المشهد وإلا حجب القلبة من فوق
         add({ id: 'stair', title: 'الدرج وتسليحه',
           sub: 'الرئيسي سفلي · التوزيع فوقه · الشنّاطات علوية عند الانكسار',
-          show: ['columns', 'beams', 'stairs'], rebar: true, floor: 1,
-          cam: P(sx2 + R * .80, sy2 + hs * 1.1, sz2 + R * .80),
-          look: P(sx2, sy2, sz2), dur: 4.5, spin: .35 });
+          site: false, show: ['columns', 'beams', 'stairs'], rebar: true, floor: 1,
+          cam: P(sx2 + R * .8, hs * 1.5, sz2 + R * .8), look: P(sx2, hs * .55, sz2),
+          dur: 4.2, spin: .35 });
       }
       if (M.canti && M.canti.on) {
         const it0 = (M.canti.items || [])[0] || {};
@@ -2036,36 +2353,67 @@ function Viewer3D(el, M, onPick) {
         const cy2 = nf * hs - hs * .25;
         add({ id: 'canti', title: 'الكانتيليفر — الشناشيل',
           sub: 'الحديد **كله علوي** — الأصفر شدّ والأزرق انكماش',
-          show: null, rebar: true, floor: 'all', groups: { canti: 1 },
+          site: false, show: null, rebar: true, floor: 'all', groups: { canti: 1 },
           cam: P(cxx * 1.7 + (ax0 ? R * .5 : 0), cy2 + hs * .55,
                  czz * 1.7 + (ax0 ? 0 : R * .5)),
-          look: P(cxx, cy2, czz), dur: 4.5, spin: .3 });
+          look: P(cxx, cy2, czz), dur: 4.0, spin: .3 });
       }
       add({ id: 'xray', title: 'الأشعة — الحديد داخل الخرسانة',
-        sub: 'الخرسانة شفافة والتسليح كاملاً', show: null, rebar: true, floor: 'all',
-        xray: true, cam: P(R * 1.15, H * .75, R * 1.15), look: mid2, dur: 4.5, spin: 0.5 });
+        sub: 'الخرسانة شفافة والتسليح كاملاً', site: false, show: null,
+        rebar: true, floor: 'all', xray: true,
+        cam: P(R * 1.15, H * .75, R * 1.15), look: P(0, H / 2, 0), dur: 4.2, spin: .5 });
       add({ id: 'full', title: 'المبنى كاملاً', sub: (M.summary && M.summary[0]) || '',
-        show: null, rebar: false, floor: 'all', xray: false,
-        cam: P(R * 1.35, H * .85, R * 1.35), look: mid2, dur: 6.0, spin: 1.0 });
-      return sc;
+        site: true, add: [], rebar: false, floor: 'all', xray: false,
+        cam: eye(P(0, H * .42, 0), 1.6, .8, 24), look: P(0, H * .42, 0),
+        dur: 6.0, spin: 1.0 });
+      // «drop» يشيل مرحلة من التراكم (فكّ الشدّة) — يُطبَّق على ما بعده
+      let seen = [];
+      sc2.forEach(x => {
+        seen = seen.concat(x.add || []).filter(k => (x.drop || []).indexOf(k) < 0);
+        x.stages = seen.slice();
+      });
+      return sc2;
     },
     /* ينفّذ مشهداً: يضبط الطبقات والكاميرا فوراً (بلا انتقال) أو بانتقال ناعم */
     playScene: (s2, smooth) => {
-      // التربة والتسليح يُبنيان بكسل عند أول طلب — فالمشهد يطلبهما صراحةً
-      const wantSoil = !s2.show || s2.show.indexOf('soil') >= 0;
-      if (wantSoil) API.soil(true);
-      if (s2.xray !== undefined) { API.xray(!!s2.xray); }
-      if (s2.rebar !== undefined) { API.rebar(!!s2.rebar); }
-      if (s2.floor !== undefined) API.floor(s2.floor);
       const all = ['soil', 'layers', 'raft', 'isolated', 'piles', 'walls', 'columns',
         'beams', 'slabs', 'canti', 'stairs', 'rebar', 'extra', 'chairs'];
-      if (s2.show) {
-        all.forEach(g => { if (g !== 'rebar') API.group(g, s2.show.indexOf(g) >= 0); });
+      if (s2.site) {
+        // ---- وضع البناء: الموقع بمراحله، والعرض التحليلي مُطفأ ----
+        siteMode(true);
+        siteUpTo(s2.stages || []);
+        // الترتيب مهمّ: floor() تستدعي applyVis التي تعيد ضبط الرؤية،
+        // فتُنفَّذ **قبل** فلترة التسليح وإلا محت الفلترة.
+        if (s2.floor !== undefined) API.floor(s2.floor);
+        if (s2.rebar) {
+          buildRebar();
+          G.rebar.visible = true; G.extra.visible = !!s2.extra;
+          G.chairs.visible = false;
+          // يُعرض حديد **العنصر الجاري تنفيذه** فقط: بمرحلة أقفاص الأعمدة
+          // لا معنى لظهور شبكة السقف — الموقع ما بناها بعد.
+          const want = s2.rebar === true ? null
+            : (Array.isArray(s2.rebar) ? s2.rebar : [s2.rebar]);
+          [G.rebar, G.extra].forEach(gr => gr.children.forEach(o => {
+            o.visible = !want || want.indexOf((o.userData || {}).grp) >= 0;
+          }));
+        } else { G.rebar.visible = false; G.extra.visible = false; G.chairs.visible = false; }
+        if (G.stairs) G.stairs.visible = false;
       } else {
-        all.forEach(g => API.group(g, true));
+        siteMode(false);
+        // التربة والتسليح يُبنيان بكسل عند أول طلب — فالمشهد يطلبهما صراحةً
+        const wantSoil = !s2.show || s2.show.indexOf('soil') >= 0;
+        if (wantSoil) API.soil(true);
+        if (s2.xray !== undefined) { API.xray(!!s2.xray); }
+        if (s2.rebar !== undefined) { API.rebar(!!s2.rebar); }
+        if (s2.floor !== undefined) API.floor(s2.floor);
+        if (s2.show) {
+          all.forEach(g => { if (g !== 'rebar') API.group(g, s2.show.indexOf(g) >= 0); });
+        } else {
+          all.forEach(g => API.group(g, true));
+        }
+        if (s2.groups) Object.entries(s2.groups).forEach(([g, v]) => API.group(g, !!v));
+        if (!wantSoil) API.group('soil', false);
       }
-      if (s2.groups) Object.entries(s2.groups).forEach(([g, v]) => API.group(g, !!v));
-      if (!wantSoil) API.group('soil', false);
       if (s2.cam) {
         if (smooth) anim = { t: 0, p0: cam.position.clone(), t0: ctl.target.clone(),
           p1: s2.cam.clone(), t1: (s2.look || mid).clone() };

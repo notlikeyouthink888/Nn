@@ -892,8 +892,11 @@ def wizard(p):
                 frame=fo, stairs=stair_pkg,
                 advisor=adv, alts=alts, recommended=rec, design=design, model=model,
                 punching=punch, chairs=dict(slab=ch_slab, found=ch_found), laps=laps,
-                earth=ew, soil=soil_profile(soil_name, qa, soil_kind, ew['levels'],
-                                            Df, p.get('gwt')),
+                earth=ew, soil=soil_profile(
+                    soil_name, qa, soil_kind, ew['levels'], Df, p.get('gwt'),
+                    need_piles=(rec == 'piles'),
+                    pile_L=(alts['piles']['pile']['L'] if rec == 'piles' else 0.0),
+                    gypseous=bool(p.get('gypseous'))),
                 boq=dict(rows=rows, total=grand), seismic=seis, aci_extra=aci_extra,
                 summary=summary, span_max=span_max, span_min=span_min)
 
@@ -1093,30 +1096,113 @@ SOIL_LOOK = {                       # لون وملمس تقريبي لكل صن
     'fill':  ('#7a6a5c', 'ردم', 'غير صالحة للتأسيس قبل الإزالة أو الدك الهندسي'),
 }
 
-def soil_profile(soil_name, qa, kind, levels, Df, gwt=None):
-    """مقطع التربة تحت الحفر كما يُرسم بالمجسم: الطبقة الحاملة تحت الأساس،
-    وطبقة أضعف فوقها إن وُجد ردم قديم، ومنسوب الماء الجوفي إن أُدخل.
+#: العمود الجيولوجي المرجعي — تتابع الطبقات كما يظهر بالجسّات، من السطح للأسفل.
+#: (المفتاح · الاسم · اللون · الملمس · سُمك نموذجي م · تحمّل استرشادي kPa · الوصف)
+STRATA = [
+    ('topsoil',  'التربة السطحية (Topsoil)',       '#6b5136', 'organic', 0.5,   0.0,
+     'طبقة عضوية سطحية فيها جذور ومواد متحلّلة — **تُزال دائماً** ولا يُحسب لها تحمّل'),
+    ('fill',     'ردم قديم (Fill)',                '#7a6a5c', 'rubble',  0.0,   0.0,
+     'ردم غير مدكوك أو أنقاض بناء — يهبط بالزمن ولو خفّ الحمل'),
+    ('softclay', 'طين طري (Soft Clay)',            '#8d6b52', 'clay',    2.0,  50.0,
+     'متماسك لكنه ضعيف — هبوطه تضاغطي يستمر سنوات، وينتفخ بالماء'),
+    ('stiffclay','طين قاسٍ (Stiff Clay)',          '#7d5a44', 'clay',    2.5, 180.0,
+     'الطبقة الحاملة الأشيع ببغداد — تحمّل جيد وهبوط محدود'),
+    ('sand',     'رمل كثيف (Dense Sand)',          '#c9a86a', 'sand',    2.5, 250.0,
+     'حبيبات مفكّكة متراصّة — تصريف ممتاز وهبوط فوري ينتهي مع انتهاء البناء'),
+    ('gravel',   'حصى وسبيس (Gravel)',             '#b89b5e', 'gravel',  2.0, 400.0,
+     'ركام خشن عالي التحمّل — وهو ما يُدكّ تحت الأسس والأرضيات'),
+    ('weath',    'صخر متحلّل (Weathered Rock)',    '#8a8172', 'rock',    2.0, 600.0,
+     'صخر متشقّق ومتحلّل جزئياً — قوي لكنه غير متجانس'),
+    ('bedrock',  'الصخر الأم (Bedrock)',           '#5d6068', 'rock',    3.0,1000.0,
+     'الطبقة الحاملة النهائية — عليها ترتكز الركائز بالارتكاز الطرفي'),
+]
+STRATA_MAP = {k: (nm, c, tx, t, q, d) for k, nm, c, tx, t, q, d in STRATA}
 
-    الغاية عرضية-هندسية: يرى المستخدم على أي طبقة يجلس أساسه وكم عمق الردم
-    (الجلمود والسبيس) فوقها — لا رسم جيولوجي دقيق."""
-    col, nm, note = SOIL_LOOK.get(kind, SOIL_LOOK['clay'])
+#: التتابع النموذجي لكل صنف تربة سطحية — التربة المختارة تُثبَّت كطبقة حاملة
+#: وما تحتها يتدرّج للأقوى، لأن التحمّل يزداد مع العمق بالطبيعة.
+SEQ = {
+    'fill':  ['topsoil', 'fill', 'softclay', 'stiffclay', 'sand', 'gravel', 'bedrock'],
+    'clay':  ['topsoil', 'softclay', 'stiffclay', 'sand', 'gravel', 'weath', 'bedrock'],
+    'sand':  ['topsoil', 'sand', 'gravel', 'stiffclay', 'weath', 'bedrock'],
+    'rock':  ['topsoil', 'weath', 'bedrock'],
+}
+
+
+def soil_profile(soil_name, qa, kind, levels, Df, gwt=None, need_piles=False,
+                 pile_L=0.0, gypseous=False):
+    """**العمود الجيولوجي** تحت المبنى — لا طبقتين تقريبيتين.
+
+    يُبنى تتابع طبقات حقيقي من السطح إلى الصخر الأم، كل طبقة باسمها ولونها
+    وملمسها وسُمكها وتحمّلها الاسترشادي، وتُعلَّم عليها:
+
+      * منسوب الأرض الطبيعية ومنسوب الحفر ومنسوب قاعدة الأساس
+      * **الطبقة التي يجلس عليها الأساس** فعلاً (تُميَّز)
+      * منسوب الماء الجوفي إن أُدخل — وأثره على التحمّل
+      * ومع الركائز: عمق الركيزة وأي طبقات تعبرها، وأين يأتي **الاحتكاك الجانبي**
+        (Skin Friction) وأين **الارتكاز الطرفي** (End Bearing)
+
+    الغاية أن يرى المهندس مقطع الجسّة لا مستطيلين ملوّنين.
+    """
     fb = levels['found_bot']; gr = levels['ground']; ex = levels['existing']
+    seq = list(SEQ.get(kind, SEQ['clay']))
+    if kind != 'fill' and ex < gr - 1e-6:
+        seq.insert(1, 'fill')                      # ردم قديم مُزال يظهر كطبقة
+    if gypseous and 'gypsum' not in seq:
+        seq.insert(min(3, len(seq)), 'stiffclay')  # الجبس يظهر بالوصف لا كطبقة مستقلة
+    # الطبقة الحاملة = أول طبقة تحمّلها ≥ qa المُدخَل، وتُثبَّت عند قاعدة الأساس
     beds = []
-    if ex < gr - 1e-6:                       # ردم قديم مزال — يُعرض كطبقة ضعيفة
-        beds.append(dict(name='ردم قديم مُزال (غير صالح للتأسيس)', top=gr, bottom=ex,
-                         color='#6f6152', kind='fill', qa=0.0,
-                         note='يُزال بالكامل ويُستبدل بردم هندسي مدكوك'))
-    bearing_top = min(ex, fb)
-    beds.append(dict(name='التربة الحاملة — %s (%s)' % (soil_name, nm),
-                     top=bearing_top, bottom=fb - max(2.0 * Df, 3.0),
-                     color=col, kind=kind, qa=qa, note=note))
-    beds.append(dict(name='طبقة أعمق (للاستئناس)', top=fb - max(2.0 * Df, 3.0),
-                     bottom=fb - max(2.0 * Df, 3.0) - 2.5,
-                     color='#5f5344', kind=kind, qa=qa * 1.2,
-                     note='تُفحص بالجسّات إن كان الحمل كبيراً أو الأساس حصيرة'))
-    return dict(name=soil_name, kind=kind, kind_ar=nm, qa=qa, color=col, note=note,
-                beds=beds, gwt=(float(gwt) if gwt not in (None, '', 0) else None),
-                found_bot=fb, ground=gr, existing=ex, Df=Df)
+    y = gr
+    bottom_limit = fb - (max(pile_L, 0.0) + 3.0 if need_piles else max(2.5 * Df, 6.0))
+    for i, key in enumerate(seq):
+        nm, col, tex, t, q, desc = STRATA_MAP[key]
+        t = t or 0.8
+        if key == 'fill' and ex < gr - 1e-6:
+            t = max(0.3, gr - ex)
+        top = y
+        bot = y - t
+        # الطبقة الحاملة تُمدّ حتى تبتلع قاعدة الأساس إن وقعت داخلها
+        if bot > fb > top - 1e-9 and i < len(seq) - 1:
+            pass
+        beds.append(dict(key=key, name=nm, color=col, texture=tex, top=round(top, 2),
+                         bottom=round(bot, 2), thick=round(t, 2), qa=q, note=desc,
+                         gypseous=(gypseous and key in ('stiffclay', 'sand'))))
+        y = bot
+        if y <= bottom_limit:
+            break
+    if y > bottom_limit:                            # أكمل بالصخر الأم حتى قاع الرسم
+        nm, col, tex, t, q, desc = STRATA_MAP['bedrock']
+        beds.append(dict(key='bedrock', name=nm, color=col, texture=tex,
+                         top=round(y, 2), bottom=round(bottom_limit, 2),
+                         thick=round(y - bottom_limit, 2), qa=q, note=desc, gypseous=False))
+    # أي طبقة يجلس عليها الأساس فعلاً
+    for b in beds:
+        b['bearing'] = (b['top'] >= fb >= b['bottom'] - 1e-9)
+        b['excavated'] = b['bottom'] >= fb - 1e-9        # فوق قاعدة الأساس = محفورة
+    bear = next((b for b in beds if b['bearing']), beds[-1])
+    bear['name_full'] = '%s — **الطبقة الحاملة**' % bear['name']
+    col, nm2, note = SOIL_LOOK.get(kind, SOIL_LOOK['clay'])
+    gw = float(gwt) if gwt not in (None, '', 0) else None
+    piles = None
+    if need_piles and pile_L > 0:
+        tip = fb - pile_L
+        crossed = [b['name'] for b in beds if b['bottom'] < fb and b['top'] > tip]
+        end_bed = next((b for b in beds if b['top'] >= tip >= b['bottom'] - 1e-9), beds[-1])
+        piles = dict(L=pile_L, tip=round(tip, 2), crossed=crossed,
+                     end_bed=end_bed['name'], end_qa=end_bed['qa'],
+                     friction='الاحتكاك الجانبي يتولّد على **طول** الركيزة داخل '
+                              'الطبقات التي تعبرها: ' + ' · '.join(crossed),
+                     bearing='الارتكاز الطرفي على %s (تحمّل استرشادي %d kPa)'
+                             % (end_bed['name'], int(end_qa) if (end_qa := end_bed['qa']) else 0),
+                     note='قدرة الركيزة = احتكاك جانبي + ارتكاز طرفي، والنسبة بينهما '
+                          'تقرّر نوعها: ركيزة احتكاك بالطين وركيزة ارتكاز على الصخر.')
+    return dict(name=soil_name, kind=kind, kind_ar=nm2, qa=qa, color=col, note=note,
+                beds=beds, gwt=gw, found_bot=fb, ground=gr, existing=ex, Df=Df,
+                bearing_bed=bear['name'], bearing_qa=bear['qa'],
+                piles=piles, gypseous=gypseous,
+                strata=[dict(k=k, name=n, color=c, texture=t2, qa=q, note=d)
+                        for k, n, c, t2, t3, q, d in STRATA],
+                legend='المقطع مبنيّ على تتابع جيولوجي نموذجي لصنف التربة المختار — '
+                       'والمرجع النهائي **تقرير الجسّات** للموقع نفسه.')
 
 def lab_spec(R):
     """يحوّل ناتج المعالج إلى مواصفات النموذج الفراغي في lab.build."""

@@ -35,7 +35,8 @@ function Viewer3D(el, M, onPick) {
 
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
   const GN = ['ghost', 'soil', 'stress', 'layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
-              'canti', 'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl', 'human', 'plan'];
+              'canti', 'stairs', 'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl',
+              'human', 'plan'];
   const G = {}; GN.forEach(k => { G[k] = new T.Group(); G[k].name = k; sc.add(G[k]); });
   G.moments.visible = G.punch.visible = G.defl.visible = G.rebar.visible = G.extra.visible =
     G.chairs.visible = G.human.visible = G.plan.visible = G.ghost.visible =
@@ -461,17 +462,106 @@ function Viewer3D(el, M, onPick) {
         const w = Math.abs(b2[2] - b2[0]), d = Math.abs(b2[3] - b2[1]);
         const along = f.dir === 'x' ? w : d;
         const rise = f.rise, tread = f.tread;
-        const inf = k ? null : { title: 'قلبة درج', kind: 'stair', grp: 'slabs', floor: s,
+        const inf = k ? null : { title: 'قلبة درج', kind: 'stair', grp: 'stairs', floor: s,
           rows: f.rows.map(r => [r[0], r[1]]) };
         for (let i = 0; i < f.steps; i++) {
           const t = (i + 0.5) / f.steps - 0.5;
           const y = z - hs + rise * (i + 1);
-          box(G.slabs, f.dir === 'x' ? tread : f.width, rise,
+          box(G.stairs, f.dir === 'x' ? tread : f.width, rise,
             f.dir === 'x' ? f.width : tread,
             cx + (f.dir === 'x' ? t * along : 0), y - rise / 2,
             cz + (f.dir === 'x' ? 0 : t * along), 0xb9c9dc, 1, i ? null : inf);
         }
+        stairRebar(f, cx, cz, z - hs, along, s, k);
       });
+      // ---- حديد القلبة: وِتر مائل + شبكتان + شنّاطات عند الانكسارات ----
+      function stairRebar(f, cx, cz, z0, along, s, k) {
+        const R = f.rebar;
+        if (!R) return;
+        const ax = f.dir === 'x';                       // اتجاه صعود القلبة
+        const W = f.width, th = f.waist / 1000, cv = R.cover / 1000;
+        const rise = f.rise, tread = f.tread, run = f.steps * tread;
+        const H = f.steps * rise;                        // ارتفاع القلبة
+        const sl = Math.hypot(run, H);                   // الطول المائل للوِتر
+        const ang = Math.atan2(H, run);
+        const inf = (t, x) => k ? null : Object.assign({ title: t + ' — قلبة درج',
+          kind: 'rebar', grp: 'stairs', floor: s }, { rows: x });
+        // محور الوِتر: من أسفل القلبة إلى أعلاها بمنتصف السماكة
+        const mid = (u, off) => {                        // u∈[0,1] على الميل · off عمودي
+          const px = (u - 0.5) * run, py = z0 + u * H - th / 2 + off * Math.cos(ang);
+          const pu = off * Math.sin(ang);
+          return ax ? [cx + px - pu, py, cz] : [cx, py, cz + px - pu];
+        };
+        // --- الحديد الرئيسي (سفلي) على الميل ---
+        const yB = -(th / 2 - cv - R.main.db / 2000);     // إزاحة للوجه السفلي
+        const nM = Math.max(2, R.main.n | 0);
+        const posM = [];
+        for (let i = 0; i < nM; i++) {
+          const t2 = -W / 2 + cv + (W - 2 * cv) * (nM === 1 ? .5 : i / (nM - 1));
+          const p = mid(0.5, yB);
+          posM.push(ax ? [p[0], p[1], cz + t2] : [cx + t2, p[1], p[2]]);
+        }
+        const gM = slopeBar(sl + 0.3, R.main.db, ang, ax, 90);
+        inst(gM, STEEL, posM, inf('Main bars — الحديد الرئيسي (سفلي)', [
+          ['المقطع', R.main.label], ['الموضع', 'الوجه **السفلي** موازياً للميل'],
+          ['الطول', R.main.len.toFixed(2) + ' م'], ['الملاحظة', R.main.note]]),
+          G.stairs, posM.length * sl * Math.PI * Math.pow(R.main.db / 2000, 2) * 7850);
+        // --- حديد التوزيع (عمودي على الرئيسي) ---
+        const nD = Math.max(2, Math.min(40, R.dist.n | 0));
+        const posD = [];
+        for (let i = 0; i < nD; i++) {
+          const u = (i + 0.5) / nD;
+          posD.push(mid(u, yB + R.main.db / 1000));
+        }
+        inst(barGeo(W - 2 * cv, R.dist.db, ax ? 'z' : 'x', { a: 90, b: 90, up: 1 }),
+          EXTRA, posD, inf('Distribution bars — حديد التوزيع', [
+            ['المقطع', R.dist.label], ['الموضع', 'عمودي على الرئيسي و**فوقه**'],
+            ['الملاحظة', R.dist.note]]),
+          G.stairs, posD.length * W * Math.PI * Math.pow(R.dist.db / 2000, 2) * 7850);
+        // --- الشنّاطات والحديد العلوي عند الانكسارين ---
+        const yT = th / 2 - cv - R.top.db / 2000;
+        const zone = Math.min(R.top.zone / Math.max(sl, .1), 0.45);
+        const nT = Math.max(2, R.top.n | 0);
+        [0, 1].forEach(end => {
+          const posT = [];
+          for (let i = 0; i < nT; i++) {
+            const t2 = -W / 2 + cv + (W - 2 * cv) * (nT === 1 ? .5 : i / (nT - 1));
+            const u = end ? 1 - zone / 2 : zone / 2;
+            const p = mid(u, yT);
+            posT.push(ax ? [p[0], p[1], cz + t2] : [cx + t2, p[1], p[2]]);
+          }
+          inst(slopeBar(zone * sl * 2, R.top.db, ang, ax, 90), TIE, posT,
+            end ? null : inf('Hanger / Top anchor bars — الشنّاطات', [
+              ['المقطع', R.top.label], ['الموضع', 'الوجه **العلوي** عند الانكسار'],
+              ['الطول لكل جهة', R.top.zone.toFixed(2) + ' م'],
+              ['لماذا', R.top.note],
+              ['الركن الداخل', (R.corners[0] || {}).rule || ''],
+              ['السبب', (R.corners[0] || {}).why || '']]),
+            G.stairs, posT.length * zone * sl * 2 * Math.PI * Math.pow(R.top.db / 2000, 2) * 7850);
+        });
+        // --- أسياخ الانتظار (Starter) عند قدم القلبة ---
+        const posS = [];
+        for (let i = 0; i < nM; i++) {
+          const t2 = -W / 2 + cv + (W - 2 * cv) * (nM === 1 ? .5 : i / (nM - 1));
+          const p = mid(0.06, yB);
+          posS.push(ax ? [p[0] - 0.15, p[1], cz + t2] : [cx + t2, p[1], p[2] - 0.15]);
+        }
+        inst(barGeo(R.starter.len, R.starter.db, 'y', { a: 90, b: 0, up: 1 }),
+          DOWEL, posS, inf('Starter bars — أسياخ الانتظار', [
+            ['المقطع', 'Ø' + R.starter.db + ' @ ' + Math.round(R.starter.s) + ' مم'],
+            ['الطول البارز', R.starter.len.toFixed(2) + ' م'],
+            ['الملاحظة', R.starter.note],
+            ['الوصلة', R.lap.note]]),
+          G.stairs, posS.length * R.starter.len * Math.PI * Math.pow(R.starter.db / 2000, 2) * 7850);
+      }
+
+      // سيخ مائل بزاوية الوِتر — يُبنى مستقيماً ثم يُدار حول محور الميل
+      function slopeBar(len, db, ang, ax, hook) {
+        const g = barGeo(len, db, ax ? 'x' : 'z', { a: hook, b: hook, up: 1 });
+        if (ax) g.rotateZ(ang); else g.rotateX(-ang);
+        return g;
+      }
+
       // فتحات السقف تُعلَّم بإطار ملوّن (البلاطة نفسها تُخصم بالكميات)
       (SP.openings || []).forEach((o, k) => {
         if (o.x === null || o.x === undefined) return;
@@ -533,6 +623,9 @@ function Viewer3D(el, M, onPick) {
             ['علوي فوق المساند', md.slab.mesh.top.label],
             ['الخرسانة', (L * B * md.slab.h / 1000).toFixed(1) + ' م³']] });
       buildCanti(z, s);
+      // الدرج كان يُرسم **فقط** حين يوجد مخطط DWG — والآن يُرسم بالشبكة
+      // التلقائية أيضاً، فالمشروع بلا مخطط يرى درجه وتسليحه كذلك.
+      buildStairs(z, s, px, pz);
     }
   }
 
@@ -1284,20 +1377,178 @@ function Viewer3D(el, M, onPick) {
      كسطح شفاف. وطبقات الجلمود والسبيس تُكسى بحبيبات بأحجامها الحقيقية:
      الجلمود حصى خشن 4–10 سم والسبيس ناعم 1–3 سم — فيُفرَّق بينهما بالنظر. */
   let soilBuilt = false;
+  /* ---- ملمس الطبقة: يُولَّد على كانفاس بنمط منتظم لكل صنف ----
+     الطين ناعم بخطوط أفقية · الرمل حبيبات صغيرة متراصّة · الحصى كتل خشنة ·
+     الصخر مكعّبات متشقّقة · العضوية بقع داكنة. كله بدالة تجزئة حتمية لا عشوائية،
+     فالمقطع يتكرّر بالضبط في كل مرة. */
+  const TEXCACHE = {};
+  function strataTex(kind, hex, seed) {
+    const key = kind + hex;
+    if (TEXCACHE[key]) return TEXCACHE[key];
+    const N = 128, c = document.createElement('canvas');
+    c.width = c.height = N;
+    const g = c.getContext('2d');
+    g.fillStyle = hex; g.fillRect(0, 0, N, N);
+    const h01 = (i, k) => { const x = Math.sin(i * 127.1 + k * 311.7 + seed * 7.3) * 43758.5453;
+      return x - Math.floor(x); };
+    const shade = (a, f) => { g.globalAlpha = a;
+      g.fillStyle = f < 0 ? '#000' : '#fff'; };
+    if (kind === 'clay') {
+      for (let i = 0; i < 26; i++) {
+        shade(.05 + h01(i, 1) * .05, h01(i, 2) > .5 ? 1 : -1);
+        g.fillRect(0, h01(i, 3) * N, N, 1 + h01(i, 4) * 2);
+      }
+    } else if (kind === 'sand') {
+      for (let i = 0; i < 900; i++) {
+        shade(.10 + h01(i, 1) * .12, h01(i, 2) > .45 ? 1 : -1);
+        g.fillRect(h01(i, 3) * N, h01(i, 4) * N, 2, 2);
+      }
+    } else if (kind === 'gravel') {
+      for (let i = 0; i < 150; i++) {
+        shade(.14 + h01(i, 1) * .16, h01(i, 2) > .5 ? 1 : -1);
+        const r = 2 + h01(i, 5) * 5;
+        g.beginPath(); g.arc(h01(i, 3) * N, h01(i, 4) * N, r, 0, 6.29); g.fill();
+      }
+    } else if (kind === 'rock') {
+      g.globalAlpha = .22; g.strokeStyle = '#000'; g.lineWidth = 1.5;
+      for (let r = 0; r < 5; r++) for (let q = 0; q < 4; q++) {
+        const x = q * N / 4 + (r % 2) * N / 8, y = r * N / 5;
+        g.strokeRect(x, y, N / 4, N / 5);
+      }
+      for (let i = 0; i < 40; i++) {
+        shade(.08 + h01(i, 1) * .10, -1);
+        g.fillRect(h01(i, 3) * N, h01(i, 4) * N, 3 + h01(i, 5) * 6, 1);
+      }
+    } else if (kind === 'rubble') {
+      for (let i = 0; i < 90; i++) {
+        shade(.16 + h01(i, 1) * .18, h01(i, 2) > .55 ? 1 : -1);
+        g.save(); g.translate(h01(i, 3) * N, h01(i, 4) * N);
+        g.rotate(h01(i, 6) * 3.14); g.fillRect(-4, -2, 8, 4); g.restore();
+      }
+    } else {                                   // organic — تربة سطحية
+      for (let i = 0; i < 220; i++) {
+        shade(.12 + h01(i, 1) * .14, h01(i, 2) > .7 ? 1 : -1);
+        g.beginPath(); g.arc(h01(i, 3) * N, h01(i, 4) * N, 1 + h01(i, 5) * 2, 0, 6.29); g.fill();
+      }
+    }
+    g.globalAlpha = 1;
+    const tx = new T.CanvasTexture(c);
+    tx.wrapS = tx.wrapT = T.RepeatWrapping;
+    tx.repeat.set(6, 3);
+    TEXCACHE[key] = tx;
+    return tx;
+  }
+
+  /* بطاقة نصّية على وجه المقطع — اسم الطبقة وتحمّلها كما بمقطع الجسّة */
+  function soilLabel(txt, x, y, z, hot) {
+    const c = document.createElement('canvas');
+    c.width = 512; c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = hot ? 'rgba(6,95,70,.92)' : 'rgba(11,18,32,.82)';
+    g.fillRect(0, 0, 512, 64);
+    g.strokeStyle = hot ? '#34d399' : '#3b4a63'; g.lineWidth = 3;
+    g.strokeRect(1, 1, 510, 62);
+    g.fillStyle = hot ? '#a7f3d0' : '#cbd5e1';
+    g.font = 'bold 30px system-ui, sans-serif';
+    g.textAlign = 'right'; g.textBaseline = 'middle';
+    g.direction = 'rtl';
+    g.fillText(txt, 496, 34, 480);
+    const sp = new T.Sprite(new T.SpriteMaterial({ map: new T.CanvasTexture(c),
+      transparent: true, depthTest: false }));
+    sp.position.set(x, y, z);
+    sp.scale.set(3.4, .42, 1);
+    sp.renderOrder = 9;
+    G.soil.add(sp);
+    return sp;
+  }
+
+  /* أسهم القوى: الحمل نازل من الأعمدة · والاحتكاك الجانبي والارتكاز الطرفي للركائز */
+  function arrow(from, to, color, head) {
+    const dir = new T.Vector3().subVectors(to, from);
+    const len = dir.length();
+    if (len < .05) return null;
+    const a = new T.ArrowHelper(dir.clone().normalize(), from, len, color,
+      Math.min(head || len * .28, len * .5), Math.min(head || len * .28, len * .5) * .55);
+    a.line.material.clippingPlanes = [clip];
+    a.cone.material.clippingPlanes = [clip];
+    G.soil.add(a);
+    return a;
+  }
+
+  function soilForces(so, w, d) {
+    const fb = so.found_bot, gr = so.ground;
+    // حمل نازل من كل عمود إلى قاعدة الأساس
+    const pts = COLS && COLS.length ? COLS.slice(0, 12)
+      : [{ x: 0, y: 0 }];
+    pts.forEach(l => {
+      const X = COLS && COLS.length ? MAPX(l.x) : 0, Z = COLS && COLS.length ? MAPZ(l.y) : 0;
+      arrow(new T.Vector3(X, gr + 1.1, Z), new T.Vector3(X, fb + .12, Z), 0xef4444, .22);
+    });
+    const pl = so.piles;
+    if (!pl) {
+      // انتشار الضغط تحت الأساس السطحي (2:1) — أسهم قصيرة متفرّقة
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        arrow(new T.Vector3(i * w / 4, fb - .05, j * d / 4),
+              new T.Vector3(i * w / 4, fb - .7, j * d / 4), 0xf97316, .16);
+      }
+      return;
+    }
+    // الركائز: احتكاك جانبي صاعد على طول الجذع + ارتكاز طرفي عند الطرف
+    const tip = pl.tip;
+    [-1, 1].forEach(sgn => {
+      const X = sgn * Math.min(w / 5, 2.0);
+      for (let y = fb - 1.0; y > tip + 1.0; y -= Math.max(1.2, (fb - tip) / 8)) {
+        arrow(new T.Vector3(X + .45 * sgn, y - .55, 0),
+              new T.Vector3(X + .45 * sgn, y, 0), 0xfbbf24, .18);
+      }
+      arrow(new T.Vector3(X, tip - 1.1, 0), new T.Vector3(X, tip - .08, 0), 0xef4444, .3);
+    });
+    soilLabel('احتكاك جانبي (Skin Friction)', -w / 2 - .05, (fb + tip) / 2 + .6, 2.2, false);
+    soilLabel('ارتكاز طرفي (End Bearing) — ' + pl.end_bed, -w / 2 - .05, tip - .6, 2.2, true);
+  }
+
   function buildSoil() {
     if (soilBuilt) return; soilBuilt = true;
     const so = M.soil;
     const w = L + 3.0, d = B + 3.0;
     if (so && so.beds) {
-      so.beds.forEach(bd => {
+      so.beds.forEach((bd, bi) => {
         const t = Math.max(.05, bd.top - bd.bottom);
-        box(G.soil, w, t, d, 0, (bd.top + bd.bottom) / 2, 0, new T.Color(bd.color), .97,
-          { title: bd.name, kind: 'soil', grp: 'soil',
-            rows: [['المنسوب', bd.bottom.toFixed(2) + ' → ' + bd.top.toFixed(2) + ' م'],
-              ['السماكة', t.toFixed(2) + ' م'], ['الصنف', bd.kind],
-              ['تحمّل تقديري', bd.qa ? bd.qa.toFixed(0) + ' kPa' : '—'],
-              ['ملاحظة', bd.note || '—']] });
+        const yc = (bd.top + bd.bottom) / 2;
+        const mat = new T.MeshLambertMaterial({
+          map: strataTex(bd.texture, bd.color, bi), color: 0xffffff,
+          transparent: true, opacity: .98, clippingPlanes: [clip] });
+        const bx2 = new T.Mesh(new T.BoxGeometry(w, t, d), mat);
+        bx2.position.set(0, yc, 0);
+        bx2.userData = { title: bd.name + (bd.bearing ? ' — الطبقة الحاملة' : ''),
+          kind: 'soil', grp: 'soil',
+          rows: [['المنسوب', bd.bottom.toFixed(2) + ' → ' + bd.top.toFixed(2) + ' م'],
+            ['السماكة', t.toFixed(2) + ' م'],
+            ['تحمّل استرشادي', bd.qa ? bd.qa.toFixed(0) + ' kPa' : 'لا يُحسب له تحمّل'],
+            ['الحالة', bd.bearing ? '**عليها يجلس الأساس**'
+              : (bd.excavated ? 'فوق قاعدة الأساس — تُحفَر وتُزال' : 'تحت قاعدة الأساس')],
+            ['الوصف', bd.note || '—'],
+            ...(bd.gypseous ? [['⚠️ الجبس', 'تربة جبسية انهيارية — تذوب بالماء ' +
+              'فتنهار البنية فجأة']] : [])] };
+        G.soil.add(bx2); picks.push(bx2);
+        // بطاقة اسم الطبقة على وجه المقطع — كما بمقاطع الجسّات
+        soilLabel(bd.name + '   ' + (bd.qa ? bd.qa + ' kPa' : ''),
+          -w / 2 - .05, yc, 0, bd.bearing);
+        // خط فاصل بين الطبقات
+        if (bi) {
+          const ln = new T.Mesh(new T.BoxGeometry(w + .04, .03, d + .04),
+            new T.MeshBasicMaterial({ color: 0x0b1220, transparent: true, opacity: .6,
+              clippingPlanes: [clip] }));
+          ln.position.set(0, bd.top, 0); G.soil.add(ln);
+        }
+        if (bd.bearing) {                       // إطار يميّز الطبقة الحاملة
+          const eg = new T.LineSegments(
+            new T.EdgesGeometry(new T.BoxGeometry(w + .02, t, d + .02)),
+            new T.LineBasicMaterial({ color: 0x34d399, clippingPlanes: [clip] }));
+          eg.position.set(0, yc, 0); G.soil.add(eg);
+        }
       });
+      soilForces(so, w, d);
       if (so.gwt !== null && so.gwt !== undefined) {
         const wm = new T.Mesh(new T.BoxGeometry(w + .6, .06, d + .6),
           new T.MeshLambertMaterial({ color: 0x2f9bd8, transparent: true, opacity: .45,
@@ -1576,7 +1827,7 @@ function Viewer3D(el, M, onPick) {
     return { bars: bars, weight: weight, meshes: S.meshes, byGrp: S.byGrp };
   }
   let xrayOn = false;
-  return {
+  const ret = {
     R: R, room: ROOM,
     group: (n, v) => { on[n] = v ? 1 : 0; if (G[n]) G[n].visible = !!v; applyVis(); return visStats(); },
     rebar: v => { if (v) buildRebar(); G.rebar.visible = v; G.extra.visible = v && on.extra !== 0;
@@ -1727,6 +1978,109 @@ function Viewer3D(el, M, onPick) {
       const h = ray.intersectObjects(picks.filter(o => o.visible && o.parent && o.parent.visible), false)[0];
       return h ? h.object.userData.title : null; },
     cam: () => [+cam.position.x.toFixed(3), +cam.position.y.toFixed(3), +cam.position.z.toFixed(3)],
+    canvas: () => rn.domElement,
+    /* ================= سيناريو فيديو البناء =================
+       يعيد قائمة المشاهد جاهزة للتشغيل: كل مشهد يقول ماذا يُظهر وأين تقف
+       الكاميرا وكم يدوم وما النصّ المعروض. التشغيل يتم من app.js ليقدر
+       المسجّل يتزامن معه. */
+    movieScenes: () => {
+      const H = nf * hs, fb = (M.soil && M.soil.found_bot) || -1.8;
+      const mid2 = new T.Vector3(0, H / 2, 0);
+      const P = (a, b2, c2) => new T.Vector3(a, b2, c2);
+      const sc = [];
+      const add = (o) => sc.push(Object.assign({ dur: 3.2, spin: 0 }, o));
+      add({ id: 'soil', title: 'التربة — العمود الجيولوجي',
+        sub: (M.soil && M.soil.bearing_bed) ? 'الطبقة الحاملة: ' + M.soil.bearing_bed : '',
+        show: ['soil'], hide: ['columns', 'beams', 'slabs', 'canti', 'rebar', 'chairs',
+          'extra', 'raft', 'isolated', 'piles', 'layers', 'walls'],
+        cam: P(R * 1.2, Math.abs(fb) * .6, R * 1.2), look: P(0, fb * .8, 0), dur: 4.5 });
+      add({ id: 'dig', title: 'الحفر والردم المدكوك',
+        sub: 'طبقات الدكّ بسماكتها الفعلية', show: ['soil', 'layers'],
+        cam: P(R * .95, Math.abs(fb) * .9, -R * .95), look: P(0, fb, 0), dur: 3.6 });
+      add({ id: 'found', title: 'الأساس وتسليحه',
+        sub: (M.found && M.found.mode) || '', show: ['soil', 'layers', 'raft', 'isolated', 'piles'],
+        rebar: true, cam: P(R * .85, R * .35, R * .85), look: P(0, fb, 0), dur: 4.2 });
+      for (let f = 1; f <= nf; f++) {
+        add({ id: 'col' + f, title: 'أعمدة الطابق ' + f, sub: 'التسليح الطولي والأتاري',
+          show: ['soil', 'layers', 'raft', 'isolated', 'piles', 'columns'],
+          rebar: true, floor: f,
+          cam: P(R * .8, f * hs + hs * .8, R * .8), look: P(0, (f - .5) * hs, 0), dur: 2.6 });
+        add({ id: 'beam' + f, title: 'جسور الطابق ' + f, sub: 'الحديد العلوي والسفلي والأساور',
+          show: ['soil', 'layers', 'raft', 'isolated', 'piles', 'columns', 'beams'],
+          rebar: true, floor: f,
+          cam: P(-R * .7, f * hs + hs * .5, R * .8), look: P(0, f * hs - hs * .2, 0), dur: 2.6 });
+        add({ id: 'slab' + f, title: 'سقف الطابق ' + f,
+          sub: (M.slab && M.slab.name) || '',
+          show: ['soil', 'layers', 'raft', 'isolated', 'piles', 'columns', 'beams',
+            'slabs', 'stairs'], rebar: true, floor: f,
+          cam: P(R * .75, f * hs + hs * 1.0, -R * .75), look: P(0, f * hs, 0), dur: 2.6 });
+      }
+      if (M.stairs && (M.stairs.flights || []).length) {
+        const f0 = M.stairs.flights[0], bb = f0.bbox || [0, 0, 1, 1];
+        // مركز القلبة بالمشهد — الكاميرا تنظر إليها هي لا إلى مركز المبنى
+        const sx2 = MAPX((bb[0] + bb[2]) / 2), sz2 = MAPZ((bb[1] + bb[3]) / 2);
+        const sy2 = hs * .55;
+        // السقف يُخفى بهذا المشهد وإلا حجب القلبة من فوق
+        add({ id: 'stair', title: 'الدرج وتسليحه',
+          sub: 'الرئيسي سفلي · التوزيع فوقه · الشنّاطات علوية عند الانكسار',
+          show: ['columns', 'beams', 'stairs'], rebar: true, floor: 1,
+          cam: P(sx2 + R * .80, sy2 + hs * 1.1, sz2 + R * .80),
+          look: P(sx2, sy2, sz2), dur: 4.5, spin: .35 });
+      }
+      if (M.canti && M.canti.on) {
+        const it0 = (M.canti.items || [])[0] || {};
+        const sg = (it0.side || 'x+').indexOf('-') > 0 ? -1 : 1;
+        const ax0 = (it0.side || 'x+')[0] === 'z';
+        const cxx = ax0 ? 0 : sg * (L / 2 + (it0.L || 1) / 2);
+        const czz = ax0 ? -sg * (B / 2 + (it0.L || 1) / 2) : 0;
+        const cy2 = nf * hs - hs * .25;
+        add({ id: 'canti', title: 'الكانتيليفر — الشناشيل',
+          sub: 'الحديد **كله علوي** — الأصفر شدّ والأزرق انكماش',
+          show: null, rebar: true, floor: 'all', groups: { canti: 1 },
+          cam: P(cxx * 1.7 + (ax0 ? R * .5 : 0), cy2 + hs * .55,
+                 czz * 1.7 + (ax0 ? 0 : R * .5)),
+          look: P(cxx, cy2, czz), dur: 4.5, spin: .3 });
+      }
+      add({ id: 'xray', title: 'الأشعة — الحديد داخل الخرسانة',
+        sub: 'الخرسانة شفافة والتسليح كاملاً', show: null, rebar: true, floor: 'all',
+        xray: true, cam: P(R * 1.15, H * .75, R * 1.15), look: mid2, dur: 4.5, spin: 0.5 });
+      add({ id: 'full', title: 'المبنى كاملاً', sub: (M.summary && M.summary[0]) || '',
+        show: null, rebar: false, floor: 'all', xray: false,
+        cam: P(R * 1.35, H * .85, R * 1.35), look: mid2, dur: 6.0, spin: 1.0 });
+      return sc;
+    },
+    /* ينفّذ مشهداً: يضبط الطبقات والكاميرا فوراً (بلا انتقال) أو بانتقال ناعم */
+    playScene: (s2, smooth) => {
+      // التربة والتسليح يُبنيان بكسل عند أول طلب — فالمشهد يطلبهما صراحةً
+      const wantSoil = !s2.show || s2.show.indexOf('soil') >= 0;
+      if (wantSoil) API.soil(true);
+      if (s2.xray !== undefined) { API.xray(!!s2.xray); }
+      if (s2.rebar !== undefined) { API.rebar(!!s2.rebar); }
+      if (s2.floor !== undefined) API.floor(s2.floor);
+      const all = ['soil', 'layers', 'raft', 'isolated', 'piles', 'walls', 'columns',
+        'beams', 'slabs', 'canti', 'stairs', 'rebar', 'extra', 'chairs'];
+      if (s2.show) {
+        all.forEach(g => { if (g !== 'rebar') API.group(g, s2.show.indexOf(g) >= 0); });
+      } else {
+        all.forEach(g => API.group(g, true));
+      }
+      if (s2.groups) Object.entries(s2.groups).forEach(([g, v]) => API.group(g, !!v));
+      if (!wantSoil) API.group('soil', false);
+      if (s2.cam) {
+        if (smooth) anim = { t: 0, p0: cam.position.clone(), t0: ctl.target.clone(),
+          p1: s2.cam.clone(), t1: (s2.look || mid).clone() };
+        else { cam.position.copy(s2.cam); ctl.target.copy(s2.look || mid); anim = null; }
+      }
+    },
+    /* دوران بطيء حول المبنى أثناء المشهد */
+    orbit: (rad) => {
+      const t2 = ctl.target, r2 = Math.hypot(cam.position.x - t2.x, cam.position.z - t2.z);
+      const a = Math.atan2(cam.position.z - t2.z, cam.position.x - t2.x) + rad;
+      cam.position.set(t2.x + r2 * Math.cos(a), cam.position.y, t2.z + r2 * Math.sin(a));
+      cam.lookAt(t2);
+    },
     stats: () => visStats()
   };
+  const API = ret;
+  return ret;
 }

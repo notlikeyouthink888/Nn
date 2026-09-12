@@ -967,8 +967,58 @@ function detailPanel(r) {
       ${beamRebarPanel(r)}
       ${cantiPanel(r)}
       ${pilePanel(r)}
+      ${stairPanel(r)}
     </div>
 `;
+}
+
+/* ---------- الدرج وتسليحه — أخطر تفصيل بالمبنى يُنفَّذ خطأً ---------- */
+function stairPanel(r) {
+  const SP = r.stairs;
+  if (!SP || !(SP.flights || []).length)
+    return `<div class="card"><h3>🪜 الدرج وتسليحه</h3>
+      <div class="note">لا يوجد درج بالمشروع — يُستخرج من المخطط (DWG) تلقائياً
+        عند رفعه، أو يُضاف من بطاقة المخطط.</div></div>`;
+  const f = SP.flights[0], R2 = f.rebar;
+  if (!R2) return '';
+  const bar = (x, col) => `<div style="padding:9px 11px;background:${col}22;
+    border-right:3px solid ${col};border-radius:8px;margin-bottom:7px">
+    <b style="color:${col}">${x.name}</b>
+    <div style="font-size:17px;font-weight:700;margin:3px 0">${x.label ||
+      ('Ø' + x.db + (x.s ? ' @ ' + Math.round(x.s) + ' مم' : ''))}</div>
+    <div style="font-size:11.5px;color:var(--mut);line-height:1.75">${x.note}</div></div>`;
+  return `
+    <div class="card"><h3>🪜 الدرج وتسليحه — قلبة ${SP.flights.length > 1 ?
+      '(' + SP.flights.length + ' قلبات)' : ''}</h3>
+      <div class="grid g4">
+        ${kpi('الدرجات', f.steps + ' × ' + (f.rise * 100).toFixed(0) + '/' +
+          (f.tread * 100).toFixed(0) + ' سم')}
+        ${kpi('زاوية الميل', nf(f.angle, 1) + '°')}
+        ${kpi('سماكة الوِتر', int(f.waist) + ' مم')}
+        ${kpi('البحر', nf(f.span, 2) + ' م')}</div>
+      <div class="grid g2" style="margin-top:12px;gap:10px">
+        <div>${bar(R2.main, '#e8443a')}${bar(R2.dist, '#22d3ee')}</div>
+        <div>${bar(R2.top, '#ff9f1c')}${bar(R2.starter, '#c084fc')}</div></div>
+      <div class="rec" style="margin:4px 0 12px;border-right:3px solid #f87171">
+        <h3 style="margin-top:0">⚠️ الانكسار — القاعدة التي تُعكس بالموقع</h3>
+        ${R2.corners.map(c2 => `<div style="margin:8px 0;font-size:13px;line-height:1.9">
+          <b style="color:${c2.kind === 're' ? '#f87171' : 'var(--ok)'}">${c2.name}</b><br>
+          ${c2.rule}<br><span style="color:var(--mut)">${c2.why}</span></div>`).join('')}
+      </div>
+      ${table(['البند', 'القيمة', 'المرجع'], [
+        ['طول الرباط ld', int(R2.ld) + ' مم', 'ACI 25.4.2'],
+        ['طول الوصلة (صنف B)', nf(R2.lap.len, 2) + ' م', 'ACI 25.5.2.1'],
+        ['موضع الوصلة', R2.lap.note, 'ACI 25.5.2.1'],
+        ['العكفة', R2.hook.label, 'ACI جدول 25.3.1'],
+        ['أساور الربط', R2.stirrup.label, R2.stirrup.why],
+        ['طول الحديد العلوي', nf(R2.top.zone, 2) + ' م لكل جهة من الانكسار', 'عزم سالب موضعي'],
+      ])}
+      ${table(['بند التصميم', 'القيمة'], f.rows.map(x => [x[0], x[1]]))}
+      <div class="note">شغّل <b>«التسليح»</b> بالمجسم وقرّب على الدرج: الرئيسي
+        <b style="color:#e8443a">أحمر سفلي</b> على الميل · التوزيع
+        <b style="color:#22d3ee">سماوي</b> فوقه · الشنّاطات
+        <b style="color:#ff9f1c">برتقالية علوية</b> عند الانكسارين · أسياخ الانتظار
+        <b style="color:#c084fc">بنفسجية</b> من البسطة.</div></div>`;
 }
 
 /* ---------- تركيب الكانات والأتاري: ماذا تفعل ولماذا هي هنا بالذات ---------- */
@@ -1256,7 +1306,7 @@ function extraPanel(r) {
 }
 
 /* ============ تبويبات مساحة العمل: تفاصيل · أشعة · سقوف · تجربة · كميات ============ */
-const WT = { xr: 0, slabs: 0, boq: 0, lab: 0, plan: 0 };
+const WT = { xr: 0, slabs: 0, boq: 0, lab: 0, plan: 0, movie: 0 };
 function wtab(id) {
   $$('#wtabs button').forEach(b => b.classList.toggle('on', b.dataset.t === id));
   $$('.wpanel').forEach(p => { p.hidden = p.dataset.t !== id; });
@@ -1332,6 +1382,186 @@ function zoneMap(z, m) {
         '<code style="color:var(--acc2)">' + k.clause + '</code>', k.text, ''])))}
   </div>`;
 }
+
+/* ==================== 🎬 فيديو البناء ====================
+   يسجّل تسلسل البناء من التربة إلى المبنى كاملاً **داخل المتصفح**: يلتقط
+   تدفّق كانفاس المجسم نفسه بـ captureStream ويسجّله بـ MediaRecorder، فلا
+   يُرفع شيء لأي خدمة ولا يحتاج السيرفر أي معالجة فيديو.
+   المخرَج WebM (VP9 إن توفّر وإلا VP8) — يُشغَّل بكل المتصفحات ويُحوَّل بسهولة. */
+let MOV = null;                 // حالة التسجيل الجارية
+
+const movCodec = () => {
+  if (!window.MediaRecorder) return null;
+  for (const t of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8',
+                   'video/webm', 'video/mp4']) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return null;
+};
+
+/* لوحة النصّ فوق الفيديو: عنوان المشهد وسطره الفرعي وشريط التقدّم.
+   تُرسم على كانفاس مستقل يُدمج مع مشهد المجسم بكانفاس ثالث هو الذي يُسجَّل. */
+function movOverlay(g, W, H, sc, i, n, tIn, tot, done) {
+  g.clearRect(0, 0, W, H);
+  const pad = Math.round(W * 0.028), fs = Math.max(18, Math.round(W * 0.030));
+  // شريط سفلي متدرّج
+  const grd = g.createLinearGradient(0, H - H * .24, 0, H);
+  grd.addColorStop(0, 'rgba(6,10,20,0)'); grd.addColorStop(1, 'rgba(6,10,20,.92)');
+  g.fillStyle = grd; g.fillRect(0, H - H * .24, W, H * .24);
+  g.direction = 'rtl'; g.textAlign = 'right';
+  g.fillStyle = '#e8eefc';
+  g.font = '700 ' + fs + 'px system-ui, sans-serif';
+  g.fillText(sc.title || '', W - pad, H - pad - fs * 1.5, W - pad * 2);
+  if (sc.sub) {
+    g.fillStyle = '#93a7c4';
+    g.font = '500 ' + Math.round(fs * .62) + 'px system-ui, sans-serif';
+    g.fillText(sc.sub, W - pad, H - pad - fs * .35, W - pad * 2);
+  }
+  // شريط التقدّم
+  const bw = W - pad * 2, bh = Math.max(3, Math.round(H * .006));
+  g.fillStyle = 'rgba(255,255,255,.16)';
+  g.fillRect(pad, H - pad * .55, bw, bh);
+  g.fillStyle = '#3ba9f0';
+  g.fillRect(pad + bw * (1 - Math.min(1, tot)), H - pad * .55, bw * Math.min(1, tot), bh);
+  // ترويسة علوية
+  g.fillStyle = 'rgba(6,10,20,.62)';
+  g.fillRect(0, 0, W, H * .085);
+  g.fillStyle = '#cfe0f5';
+  g.font = '600 ' + Math.round(fs * .58) + 'px system-ui, sans-serif';
+  g.fillText('المنصة الإنشائية · ACI 318M-14', W - pad, H * .052);
+  g.textAlign = 'left';
+  g.fillStyle = '#6f86a8';
+  g.fillText((i + 1) + ' / ' + n, pad, H * .052);
+  g.textAlign = 'right';
+  if (done) {
+    g.fillStyle = 'rgba(6,10,20,.55)'; g.fillRect(0, 0, W, H);
+    g.fillStyle = '#e8eefc'; g.textAlign = 'center';
+    g.font = '800 ' + Math.round(fs * 1.5) + 'px system-ui, sans-serif';
+    g.fillText('تم التصميم', W / 2, H / 2 - fs);
+    g.fillStyle = '#93a7c4';
+    g.font = '500 ' + Math.round(fs * .7) + 'px system-ui, sans-serif';
+    g.fillText(done, W / 2, H / 2 + fs * .6, W * .85);
+  }
+}
+
+async function movieRun(opts) {
+  if (!V3 || !WZ) return alert('شغّل المعالج أولاً');
+  const mime = movCodec();
+  if (!mime) return alert('متصفحك لا يدعم تسجيل الفيديو (MediaRecorder). '
+    + 'جرّب Chrome أو Edge أو Firefox حديث.');
+  const src = V3.canvas();
+  const W = src.width, H = src.height;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d');
+  const scenes = V3.movieScenes();
+  const total = scenes.reduce((a, s2) => a + s2.dur, 0);
+  const fps = opts.fps || 30;
+  const stream = cv.captureStream(fps);
+  const chunks = [];
+  const rec = new MediaRecorder(stream, { mimeType: mime,
+    videoBitsPerSecond: opts.bitrate || 6e6 });
+  rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  const doneP = new Promise(res => { rec.onstop = () => res(); });
+  MOV = { stop: false };
+  rec.start(250);
+
+  const summary = (WZ.summary || []).slice(0, 3).join(' · ');
+  let elapsed = 0;
+  for (let i = 0; i < scenes.length && !MOV.stop; i++) {
+    const s2 = scenes[i];
+    V3.playScene(s2, i > 0);
+    const t0 = performance.now();
+    while (!MOV.stop) {
+      const t = (performance.now() - t0) / 1000;
+      if (t >= s2.dur) break;
+      if (s2.spin) V3.orbit(s2.spin * 0.012);
+      g.drawImage(src, 0, 0, W, H);
+      movOverlay(g, W, H, s2, i, scenes.length, t / s2.dur,
+        (elapsed + t) / total, null);
+      if (opts.onTick) opts.onTick((elapsed + t) / total, s2, i, scenes.length);
+      await new Promise(r => requestAnimationFrame(r));
+    }
+    elapsed += s2.dur;
+  }
+  // خاتمة: لوحة «تم التصميم» بالملخّص
+  const tEnd = performance.now();
+  while (performance.now() - tEnd < 2600 && !MOV.stop) {
+    V3.orbit(0.012);
+    g.drawImage(src, 0, 0, W, H);
+    movOverlay(g, W, H, scenes[scenes.length - 1], scenes.length - 1,
+      scenes.length, 1, 1, summary);
+    await new Promise(r => requestAnimationFrame(r));
+  }
+  rec.stop();
+  await doneP;
+  MOV = null;
+  return new Blob(chunks, { type: mime.split(';')[0] });
+}
+
+const MOVIE = {
+  run: async () => {
+    const btn = $('#movGo'), st = $('#movState'), bar = $('#movBar');
+    if (MOV) { MOV.stop = true; return; }
+    btn.textContent = '⏹️ إيقاف التسجيل'; btn.classList.add('gh');
+    $('#movOut').innerHTML = '';
+    try {
+      const blob = await movieRun({
+        fps: +(txt('movFps') || 30),
+        bitrate: +(txt('movQ') || 6000000),
+        onTick: (p, s2, i, n) => {
+          if (bar) bar.style.width = (p * 100).toFixed(1) + '%';
+          if (st) st.textContent = 'مشهد ' + (i + 1) + '/' + n + ' — ' + s2.title;
+        } });
+      const url = URL.createObjectURL(blob);
+      const mb = (blob.size / 1048576).toFixed(1);
+      $('#movOut').innerHTML = `
+        <video src="${url}" controls style="width:100%;border-radius:10px;
+          margin-top:10px;background:#000"></video>
+        <div class="row" style="margin-top:8px">
+          <a class="btn" href="${url}" download="بناء-${(WZ.input.area | 0)}م²-${WZ.model.floors}طوابق.webm">
+            ⬇️ نزّل الفيديو (${mb} ميغا)</a>
+          <button class="btn gh" onclick="MOVIE.run()">🎬 سجّل من جديد</button></div>
+        <div class="note">الصيغة WebM — تشتغل بكل المتصفحات وبالواتساب والتلغرام مباشرة.
+          لتحويلها MP4 استعمل أي محوّل، أو ارفعها كما هي.</div>`;
+      if (st) st.textContent = 'تم — ' + mb + ' ميغا';
+    } catch (e) {
+      if (st) st.textContent = 'فشل التسجيل: ' + e.message;
+    }
+    btn.textContent = '🎬 سجّل فيديو البناء';
+    btn.classList.remove('gh');
+    if (bar) bar.style.width = '0%';
+  },
+  panel: (r) => {
+    const n = V3 ? V3.movieScenes().length : 0;
+    const dur = V3 ? V3.movieScenes().reduce((a, s2) => a + s2.dur, 0) + 2.6 : 0;
+    return `
+    <div class="card"><h3>🎬 فيديو البناء — من التربة إلى المبنى كاملاً</h3>
+      <div class="note" style="margin-bottom:10px">يسجّل تسلسل البناء من مجسم
+        <b>مشروعك أنت</b> — لا قالب جاهز: الطبقات الجيولوجية · الحفر والدكّ · الأساس
+        وتسليحه · الأعمدة طابقاً طابقاً · الجسور · السقوف · الدرج · الكانتيليفر ·
+        ثم لقطة أشعة تُظهر الحديد داخل الخرسانة، وتنتهي بدوران حول المبنى كاملاً.
+        <br><b>التسجيل يتم داخل متصفحك</b> — الفيديو لا يُرفع لأي خدمة.</div>
+      <div class="f">
+        ${S('عدد الإطارات/ثانية', 'movFps', [['24', '24 — أخفّ حجماً'],
+          ['30', '30 — متوازن'], ['60', '60 — أنعم']], '30')}
+        ${S('الجودة', 'movQ', [['3000000', 'خفيفة (3 ميغابت)'],
+          ['6000000', 'جيدة (6 ميغابت)'], ['12000000', 'عالية (12 ميغابت)']], '6000000')}
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="movGo" onclick="MOVIE.run()">🎬 سجّل فيديو البناء</button>
+        <span id="movState" style="font-size:12px;color:var(--mut);align-self:center">
+          ${n} مشهد · ${dur.toFixed(0)} ثانية تقريباً</span></div>
+      <div style="height:6px;background:rgba(255,255,255,.08);border-radius:3px;margin-top:8px">
+        <div id="movBar" style="height:100%;width:0%;background:var(--acc);
+          border-radius:3px;transition:width .2s"></div></div>
+      <div id="movOut"></div>
+      ${table(['المشهد', 'ماذا يُعرض', 'المدة'], (V3 ? V3.movieScenes() : []).map(s2 =>
+        [s2.title, s2.sub || '—', s2.dur.toFixed(1) + ' ث']))}
+      <div class="note">أثناء التسجيل تبقى الصفحة مفتوحة والمجسم يتحرّك أمامك — هذا
+        هو ما يُسجَّل بالضبط. لا تبدّل التبويب حتى ينتهي.</div></div>`;
+  }
+};
 
 const TABS = {
   /* ---------- الأشعة الإنشائية على هندسة المشروع نفسه ---------- */
@@ -1474,6 +1704,8 @@ const TABS = {
       <div class="note">الخريطة الكاملة لتطبيق الكود — أي بند مطبَّق وأين بالشيفرة
         وبأي معادلة وما لم يُطبَّق بعد — بملف <code>ACI318.md</code> بجذر المشروع.</div>`;
   },
+  /* ---------- فيديو البناء ---------- */
+  movie: () => { $('#wp_movie').innerHTML = MOVIE.panel(WZ); },
   /* ---------- مخطط DWG/DXF ---------- */
   plan: () => renderPlan(),
 };
@@ -2105,7 +2337,9 @@ PAGES.wizard = {
              ['piles', 'ركائز', r.recommended === 'piles' ? 1 : 0], ['columns', 'أعمدة', 1],
              ['beams', 'جسور', 1], ['slabs', 'سقوف', 1], ['extra', 'تسليح إضافي', 1],
              ['chairs', 'كراسي', 1],
-             ['canti', 'كانتيليفر (شناشيل)', (r.canti && r.canti.on) ? 1 : 0]])}
+             ['canti', 'كانتيليفر (شناشيل)', (r.canti && r.canti.on) ? 1 : 0],
+             ['stairs', 'الدرج وتسليحه',
+               (r.stairs && (r.stairs.flights || []).length) ? 1 : 0]])}
         </div>
         <div class="info" id="v3info"></div>
         <div class="slider"><span style="font-size:11px;color:var(--mut)">قص المقطع</span>
@@ -2120,7 +2354,7 @@ PAGES.wizard = {
 
       <div class="wtabs" id="wtabs">
         ${[['detail', '🧵 التسليح والتفاصيل'], ['aci', '📕 مطابقة ACI 318M-14'],
-           ['xr', '🩻 الأشعة الإنشائية'],
+           ['xr', '🩻 الأشعة الإنشائية'], ['movie', '🎬 فيديو البناء'],
            ['slabs', '🧱 نوع السقف'], ['lab', '🧪 الإنشائيات والتجربة'],
            ['plan', '📐 المخطط (DWG)'], ['boq', '📋 الكميات والحديد']].map(([k, t], i) =>
           `<button data-t="${k}" class="${i ? '' : 'on'}" onclick="wtab('${k}')">${t}</button>`).join('')}
@@ -2128,6 +2362,7 @@ PAGES.wizard = {
       <div class="wpanel" data-t="detail">${detailPanel(r)}</div>
       <div class="wpanel" data-t="aci" hidden><div id="wp_aci" class="note">جارٍ الفحص…</div></div>
       <div class="wpanel" data-t="xr" hidden><div id="wp_xr" class="note">جارٍ التحليل…</div></div>
+      <div class="wpanel" data-t="movie" hidden><div id="wp_movie" class="note">جارٍ التحضير…</div></div>
       <div class="wpanel" data-t="slabs" hidden><div id="wp_slabs" class="note">جارٍ التحميل…</div></div>
       <div class="wpanel" data-t="lab" hidden><div id="wp_lab"></div></div>
       <div class="wpanel" data-t="plan" hidden><div id="wp_plan"></div></div>

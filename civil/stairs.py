@@ -12,6 +12,7 @@
 import math
 import engine as E
 import detail as DT
+import rebar as RB
 
 LIVE_STAIR = 3.0            # kN/m² — حمل حي للأدراج (الكود العراقي)
 W_MARBLE = 27.0             # kN/m³ — مرمر/حجر الدرجات
@@ -49,7 +50,10 @@ def flight(p):
     Vu = wu * span / 2.0
     phiVc = 0.75 * 0.17 * math.sqrt(fc) * 1000.0 * d / 1000.0
     react = wu * span / 2.0 * width               # kN على كل جسر عند طرفي القلبة
-    return dict(steps=steps, tread=tread, rise=rise, width=width, run=round(run, 2),
+    reb = flight_rebar(dict(span=span, run=run, land=land, width=width, waist=waist,
+                            theta=theta, d=d, cov=cov, fc=fc, fy=fy, Mu=Mu,
+                            main=main, dist=dist, rise=rise, tread=tread, steps=steps))
+    return dict(rebar=reb, steps=steps, tread=tread, rise=rise, width=width, run=round(run, 2),
                 landing=land, span=round(span, 2), angle=round(math.degrees(theta), 1),
                 waist=waist, d=round(d, 1), wD=round(wD, 2), wu=round(wu, 2),
                 Mu=round(Mu, 1), As=round(As, 0), main=main, dist=dist,
@@ -73,6 +77,103 @@ def flight(p):
                 note='القلبة تُصمَّم كبلاطة مائلة بسيطة الإسناد بين جسري البسطة والطابق — '
                      'وهو الافتراض المحافظ. الحمل يُحسب على المسقط الأفقي بقسمة وزن الوِتر '
                      'على cos(θ) وإضافة وزن الدرجات المثلثة.')
+
+def flight_rebar(p):
+    """تفصيل حديد قلبة الدرج كاملاً — وهو **أخطر تفصيل بالمبنى يُنفَّذ خطأً**.
+
+    القلبة ليست بلاطة مستقيمة: عندها **انكسار** عند التقاء الوِتر بالبسطة، وهذا
+    الانكسار نوعان ولكل واحد قاعدة معاكسة تماماً:
+
+      * **ركن داخل (Re-entrant corner)** — عند أسفل القلبة حيث تنعطف البلاطة
+        للأعلى. حديد الشدّ هنا بالوجه السفلي، ولو ثُني حول الركن **لدفع الخرسانة
+        إلى الخارج وطيّرها** (محصّلة قوتَي السيخ تتّجه خارج المقطع). فيجب
+        **ألا يُثنى حول الركن أبداً** — بل يُقطع كل سيخ ويُمدّ **مستقيماً** داخل
+        العنصر المقابل بطول رباط كامل ld، فتتقاطع الأسياخ ولا تنعطف.
+      * **ركن خارج** — عند أعلى القلبة. هنا المحصّلة تتّجه **داخل** المقطع
+        فالثني حوله سليم، ويُستعمل الحديد العلوي (Hanger / Top anchor bars).
+
+    والبند الثاني الذي يُنسى: عند الانكسارات يظهر **عزم سالب موضعي** يشدّ الوجه
+    العلوي، فيلزم حديد علوي (شنّاطات) بطول ربع البحر لكل جهة بمقدار **نصف**
+    الحديد الرئيسي على الأقل.
+
+    المصطلحات كما تُسمّى بالمخططات:
+      Main bars · Distribution bars · Hanger bars · Top anchor bars ·
+      Starter bars · Lapping bars · Inclined stirrups
+    """
+    span = float(p['span']); run = float(p['run']); land = float(p['land'])
+    width = float(p['width']); waist = float(p['waist']); th = float(p['theta'])
+    d = float(p['d']); cov = float(p['cov'])
+    fc = float(p['fc']); fy = float(p['fy'])
+    main = p['main']; dist = p['dist']
+    db_m = float(main['db']); db_d = float(dist['db'])
+    cos_t = math.cos(th)
+
+    ld = E.dev_length(db_m, fc, fy)                       # طول الرباط للحديد الرئيسي
+    ld_t = E.dev_length(db_m, fc, fy, top=True)           # علوي (صبّ تحته > 300 مم نادراً)
+    lap = E.lap_length(db_m, fc, fy)                      # وصلة صنف B
+    hk = RB.hook_full(db_m, 90, 'bar')
+    # الحديد العلوي عند الانكسارات: نصف الرئيسي وبطول ربع البحر لكل جهة
+    As_top = 0.5 * main['As']
+    top = E.bar_spacing(As_top, dbs=(10, 12, 16), smax=min(3 * waist, 450.0))
+    top_len = max(span / 4.0, (ld + 300.0) / 1000.0)
+    # أسياخ الانتظار (Starter) من جسر البسطة: تُصبّ مع البسطة وتُوصل بحديد القلبة
+    starter_len = (lap + max(ld, 300.0)) / 1000.0
+    # الطول المائل للسيخ الرئيسي على الوِتر + الجزء الأفقي بالبسطة + النشر
+    slope_len = run / cos_t
+    main_len = slope_len + land + 2.0 * ld / 1000.0
+    n_main = DT.n_bars(width, main['s'] / 1000.0)
+    n_dist = DT.n_bars(slope_len + land, dist['s'] / 1000.0)
+    n_top = DT.n_bars(width, top['s'] / 1000.0)
+    # أساور مائلة: لا تلزم إنشائياً ببلاطة (القص يمرّ بلا حديد قص)، لكنها تُربط
+    # عملياً بالوِتر السميك لتثبيت الشبكتين ومنع طفو العلوية عند الصبّ على ميل.
+    stir = dict(need=waist >= 200.0, db=8, s=300.0,
+                label='أساور ربط Ø8 @ 300 مم' if waist >= 200.0 else 'غير مطلوبة',
+                why='القص بالبلاطة يمرّ بلا حديد قص (ACI 22.5)، والأساور هنا '
+                    '**ربط تنفيذي** تمنع طفو الشبكة العلوية عند الصبّ على ميل — '
+                    'وتلزم عملياً حين يزيد الوِتر عن 200 مم.')
+    return dict(
+        waist=waist, d=d, cover=cov, angle=math.degrees(th),
+        main=dict(dict(main), n=n_main, len=round(main_len, 2), pos='سفلي',
+                  name='Main bars — الحديد الرئيسي',
+                  note='يوضع بالوجه **السفلي** موازياً لميل القلبة، ويستمر داخل '
+                       'البسطة. طوله = %.2f م مائل + %.2f م بسطة + نشر %d مم لكل طرف.'
+                       % (slope_len, land, int(ld))),
+        dist=dict(dict(dist), n=n_dist, len=round(width - 2 * cov / 1000.0, 2),
+                  pos='سفلي فوق الرئيسي',
+                  name='Distribution bars — حديد التوزيع',
+                  note='عمودي على الرئيسي، يوزّع الحمل المركّز ويقاوم الانكماش '
+                       '(ACI 7.7.2.3) — ويُربط فوق الرئيسي لا تحته.'),
+        top=dict(dict(top), n=n_top, len=round(2.0 * top_len, 2), pos='علوي',
+                 name='Hanger / Top anchor bars — الشنّاطات والحديد العلوي',
+                 zone=round(top_len, 2),
+                 note='عند كل انكسار يظهر عزم سالب موضعي يشدّ الوجه العلوي، '
+                      'فيوضع نصف الحديد الرئيسي علوياً بطول %.2f م لكل جهة من '
+                      'الانكسار (ربع البحر أو ld+300 مم أيّهما أكبر).' % top_len),
+        starter=dict(db=int(db_m), s=main['s'], n=n_main, len=round(starter_len, 2),
+                     name='Starter bars — أسياخ الانتظار',
+                     note='تُصبّ مع جسر البسطة وتبرز بطول %.2f م لتُوصل بحديد '
+                          'القلبة (وصلة %d مم + نشر %d مم).'
+                          % (starter_len, int(lap), int(ld))),
+        lap=dict(len=round(lap / 1000.0, 2), db=int(db_m),
+                 name='Lapping bars — الوصلات',
+                 note='وصلة صنف B = 1.3·ld (ACI 25.5.2.1) — وتُوضع **بوسط البحر** '
+                      'حيث العزم السالب صفر، لا عند الانكسار.'),
+        hook=hk, ld=round(ld, 0), ld_top=round(ld_t, 0), lap_len=round(lap, 0),
+        stirrup=stir,
+        corners=[
+            dict(kind='re', name='الركن الداخل (أسفل القلبة)',
+                 rule='**يُمنع** ثني الحديد السفلي حول الركن — يُقطع ويُمدّ مستقيماً '
+                      'داخل العنصر المقابل بطول ld = %d مم، فتتقاطع الأسياخ.' % int(ld),
+                 why='محصّلة قوتَي السيخ عند الركن الداخل تتّجه **خارج** المقطع، '
+                     'فتدفع غطاء الخرسانة وتطيّره وينسلّ السيخ. هذا أشيع سبب '
+                     'لتشقّق أسفل الدرج عند البسطة.'),
+            dict(kind='out', name='الركن الخارج (أعلى القلبة)',
+                 rule='الثني حول الركن مسموح، ويُستعمل الحديد العلوي (Hanger bars) '
+                      'ويُنشر داخل البسطة بطول ld.',
+                 why='المحصّلة هنا تتّجه **داخل** المقطع فتضغط الخرسانة ولا تطيّرها.'),
+        ],
+        clause='ACI 318M-14 7.7 · 25.4 · 25.5.2.1 · 9.7.7')
+
 
 def opening(p):
     """فتحة بالسقف (درج/مصعد/شفت): خصم المساحة + جسور تحديد + حديد تطويق."""

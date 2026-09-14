@@ -2353,7 +2353,7 @@ PAGES.wizard = {
       ${F('قطر العمود الدائري (0=تلقائي)', 'w_colD', 0, 50, 'مم')}
       ${S('قاعدة الأوفرلاب', 'w_lap', (META.lap_modes || []).map(m => [m.k, m.name]), '60db')}
       ${S('قاعدة الدولات (Dowels)', 'w_dow', (META.dowel_modes || []).map(m => [m.k, m.name]), '16db')}
-      ${S('نوع الكرسي', 'w_chair', (META.chairs || []).map(c => [c.k, c.name]), 's135')}
+      ${S('نوع الكرسي', 'w_chair', (META.chairs || []).map(c => [c.k, c.name]), 'z90')}
       ${C('ثني الحديد السفلي 45° عند L/7', 'w_bent', true)}</div>
       <h3 style="margin-top:14px">الكانتيليفر — الشناشيل والبلكونات</h3>
       <div class="f">

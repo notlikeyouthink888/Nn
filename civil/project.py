@@ -371,7 +371,7 @@ def design_column(b, h, Pu, Mu, fc, fy, shape='rect', D=None):
                 conf_label="تطويق Ø%d @ %d مم على مسافة %d مم من كل طرف" % (dbt, int(sc), int(lo)))
     return best
 
-def chairs(Lx, Ly, h_mm, cov, db_top, db_bot, spacing=1.0, kind='s135', cov_bot=None):
+def chairs(Lx, Ly, h_mm, cov, db_top, db_bot, spacing=1.0, kind='z90', cov_bot=None):
     """كراسي دعم الشبكة العلوية — النوع والزاوية والعدد والوزن (detail.chair_layout)."""
     return DT.chair_layout(Lx, Ly, h_mm, cov, cov_bot if cov_bot is not None else cov,
                           db_top, db_bot, kind=kind, spacing=spacing)
@@ -424,7 +424,7 @@ def wizard(p):
     # --- خيارات التفاصيل والتنفيذ ---
     lap_mode = p.get('lap_mode', '60db')
     dowel_mode = p.get('dowel_mode', '16db')
-    chair_kind = p.get('chair_kind', 's135')
+    chair_kind = p.get('chair_kind', 'z90')
     exposure = p.get('exposure', 'interior')
     bent = p.get('bent', True) not in (False, 'false', 0, '0')
     slab_type = p.get('slab_type', 'auto')

@@ -103,37 +103,58 @@ def hook(db, angle=135, kind='tie'):
 
 # ================================ الكراسي ================================
 CHAIRS = [
-    ('z90', 'كرسي Z بزاوية 90°', 'أرجل عمودية — الأبسط تصنيعاً بالموقع'),
-    ('s135', 'كرسي مائل 135°', 'أرجل بميل 45° — أثبت جانبياً وأنسب للشبكات الثقيلة'),
+    ('z90', 'كرسي Z بزاوية 90°', 'أرجل عمودية — الشكل المنفَّذ بالموقع العراقي: '
+     'سيخ واحد يُثنى قدماً ثم رجلاً عمودية ثم عرضة علوية ثم رجلاً وقدماً'),
+    ('s135', 'كرسي مائل 135°', 'أرجل بميل 45° — أثبت جانبياً لكنه يأخذ عرضاً '
+     'يساوي ارتفاعه بكل جهة'),
     ('sb', 'Slab Bolster (SB)', 'كرسي مستمر جاهز — للشبكات الخفيفة والبلاطات'),
     ('ihc', 'High Chair منفرد (IHC)', 'كرسي منفرد جاهز — للحصائر والارتفاعات الكبيرة'),
 ]
 CHAIR_MAP = {c[0]: c for c in CHAIRS}
 
-def chair(kind, height, db=None, top_run=250.0, foot=80.0):
-    """هندسة الكرسي وطول قطعته — الارتفاع بالمليمتر."""
+#: القدم = الجزء الأفقي الذي يستند على الشبكة السفلى ويُربط بها بالسلك.
+#: طولها **ثابت 100 مم** لا نصف تباعد الشبكة: وظيفتها أن تعبر سيخاً سفلياً
+#: واحداً وتُربط عليه، لا أن تمتدّ حتى السيخ التالي. وحين رُبطت بنصف التباعد
+#: صار عرض الكرسي الواحد ١١٠ سم داخل بلاطة سماكتها ٣١ سم — فيبرز عن حافتها.
+FOOT_MM = 100.0
+
+
+def chair(kind, height, db=None, top_run=250.0, foot=FOOT_MM):
+    """هندسة الكرسي وطول قطعته — الارتفاع بالمليمتر.
+
+    المرجع الشكلي هو الكرسي المنفَّذ بالموقع: سيخ واحد بأربع ثنيات، قدمان
+    أفقيتان على الشبكة السفلى ورجلان وعرضة علوية تحمل الشبكة العلوية.
+    ويُرجَع كذلك **نصف عرض الكرسي** `half_w` ليُقصّ عليه التوزيع بالمجسم فلا
+    يخرج طرفه خارج الخرسانة.
+    """
     height = max(50.0, height)
     db = db or (10.0 if height <= 300 else 12.0)
     if kind == 's135':
         leg = height * math.sqrt(2.0)               # ميل 45°
         n_bend, ang = 4, 135
+        run = height                                 # الإزاحة الأفقية للرجل المائلة
     elif kind == 'sb':
         leg = height * 1.15
         n_bend, ang, top_run = 6, 90, 300.0
+        run = 0.0
     elif kind == 'ihc':
         leg = height
         n_bend, ang, foot = 4, 90, 120.0
-    else:                                            # z90
+        run = 0.0
+    else:                                            # z90 — شكل الموقع
         leg = height
         n_bend, ang = 4, 90
+        run = 0.0
     length = (2 * leg + top_run + 2 * foot) / 1000.0  # متر
+    half_w = (top_run / 2.0 + run + foot) / 1000.0    # نصف العرض الكلي بالمتر
     return dict(kind=kind, name=CHAIR_MAP.get(kind, CHAIRS[0])[1], height=height, db=db,
                 leg=leg, angle=ang, bends=n_bend, top_run=top_run, foot=foot,
-                len_each=length,
+                run=run, len_each=length, half_w=half_w,
+                width=2 * half_w,
                 label='%s Ø%d ارتفاع %d مم (زاوية %d°)' % (
                     CHAIR_MAP.get(kind, CHAIRS[0])[1], int(db), int(height), ang))
 
-def chair_layout(Lx, Ly, h, cov_top, cov_bot, db_top, db_bot, kind='s135', spacing=1.0):
+def chair_layout(Lx, Ly, h, cov_top, cov_bot, db_top, db_bot, kind='z90', spacing=1.0):
     """توزيع الكراسي على مساحة: العدد والارتفاع والوزن."""
     ht = max(60.0, h - cov_top - cov_bot - db_top - db_bot)
     c = chair(kind, ht)

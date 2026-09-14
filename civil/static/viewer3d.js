@@ -828,27 +828,58 @@ function Viewer3D(el, M, onPick) {
       return new T.TubeGeometry(new T.CatmullRomCurve3(zz, false, 'catmullrom', 0),
         zz.length * 3, db / 2000, 5, false);
     }
-    const pts = [
-      new T.Vector3(-t2 - run - foot, 0, 0), new T.Vector3(-t2 - run, 0, 0),
-      new T.Vector3(-t2, ht, 0), new T.Vector3(t2, ht, 0),
-      new T.Vector3(t2 + run, 0, 0), new T.Vector3(t2 + run + foot, 0, 0)];
+    /* الشكل المنفَّذ بالموقع (z90): قدم أفقية على الشبكة السفلى · ثنية 90° ·
+       رجل عمودية · ثنية 90° · عرضة علوية تحمل الشبكة العلوية · ثم رجل وقدم.
+       الثنيات **حادّة بنصف قطر حقيقي** لا منحنى ناعم: `CatmullRom` كان يقوّس
+       الرجل كلها فيخرج الكرسي أعرض ممّا يُصنَع فعلاً ويبرز عن حافة البلاطة. */
+    const r = Math.min(2.5 * db / 1000, ht / 3, foot / 2);   // نصف قطر الثنية
+    const pts = [];
+    const push = (x, yv) => pts.push(new T.Vector3(x, yv, 0));
+    push(-t2 - run - foot, 0);                     // طرف القدم اليسرى
+    push(-t2 - run - r, 0);                        // بداية الثنية السفلى
+    push(-t2 - run + (run ? r * .7 : 0), r);       // داخل الثنية
+    push(-t2 - (run ? r * .7 : 0), ht - r);        // أعلى الرجل
+    push(-t2 + r, ht);                             // بداية العرضة
+    push(t2 - r, ht);                              // نهاية العرضة
+    push(t2 + (run ? r * .7 : 0), ht - r);
+    push(t2 + run - (run ? r * .7 : 0), r);
+    push(t2 + run + r, 0);
+    push(t2 + run + foot, 0);                      // طرف القدم اليمنى
     return new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'catmullrom', 0),
-      kind === 's135' ? 28 : 14, db / 2000, 5, false);
+      kind === 's135' ? 30 : 22, db / 2000, 6, false);
   }
-  /* mesh = {sx,sz,x0,z0} خطوط الشبكة السفلى — تُثبّت عليها أقدام الكراسي */
-  function addChairs(x0, z0, lx, lz, sp, ht, db, y, info, ch, snap) {
+  /* mesh = {sx,sz,x0,z0} خطوط الشبكة السفلى — تُثبّت عليها أقدام الكراسي.
+     bound = {x0,z0,lx,lz} حدّ الخرسانة الفعلي الذي **لا يجوز** أن يخرج عنه أي
+     جزء من الكرسي (قد يكون أوسع من شريط التوزيع نفسه). */
+  function addChairs(x0, z0, lx, lz, sp, ht, db, y, info, ch, snap, bound) {
     const pos = [], kind = (ch && ch.kind) || 'z90';
-    // القدم بطول نصف تباعد الشبكة على الأقل حتى تعبر سيخاً سفلياً وتستند عليه
-    const foot = snap ? Math.max((ch && ch.foot) || 80, snap.sx / 2) : ((ch && ch.foot) || 80);
+    const foot = (ch && ch.foot) || 100;
+    // نصف العرض يُقاس من **المجسم نفسه** لا بحساب تقريبي: قوس الثنية ونصف قطر
+    // الأنبوب يزيدان بضعة مليمترات، وهي التي كانت تُبقي طرف القدم خارج الحافة.
+    const geo = chairGeo(kind, ht, db, ch && ch.top_run, foot);
+    geo.computeBoundingBox();
+    const gb = geo.boundingBox;
+    const hw = Math.max(gb.max.x, -gb.min.x), hz = Math.max(gb.max.z, -gb.min.z);
+    const bd = bound || { x0: x0, z0: z0, lx: lx, lz: lz };
+    // الحدّ الذي يجوز أن يقف عليه **مركز** الكرسي حتى يبقى طرفه داخل الخرسانة
+    const xLo = bd.x0 + hw, xHi = bd.x0 + bd.lx - hw;
+    const zLo = bd.z0 + hz, zHi = bd.z0 + bd.lz - hz;
+    if (xHi < xLo || zHi < zLo) return 0;      // العنصر أضيق من كرسي واحد
     const at = (v, v0, st) => st ? v0 + Math.round((v - v0) / st) * st : v;   // تثبيت على خط سيخ
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    const seen = new Set();
     for (let a = sp / 2; a < lx; a += sp) for (let b2 = sp / 2; b2 < lz; b2 += sp) {
-      const X = snap ? at(x0 + a, snap.x0, snap.sx) : x0 + a;
-      const Z = snap ? at(z0 + b2, snap.z0, snap.sz) : z0 + b2;
-      if (X < x0 || X > x0 + lx || Z < z0 || Z > z0 + lz) continue;
+      let X = snap ? at(x0 + a, snap.x0, snap.sx) : x0 + a;
+      let Z = snap ? at(z0 + b2, snap.z0, snap.sz) : z0 + b2;
+      // التثبيت على خط السيخ قد يدفع الكرسي خارج الحافة — يُردّ لأقرب موضع مقبول
+      X = clamp(X, xLo, xHi); Z = clamp(Z, zLo, zHi);
+      const key = X.toFixed(3) + '|' + Z.toFixed(3);
+      if (seen.has(key)) continue;             // الردّ قد يُكرّر موضعاً — لا كرسيّان بمكان
+      seen.add(key);
       pos.push([X, y, Z]);
     }
     const each = (ch && ch.len_each) || (2 * ht + .3);
-    return inst(chairGeo(kind, ht, db, ch && ch.top_run, foot), CHAIR, pos, info,
+    return inst(geo, CHAIR, pos, info,
       G.chairs, pos.length * each * Math.PI * Math.pow(db / 2000, 2) * 7850);
   }
   /* سيخ سفلي مثني 45° عند ln/7 من كل مسند */
@@ -891,7 +922,8 @@ function Viewer3D(el, M, onPick) {
               ['الارتفاع الصافي', Math.round(ht2 * 1000) + ' مم'],
               ['الاستناد', 'القدمان على الشبكة السفلى · العرضة تحمل الشبكة العلوية'],
               ['العدد', fc2.n], ['الوزن', fc2.weight.toFixed(2) + ' طن']] }, fc2,
-          { x0: -rf.Lx / 2, z0: -rf.Ly / 2, sx: rf.bottom.s / 1000, sz: rf.bottom.s / 1000 });
+          { x0: -rf.Lx / 2, z0: -rf.Ly / 2, sx: rf.bottom.s / 1000, sz: rf.bottom.s / 1000 },
+          { x0: -rf.Lx / 2 + .075, z0: -rf.Ly / 2 + .075, lx: rf.Lx - .15, lz: rf.Ly - .15 });
       }
     }
     CURG = 'isolated';
@@ -1141,15 +1173,18 @@ function Viewer3D(el, M, onPick) {
         if (zs && zs.length) {
           zs.forEach((zn, zi) => {
             const w = Math.min(zn.w, zn.dir === 'x' ? B : L);
+            const bnd = { x0: -L / 2 + cvS, z0: -B / 2 + cvS,
+                          lx: L - 2 * cvS, lz: B - 2 * cvS };
             if (zn.dir === 'x')
               addChairs(-L / 2, pz(zn.at) - w / 2, L, w, sch.spacing, htC, sch.db, yBase,
-                zi ? null : cinf(sch.n), sch, snap);
+                zi ? null : cinf(sch.n), sch, snap, bnd);
             else
               addChairs(px(zn.at) - w / 2, -B / 2, w, B, sch.spacing, htC, sch.db, yBase,
-                null, sch, snap);
+                null, sch, snap, bnd);
           });
         } else {
-          addChairs(-L / 2, -B / 2, L, B, sch.spacing, htC, sch.db, yBase, cinf(sch.n), sch, snap);
+          addChairs(-L / 2, -B / 2, L, B, sch.spacing, htC, sch.db, yBase, cinf(sch.n), sch, snap,
+            { x0: -L / 2 + cvS, z0: -B / 2 + cvS, lx: L - 2 * cvS, lz: B - 2 * cvS });
         }
       }
       // ---- التسليح العلوي: أسياخ محدودة فوق المساند تمتد L/4 لكل جهة ----
@@ -2117,6 +2152,51 @@ function Viewer3D(el, M, onPick) {
     rebar: v => { if (v) buildRebar(); G.rebar.visible = v; G.extra.visible = v && on.extra !== 0;
       G.chairs.visible = v && on.chairs !== 0; applyVis(); return visStats(); },
     moments: v => { if (v) buildMoments(); G.moments.visible = v; applyVis(); },
+    /* موضع أول كرسي + كاميرا قريبة — للتحقق البصري من شكل الكرسي */
+    chairSpot: () => { buildRebar();
+      const m4 = new T.Matrix4(), v = new T.Vector3();
+      let r = null;
+      G.chairs.traverse(o => { if (r || !o.isInstancedMesh || !o.count) return;
+        if ((o.userData && o.userData.grp) !== 'slabs') return;
+        o.getMatrixAt(0, m4); v.setFromMatrixPosition(m4); r = [v.x, v.y, v.z]; });
+      return r || [0, 0, 0];
+    },
+    camTo: (c, d) => { cam.position.set(c[0] + d * .75, c[1] + d * .45, c[2] + d * .75);
+      ctl.target.set(c[0], c[1], c[2]); ctl.update(); anim = null; },
+    /* تدقيق الكراسي: أبعد نقطة يبلغها أي كرسي مقابل حدّ الخرسانة */
+    chairAudit: () => {
+      buildRebar();
+      let n = 0, out = 0, worst = 0, w = 0, ht = 0;
+      const m4 = new T.Matrix4(), v = new T.Vector3();
+      G.chairs.traverse(o => {
+        if (!o.isInstancedMesh) return;
+        o.geometry.computeBoundingBox();
+        const g2 = o.geometry.boundingBox;
+        w = Math.max(w, g2.max.x - g2.min.x); ht = Math.max(ht, g2.max.y - g2.min.y);
+        for (let i = 0; i < o.count; i++) {
+          o.getMatrixAt(i, m4); v.setFromMatrixPosition(m4); n++;
+          const raft = (o.userData && o.userData.grp) === 'raft' && rf;
+          const HX = raft ? rf.Lx / 2 : L / 2, HZ = raft ? rf.Ly / 2 : B / 2;
+          const ex = Math.max(Math.abs(v.x) + (g2.max.x - g2.min.x) / 2 - HX,
+                              Math.abs(v.z) + (g2.max.z - g2.min.z) / 2 - HZ);
+          if (ex > 1e-4) { out++; worst = Math.max(worst, ex); }
+        }
+      });
+      return { chairs: n, outside: out, worstOverhang_mm: +(worst * 1000).toFixed(1),
+               chairWidth_mm: +(w * 1000).toFixed(0), chairHeight_mm: +(ht * 1000).toFixed(0),
+               slab: [+L.toFixed(2), +B.toFixed(2)] };
+    },
+    /* صناديق إحاطة المجموعات — للتحقق أن كل رسم داخل الخرسانة لا خارجها */
+    groupBox: k => {
+      buildRebar();
+      const bb = new T.Box3().setFromObject(G[k]);
+      return { x: [+bb.min.x.toFixed(3), +bb.max.x.toFixed(3)],
+               y: [+bb.min.y.toFixed(3), +bb.max.y.toFixed(3)],
+               z: [+bb.min.z.toFixed(3), +bb.max.z.toFixed(3)],
+               bx: [+(-L / 2).toFixed(3), +(L / 2).toFixed(3)],
+               bz: [+(-B / 2).toFixed(3), +(B / 2).toFixed(3)],
+               n: G[k].children.length };
+    },
     /* حدود مغلّف العزوم مقابل حدود المبنى — للتحقق أن الرسم فوق الجسور لا خارجها */
     momentBox: () => {
       buildMoments();

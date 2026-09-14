@@ -626,6 +626,7 @@ function v3bar(o) {
     <button id="btnSite" onclick="toggleSite()">🏗️ وضع البناء</button>
     <button id="btnStress" onclick="toggleStress()">🎨 الشد والضغط</button>
     <button id="btnAdd" onclick="toggleAddCol()">➕ أضف عمود</button>
+    <button id="btnLift" onclick="toggleAddLift()">🛗 أضف مصعد</button>
     <button onclick="V3&&V3.zoomSel()">🔍 تقريب المحدد</button>
     <select id="v3floor" onchange="V3&&V3.floor(this.value==='all'?'all':+this.value)"
       style="width:auto;padding:5px 9px;font-size:11.5px">
@@ -778,6 +779,85 @@ async function addColClear() {
   window.__added_cols = null;
   await PAGES.wizard.run();
   setTimeout(() => { if (ADD_ON) { toggleAddCol(); toggleAddCol(); } showChange(); }, 400);
+}
+
+/* ================== إضافة مصعد — نواة قصّ لا فتحة ==================
+   نفس آليّة إضافة العمود: مؤشّران لموضع مركز البئر، ثم إعادة تصميم كاملة.
+   والفرق أن المصعد **يشارك بالمنشأ**: وزنه ينزل على الأساس، وجدرانه تجذب
+   حصة من القوة الجانبية بنسبة صلابتها، وفتحته تقطع حديد كل سقف. */
+let LIFT_ON = false;
+const LIFT_CAPS = [[320, '320 كغم — 4 ركاب'], [450, '450 كغم — 6 ركاب'],
+  [630, '630 كغم — 8 ركاب (الأشيع سكنياً)'], [800, '800 كغم — 10 ركاب'],
+  [1000, '1000 كغم — 13 راكباً'], [1275, '1275 كغم — 17 راكباً']];
+
+function addLiftPanel() {
+  const e = colExtent(), st = Math.max(0.05, Math.round((e.x1 - e.x0) / 400 * 100) / 100);
+  return `<div class="addbox" id="liftbox" hidden>
+    <div class="pdec-r">
+      <b style="color:var(--acc)">🛗 مصعد جديد</b>
+      <label>السعة</label>
+      <select id="lf_q" onchange="lfGhost()">
+        ${LIFT_CAPS.map(([k, t]) => `<option value="${k}"${k === 630 ? ' selected' : ''}>${t}</option>`).join('')}
+      </select>
+      <label>سماكة الجدار</label>
+      <input type="number" id="lf_t" value="200" step="25" min="150"
+        style="width:78px;padding:5px 8px;font-size:11.5px" oninput="lfGhost()">
+      <span class="pdec-s">مم</span>
+      <span class="sp"></span>
+      <button class="btn" onclick="addLiftCommit()">✅ ثبّت المصعد</button>
+      <button class="btn gh" onclick="dropLift()">🗑️ احذف المصعد</button>
+      <button class="btn gh" onclick="toggleAddLift()">إغلاق</button>
+    </div>
+    <div class="slider"><span style="font-size:11.5px;color:var(--mut);min-width:74px">↔️ المحور X</span>
+      <input type="range" id="lf_x" min="${e.x0}" max="${e.x1}" step="${st}"
+        value="${((e.x0 + e.x1) / 2).toFixed(2)}" oninput="lfGhost()">
+      <b id="lf_xv" style="color:var(--acc2);min-width:70px;font-size:12px"></b></div>
+    <div class="slider"><span style="font-size:11.5px;color:var(--mut);min-width:74px">↕️ المحور Y</span>
+      <input type="range" id="lf_y" min="${e.y0}" max="${e.y1}" step="${st}"
+        value="${((e.y0 + e.y1) / 2).toFixed(2)}" oninput="lfGhost()">
+      <b id="lf_yv" style="color:var(--acc2);min-width:70px;font-size:12px"></b></div>
+    <div class="note" id="lf_note"></div></div>`;
+}
+function lfRead() {
+  const Q = +txt('lf_q') || 630;
+  const sh = { 320: [1.50, 1.60], 450: [1.50, 1.75], 630: [1.60, 1.75],
+               800: [1.80, 1.90], 1000: [1.90, 2.10], 1275: [2.00, 2.30] }[Q];
+  return { Q: Q, x: +$('#lf_x').value, y: +$('#lf_y').value,
+           t: +($('#lf_t') || {}).value || 200, w: sh[0], h: sh[1] };
+}
+function lfGhost() {
+  if (!V3 || !V3.ghost) return;
+  const o = lfRead();
+  $('#lf_xv').textContent = nf(o.x, 2) + ' م';
+  $('#lf_yv').textContent = nf(o.y, 2) + ' م';
+  const n = $('#lf_note');
+  if (n) n.innerHTML = `بئر <b>${nf(o.w, 2)} × ${nf(o.h, 2)} م</b> داخلي، جدار
+    <b>${int(o.t)} مم</b> — النواة تُبنى بكامل الارتفاع وتنزل بحفرة (Pit) تحت
+    منسوب التأسيس. حرّك المؤشّرين لمركز البئر ثم اضغط «ثبّت المصعد».`;
+  V3.ghost({ x: o.x, y: o.y, shape: 'rect', b: (o.w + o.t / 1000) * 1000,
+             h: (o.h + o.t / 1000) * 1000, form: 'rect' });
+}
+function toggleAddLift() {
+  const bx = $('#liftbox');
+  if (!bx) return;
+  LIFT_ON = !LIFT_ON;
+  bx.hidden = !LIFT_ON;
+  tgl('btnLift', LIFT_ON);
+  if (LIFT_ON) lfGhost(); else if (V3 && V3.ghost) V3.ghost(null);
+}
+async function addLiftCommit() {
+  const o = lfRead();
+  window.__elevator = o;
+  msgTop('🛗 أُضيف مصعد ' + o.Q + ' كغم عند (' + nf(o.x, 2) + ' , ' + nf(o.y, 2)
+    + ') — يُعاد التصميم بحمله وصلابته وفتحته…');
+  await PAGES.wizard.run();
+  setTimeout(() => { if (LIFT_ON) { toggleAddLift(); toggleAddLift(); } showChange(); }, 400);
+}
+async function dropLift() {
+  if (!window.__elevator) return;
+  window.__elevator = null;
+  await PAGES.wizard.run();
+  setTimeout(() => { if (LIFT_ON) { toggleAddLift(); toggleAddLift(); } showChange(); }, 400);
 }
 
 function msgTop(t) {
@@ -1007,6 +1087,7 @@ function detailPanel(r) {
           <br>المختار: <b>${r.model.slab.name}</b> بسماكة ${int(r.model.slab.h)} مم ووزن ذاتي
           ${nf(r.floor.slab_sw, 2)} kN/m².
           <button class="btn gh" style="margin-top:8px" onclick="wtab('slabs')">قارن كل الأنواع بالتفصيل</button></div></div>
+      ${liftPanel(r)}
       ${fieldPanel(r)}
       ${extraPanel(r)}
       ${tiePanel(r)}
@@ -1255,6 +1336,174 @@ function cantiPanel(r) {
         ])}`).join('')}
       <div class="note">${c.note}<br>شغّل <b>«التسليح»</b> بالمجسم واختر طبقة
         <b>«كانتيليفر (شناشيل)»</b> لترى الحديد الأصفر بالأعلى والأزرق بالأسفل بعينك.</div></div>`;
+}
+
+/* ============ أنواع الإجهادات على الخرسانة — الأشكال الخمسة ============
+   ما الذي يحصل للعنصر فعلاً تحت كل نمط: الضغط يقصّره ويُكرّشه، والشدّ يطيله
+   ويشقّقه عرضياً، والانحناء يقوّسه فيُشدّ وجه ويُضغط الآخر، والقص يُزحلق مقطعاً
+   على مقطع فيشقّ قطرياً 45°، والالتواء يلويه حول محوره فيشقّ حلزونياً.
+   الرسم توضيحي للشكل، والأرقام إلى جانبه من التحليل. */
+const STRESS_ART = {
+  compression: { name: 'إجهاد الضغط', color: '#60a5fa',
+    what: 'الحمل المحوري يقصّر العنصر ويُنتّئ جوانبه. الخرسانة قوية هنا — '
+        + 'لكن إن طال العنصر ونحف **انبعج** قبل أن يُسحق، والانبعاج انهيار مفاجئ بلا إنذار.',
+    fail: 'تقشّر الغطاء ثم سحق الخرسانة وانبعاج الأسياخ الطولية بين الأساور — '
+        + 'ولهذا تُقارب الأساور عند طرفي العمود.' },
+  tension: { name: 'إجهاد الشدّ', color: '#f87171',
+    what: 'الحمل يطيل العنصر. مقاومة الخرسانة للشدّ ≈ عُشر مقاومتها للضغط، '
+        + 'فتُهمل كلياً بالتصميم و**الحديد وحده** يقاوم الشدّ.',
+    fail: 'شقوق عرضية عمودية على اتجاه الشدّ، متقاربة ومنتظمة — وعرضها يُتحكَّم '
+        + 'به بتباعد الأسياخ (24.3.2) لا بمقاومتها.' },
+  bending: { name: 'عزم الانحناء', color: '#facc15',
+    what: 'العزم يقوّس العنصر: وجه يُشدّ ووجه يُضغط ومحور محايد بينهما. **إشارة '
+        + 'العزم تقرّر أي وجه يُشدّ** — وهناك يوضع الحديد.',
+    fail: 'شقوق شاقولية تبدأ من الوجه المشدود وتصعد نحو المحور المحايد — أوسعها '
+        + 'بوسط البحر للعزم الموجب، وفوق المسند للسالب.' },
+  shear: { name: 'إجهاد القص', color: '#fb923c',
+    what: 'مقطع ينزلق على مقطع مجاوره. الإجهاد الرئيسي الناتج **قطري**، '
+        + 'ولهذا يشقّ القص بزاوية 45° لا شاقولياً.',
+    fail: 'شقّ قطري مائل قرب المسند يمتدّ بسرعة — **انهيار هشّ بلا إنذار**، '
+        + 'ولهذا تُصمَّم الأساور لتعبر الشقّ المائل وتخيطه.' },
+  torsion: { name: 'عزم الالتواء (الدوران)', color: '#a78bfa',
+    what: 'العزم يلوي العنصر حول محوره الطولي، فتدور المقاطع بعضها على بعض '
+        + 'ويعمل المقطع كأنبوب مجوّف مغلق (22.7).',
+    fail: 'شقوق حلزونية تلفّ حول العنصر بزاوية 45° وتغيّر اتجاهها بكل وجه — '
+        + 'ولا يقاومها إلا **أساور مغلقة** + حديد طولي موزّع على المحيط.' },
+  buckling: { name: 'ضغط وانبعاج', color: '#60a5fa', alias: 'compression' },
+};
+function stressSvg(mode, on, col) {
+  const c = on ? col : '#475569', w = on ? 2.6 : 1.8, o = on ? 1 : .5;
+  const body = { fill: on ? col + '22' : '#1e293b', stroke: c };
+  const A = (x1, y1, x2, y2) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"
+      stroke="${c}" stroke-width="${w}" marker-end="url(#ar${on ? 1 : 0})"/>`;
+  const shapes = {
+    // ضغط: منشور مُنتّئ الجانبين + سهمان للداخل
+    compression: `<path d="M22 30 Q10 60 22 90 L58 90 Q70 60 58 30 Z"
+        fill="${body.fill}" stroke="${c}" stroke-width="${w}"/>
+      ${A(40, 6, 40, 26)}${A(40, 114, 40, 94)}`,
+    // شدّ: منشور مخصور + سهمان للخارج
+    tension: `<path d="M22 30 Q34 60 22 90 L58 90 Q46 60 58 30 Z"
+        fill="${body.fill}" stroke="${c}" stroke-width="${w}"/>
+      ${A(40, 28, 40, 6)}${A(40, 92, 40, 114)}`,
+    // انحناء: جائز مقوّس — الوجه العلوي مضغوط والسفلي مشدود، وعزمان بالطرفين
+    bending: `<path d="M10 52 Q40 20 70 52 L70 74 Q40 42 10 74 Z"
+        fill="${body.fill}" stroke="${c}" stroke-width="${w}"/>
+      <path d="M40 34 Q40 34 40 34" fill="none"/>
+      ${A(12, 40, 12, 24)}${A(68, 40, 68, 24)}
+      <text x="40" y="32" text-anchor="middle" font-size="11" fill="${c}"
+        font-weight="700" opacity="${on ? 1 : .6}">ضغط</text>
+      <text x="40" y="96" text-anchor="middle" font-size="11" fill="${c}"
+        font-weight="700" opacity="${on ? 1 : .6}">شدّ</text>
+      <line x1="10" y1="63" x2="70" y2="63" stroke="${c}" stroke-width="1.2"
+        stroke-dasharray="4 3" opacity=".7"/>
+      <path d="M14 86 Q40 58 66 86" fill="none" stroke="${c}" stroke-width="1.4"
+        stroke-dasharray="3 3" opacity=".55"/>`,
+    // قص: متوازي أضلاع مُزاح + سهمان متعاكسان
+    shear: `<path d="M18 88 L34 32 L64 32 L48 88 Z"
+        fill="${body.fill}" stroke="${c}" stroke-width="${w}"/>
+      ${A(20, 24, 62, 24)}${A(60, 98, 18, 98)}
+      <line x1="24" y1="80" x2="58" y2="40" stroke="${c}" stroke-width="1.4"
+        stroke-dasharray="4 3" opacity=".8"/>`,
+    // التواء: منشور ملتوٍ (ساعة رملية) + سهم دائري
+    torsion: `<path d="M22 30 L58 30 L30 60 L58 90 L22 90 L50 60 Z"
+        fill="${body.fill}" stroke="${c}" stroke-width="${w}"/>
+      <path d="M24 20 A18 9 0 1 1 56 20" fill="none" stroke="${c}"
+        stroke-width="${w}" marker-end="url(#ar${on ? 1 : 0})"/>`,
+  };
+  const k = (STRESS_ART[mode] || {}).alias || mode;
+  return `<svg viewBox="0 0 80 124" width="76" height="118" style="opacity:${o}">
+    <defs><marker id="ar${on ? 1 : 0}" markerUnits="userSpaceOnUse" markerWidth="11"
+      markerHeight="11" refX="9" refY="5" orient="auto">
+      <path d="M0,0.6 L10,5 L0,9.4 Z" fill="${c}"/></marker></defs>
+    ${shapes[k] || shapes.bending}</svg>`;
+}
+/* بطاقات الإجهادات الخمس — الحاكم منها مُبرَز */
+function stressCards(active, ratios) {
+  const ks = ['compression', 'tension', 'bending', 'shear', 'torsion'];
+  const norm = m => m === 'buckling' ? 'compression' : m;
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">
+    ${ks.map(k => {
+      const on = norm(active) === k;
+      const a = STRESS_ART[k];
+      const rk = k === 'compression' ? 'buckling' : k;
+      const rv = ratios ? ratios[rk] : null;
+      return `<div style="flex:1 1 150px;min-width:150px;max-width:230px;border-radius:10px;
+          padding:10px;border:1px solid ${on ? a.color : 'var(--bd,#25344d)'};
+          background:${on ? a.color + '14' : 'transparent'}">
+        <div style="text-align:center">${stressSvg(k, on, a.color)}</div>
+        <div style="text-align:center;font-weight:700;font-size:13px;margin-top:4px;
+          color:${on ? a.color : 'var(--mut)'}">${a.name}${on ? ' ◄' : ''}</div>
+        ${rv !== null && rv !== undefined ? `<div style="text-align:center;font-size:12px;
+          margin-top:3px">النسبة <b style="color:${rcol(rv)}">${nf(rv, 2)}</b></div>` : ''}
+        <div style="font-size:11.5px;line-height:1.75;color:var(--mut);margin-top:6px">${a.what}</div>
+        <div style="font-size:11.5px;line-height:1.75;margin-top:6px">
+          <b style="color:${a.color}">شكل الفشل:</b> <span style="color:var(--mut)">${a.fail}</span></div>
+      </div>`;
+    }).join('')}</div>`;
+}
+
+/* ---------- المصعد: نواة قصّ بحملها وعزمها وتسليحها ---------- */
+function liftPanel(r) {
+  const e = r.model && r.model.elevator;
+  if (!e) return '';
+  const w = e.wall, rg = e.rigidity, L = e.loads, y = ok => ok
+    ? '<span class="tag t-ok">مقبول</span>' : '<span class="tag t-bad">راجع</span>';
+  return `
+    <div class="card"><h3>🛗 المصعد — نواة قصّ لا فتحة بالسقف</h3>
+      <div class="grid g4">
+        ${kpi('السعة', e.Q + ' كغم · ' + e.persons + ' راكب')}
+        ${kpi('البئر الداخلي', nf(e.w, 2) + ' × ' + nf(e.h, 2) + ' م')}
+        ${kpi('سماكة الجدار', int(e.t) + ' مم')}
+        ${kpi('ارتفاع النواة', nf(e.H, 2) + ' م')}
+        ${kpi('حصة النواة من القوة الجانبية', nf(rg.share * 100, 0) + '%',
+          rg.share > 0.5 ? 'bad' : 'ok')}
+        ${kpi('الحمل على أساس الجدران', int(e.on_found) + ' kN')}
+        ${kpi('الحمل على قاع البئر', int(e.on_pit) + ' kN')}
+        ${kpi('عمق الحفرة (Pit)', nf(e.pit, 2) + ' م')}</div>
+
+      <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        ١ · أحماله الخاصّة — لا علاقة لها بحمل السقف</h4>
+      ${table(['البند', 'القيمة'], L.rows.map(x => [x[0], x[1]]))}
+      <div class="note">${L.note}</div>
+
+      <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        ٢ · لماذا يغيّر المصعد التحليل كله</h4>
+      <div class="note" style="border-right:3px solid #facc15">${rg.note}</div>
+      ${table(['البند', 'القيمة'], [
+        ['مقطع النواة (صندوق مغلق)', 'A = ' + nf(e.section.A, 3) + ' م² · Ix = ' +
+          nf(e.section.Ix, 3) + ' م⁴ · Iy = ' + nf(e.section.Iy, 3) + ' م⁴'],
+        ['ثابت الالتواء J (Bredt)', nf(e.section.J, 3) + ' م⁴ — المقطع **مغلق** '
+          + 'فالتواؤه أكبر من مقطع مفتوح بمراتب'],
+        ['قص المستوى على الجدار Vu', int(w.Vu) + ' kN'],
+        ['عزم القلب بالمستوى Mu', int(w.Mu) + ' kN·م'],
+      ])}
+
+      <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        ٣ · تصميم الجدار — ACI 318M-14 الفصل 11</h4>
+      ${table(['البند', 'القيمة'], w.rows.map(x => [x[0], x[1]]))}
+      <div class="grid g4" style="margin-top:8px">
+        ${kpi('المحوري', y(w.ok_axial), w.ok_axial ? 'ok' : 'bad')}
+        ${kpi('حدّ مقطع القص', y(w.ok_section), w.ok_section ? 'ok' : 'bad')}
+        ${kpi('عنصر حدّ مطوَّق', w.need_boundary ? 'مطلوب (18.10.6.3)' : 'غير مطلوب',
+          w.need_boundary ? 'bad' : 'ok')}
+        ${kpi('عدد الشبكات', w.two_layers ? 'شبكتان' : 'شبكة واحدة')}</div>
+
+      <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        ٤ · فتحة البئر بكل سقف — الحديد المقطوع يُعوَّض</h4>
+      ${table(['البند', 'القيمة'], e.opening.rows.map(x => [x[0], x[1]]))}
+      <div class="note">${e.opening.note}</div>
+
+      <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        ٥ · قاع البئر (Pit)</h4>
+      ${table(['البند', 'القيمة'], [
+        ['العمق تحت أدنى منسوب وقوف', nf(e.pit_slab.depth, 2) + ' م'],
+        ['سماكة البلاطة', int(e.pit_slab.t) + ' مم'],
+        ['صدم المصدّ Vu', int(e.pit_slab.Vu) + ' kN'],
+        ['مقاومة الثقب φVc', int(e.pit_slab.phiVc) + ' kN ' + y(e.pit_slab.ok)],
+        ['الارتفاع العلوي (Overrun)', nf(e.over, 2) + ' م فوق أعلى منسوب وقوف'],
+      ])}
+      <div class="note">${e.note}</div>
+      <div class="note" style="border-right:3px solid #f87171">⚠️ ${e.supplier}</div></div>`;
 }
 
 /* ---------- حقل العزوم: يختلف بكل نظام سقف، وكل موضع مكتوب بقيمته ---------- */
@@ -2278,6 +2527,30 @@ function renderLab(r) {
       ${kpi('أشد عنصر متأثر', worst ? (KIND_AR[worst.tag] || worst.tag) + ' ' + nf(worst.after, 2) : '—',
         worst && worst.after > 1 ? 'bad' : 'ok')}</div>
     <div class="note" style="margin-top:12px">${r.base_note || ''}</div>
+    ${worst ? `<div class="card" style="margin-top:14px">
+      <h3>🧱 ماذا يحصل للعنصر — أنواع الإجهادات الخمسة</h3>
+      <div class="note" style="margin-bottom:10px">أشدّ عنصر متأثر:
+        <b>${KIND_AR[worst.tag] || worst.tag}</b> عند المحور (${worst.key[1]}, ${worst.key[2]})
+        طابق ${worst.story} — النمط الحاكم بعد الحذف <b>${worst.mode_ar}</b>${
+          worst.mode_before && worst.mode_before !== worst.mode
+            ? ' (وكان قبله ' + worst.mode_before_ar + ' — <b>تغيّر نمط الفشل نفسه</b>)' : ''}.</div>
+      ${stressCards(worst.mode, worst.modes)}</div>` : ''}
+    ${worst ? `<div class="card" style="margin-top:14px">
+      <h3>📈 كيف تغيّرت العزوم والقوى فعلاً — بالأرقام لا بالنسب</h3>
+      ${table(['العنصر', 'المحور', 'طابق', 'العزم M (kN·م)', 'القص V (kN)',
+               'الالتواء T (kN·م)', 'المحوري N (kN)'],
+        rows.slice(0, 14).map(x => [KIND_AR[x.tag] || x.tag,
+          '(' + x.key[1] + ', ' + x.key[2] + ')', x.story,
+          `${nf(x.M0, 1)} ← <b style="color:${x.dM > 0 ? '#f87171' : '#34d399'}">${nf(x.M, 1)}</b>` +
+            (x.xM ? ` <span style="color:var(--mut);font-size:11px">(×${nf(x.xM, 2)})</span>` : ''),
+          `${nf(x.V0, 1)} ← <b>${nf(x.V, 1)}</b>`,
+          `${nf(x.T0, 2)} ← <b>${nf(x.T, 2)}</b>`,
+          `${nf(x.N0, 0)} ← <b>${nf(x.N, 0)}</b>`]))}
+      <div class="note"><b>لماذا تقفز العزوم:</b> العمود المحذوف كان مسنداً، وبزواله
+        يصير البحران المجاوران بحراً واحداً طوله الضعف. وعزم الانحناء يتناسب مع
+        <b>مربّع</b> البحر، فمضاعفة البحر تُربّع العزم تقريباً — ولهذا ترى أضعافاً لا
+        نسباً مئوية. والحمل نفسه لم يزد ولم ينقص، بل <b>انتقل</b>: مجموع العزوم
+        يرتفع لأن المسار البديل أطول وأقل كفاءة.</div></div>` : ''}
     <div class="card" style="margin-top:14px"><h3>العناصر الأكثر تأثراً (${rows.length})</h3>
       <div style="max-height:430px;overflow:auto">${table(
         ['العنصر', 'المحور', 'طابق', 'قبل', 'بعد', 'الفرق', 'النمط الحاكم',
@@ -2445,6 +2718,7 @@ PAGES.wizard = {
     dowel_mode: txt('w_dow'), chair_kind: txt('w_chair'), bent: chk('w_bent'),
     col_shape: txt('w_shape'), col_D: val('w_colD') || null,
     added_cols: window.__added_cols || null,
+    elevator: window.__elevator || null,
     hordi: { block_W: val('w_bw'), block_L: val('w_bl'), block_H: val('w_bh'),
       rib_w: val('w_rw'), topping: val('w_tp'), block_kg: val('w_bk') },
     grid_override: window.__grid_override || null,
@@ -2531,7 +2805,7 @@ PAGES.wizard = {
           <input type="range" id="v3clip" min="-30" max="40" step="0.2">
           <span id="v3stats" style="font-size:11px;color:var(--acc2)"></span></div>
       </div>
-      ${addColPanel()}
+      ${addColPanel()}${addLiftPanel()}
       ${v3legend()}
       <div class="hint">اسحب للتدوير · العجلة للتكبير · <b>ضغطة واحدة = اختيار وعرض التفاصيل (بلا تحريك الكاميرا)
         · ضغطتان أو «تقريب المحدد» = تقريب متحرك.</b> زر «🧍 إنسان 1.85 م» يضع شخصاً بالحجم الطبيعي للمقارنة،

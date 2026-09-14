@@ -13,6 +13,7 @@ import rebar as RB
 import slabs as SL
 import stairs as ST
 import moments as MO
+import elevator as EV
 import plan as PL
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'projects')
@@ -847,6 +848,25 @@ def wizard(p):
                                    if _sysk == 'hordi' else None,
                            rib_spacing=_gm.get('spacing'), rib_w=_gm.get('rib_w')))
 
+    # ------------------------- المصعد (نواة قصّ) -------------------------
+    # ليس فتحة بالسقف: جدرانه تجذب حصة من القوة الجانبية بنسبة صلابتها،
+    # وله أحماله الخاصّة، وفتحته تقطع حديد كل سقف.
+    elev = None
+    ein = p.get('elevator') or None
+    if ein and (ein.get('on') is not False):
+        _sec = EV.core_section(float(ein.get('w') or 1.6), float(ein.get('h') or 1.75),
+                               float(ein.get('t') or 200.0))
+        _rig = EV.rigidity(_sec, len(loads), cb, ch)
+        _V = float(seis.get('V') or 0.0)      # قص القاعدة الزلزالي الفعلي
+        elev = EV.design(dict(ein, story_h=hs, floors=floors, fc=fc, fy=fy,
+                              slab_h=slab['h'], span=min(g['sx'], g['sy']),
+                              mesh_db=slab['mesh']['short']['db'],
+                              mesh_s=slab['mesh']['short']['s'],
+                              V_core=_rig['share'] * _V))
+        elev['rigidity'] = _rig
+        elev['x'] = float(ein.get('x') or g['sx'] / 2.0)
+        elev['y'] = float(ein.get('y') or g['sy'] / 2.0)
+
     layout = slab_layout(g['L'], g['B'], slab['mesh'], slab['cover'], slab.get('geom'),
                          laps.get(int(slab['mesh']['short']['db']), {}).get('bottom', 0.0))
 
@@ -879,7 +899,7 @@ def wizard(p):
                   extra=dict(corner=dict(db=slab['mesh']['top']['db'],
                                          s=slab['mesh']['top']['s'], size=0.2),
                              integrity=dict(n=2, db=slab['mesh']['short']['db']))),
-        found=dict(mode=rec, chairs=ch_found),
+        found=dict(mode=rec, chairs=ch_found), elevator=elev,
         plan=p.get('plan_view'),
         canti=canti,
         frame=(dict(fo, source='plan') if fo else None),

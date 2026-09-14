@@ -181,8 +181,16 @@ def compare(sp):
         row = dict(key=list(k), tag=a['tag'], story=a['story'],
                    before=b['ratio'], after=a['ratio'], delta=d,
                    mode=a['mode'], mode_ar=a['mode_ar'], fail=a['ratio'] > 1.0,
+                   mode_before=b['mode'], mode_before_ar=b['mode_ar'],
                    M=a['M'], V=a['V'], T=a['T'], N=a['N'],
-                   modes={m: round(a.get(m, 0.0), 3) for m, _ in MODES})
+                   # القوى **نفسها** قبل الحذف وبعده — لا نسب الاستغلال فقط.
+                   # سؤال «كيف تتغيّر العزوم؟» لا يُجاب بنسبة، يُجاب بـ kN·م.
+                   M0=b['M'], V0=b['V'], T0=b['T'], N0=b['N'],
+                   dM=a['M'] - b['M'], dV=a['V'] - b['V'],
+                   dT=a['T'] - b['T'], dN=a['N'] - b['N'],
+                   xM=(a['M'] / b['M']) if abs(b['M']) > 1e-6 else None,
+                   modes={m: round(a.get(m, 0.0), 3) for m, _ in MODES},
+                   modes0={m: round(b.get(m, 0.0), 3) for m, _ in MODES})
         rows.append(row)
         if worst is None or a['ratio'] > worst['after']:
             worst = row
@@ -207,6 +215,19 @@ def compare(sp):
         for r in fails:
             by[r['mode_ar']] = by.get(r['mode_ar'], 0) + 1
         summary.append('أنماط الفشل: ' + ' · '.join('%s (%d عنصر)' % (k2, v) for k2, v in by.items()))
+    # كيف تغيّرت **العزوم** نفسها — لا نسب الاستغلال
+    bigM = sorted([r for r in rows if r['M0'] > 1.0], key=lambda r: -(r['xM'] or 0))
+    if bigM:
+        t0 = bigM[0]
+        summary.append('أكبر قفزة بالعزم: %s عند المحور (%d, %d) طابق %d — '
+                       'العزم %.1f → %.1f kN·م أي **%.2f ضعف**'
+                       % (KA.get(t0['tag'], t0['tag']), t0['key'][1], t0['key'][2],
+                          t0['story'], t0['M0'], t0['M'], t0['xM'] or 0))
+        sM0 = sum(r['M0'] for r in rows); sM = sum(r['M'] for r in rows)
+        if sM0 > 1.0:
+            summary.append('مجموع عزوم العناصر المتأثرة %.0f → %.0f kN·م '
+                           '(%+.0f%%) — الحمل لم يختفِ، **انتقل** لمسار بديل'
+                           % (sM0, sM, (sM / sM0 - 1) * 100))
     if worst:
         summary.append('أشد عنصر متأثر: %s طابق %d — النسبة %.2f → %.2f (%s)' % (
             {'col': 'عمود', 'bx': 'جسر X', 'by': 'جسر Y'}.get(worst['tag'], worst['tag']),

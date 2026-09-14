@@ -595,6 +595,7 @@ function Viewer3D(el, M, onPick) {
               floor: s, rows: sh.rows.map(r => [r[0], r[1]]) }));
       });
     }
+    buildLift();
     const bxs = md.beams.x, bys = md.beams.y;
     const edgeOnly = !!((md.slab.geom || {}).edge_beams_only);
     // هيكل المخطط الحقيقي إن وُجد، وإلا مولّد الشبكة المنتظمة كما هو
@@ -643,6 +644,39 @@ function Viewer3D(el, M, onPick) {
       // التلقائية أيضاً، فالمشروع بلا مخطط يرى درجه وتسليحه كذلك.
       buildStairs(z, s, px, pz);
     }
+  }
+
+  /* ===================== نواة المصعد — جدران بكامل الارتفاع =====================
+     تُرسم من قاع الحفرة (Pit) تحت منسوب التأسيس حتى أعلى البئر، لا كفتحة
+     بالسقف: أربعة جدران متصلة تشكّل صندوقاً مغلقاً هو أقسى عنصر بالمبنى. */
+  function buildLift() {
+    const e = md.elevator;
+    if (!e || ROOM) return;
+    const t2 = e.t / 1000, X = MAPX(e.x), Z = MAPZ(e.y);
+    const yBot = fb - (e.pit || 1.5);                     // قاع الحفرة
+    const yTop = nf * hs + (e.over || 3.6);               // أعلى البئر
+    const rows = [['السعة', e.Q + ' كغم · ' + e.persons + ' راكب'],
+      ['البئر الداخلي', e.w.toFixed(2) + ' × ' + e.h.toFixed(2) + ' م'],
+      ['سماكة الجدار', Math.round(e.t) + ' مم'],
+      ['حصة النواة من القوة الجانبية', Math.round(e.rigidity.share * 100) + '%'],
+      ['الحديد الرأسي', e.wall.vert.label], ['الحديد الأفقي', e.wall.horiz.label],
+      ['عمق الحفرة', (e.pit || 0).toFixed(2) + ' م'],
+      ['الارتفاع العلوي', (e.over || 0).toFixed(2) + ' م'],
+      ['الحمل على الأساس', Math.round(e.on_found) + ' kN']];
+    const H = yTop - yBot;
+    [[e.w + t2, t2, 0, -(e.h + t2) / 2], [e.w + t2, t2, 0, (e.h + t2) / 2],
+     [t2, e.h + t2, -(e.w + t2) / 2, 0], [t2, e.h + t2, (e.w + t2) / 2, 0]]
+      .forEach(([ww, dd, ax, az], k) =>
+        box(G.walls, ww, H, dd, X + ax, yBot + H / 2, Z + az, 0x8fa3bd, 1,
+          k ? null : { title: 'نواة المصعد — جدران قصّ', kind: 'lift', grp: 'walls',
+            rows: rows }));
+    // بلاطة قاع البئر
+    box(G.walls, e.w + 2 * t2, e.pit_slab.t / 1000, e.h + 2 * t2, X,
+      yBot + e.pit_slab.t / 2000, Z, 0x6f86a6, 1,
+      { title: 'بلاطة قاع بئر المصعد', kind: 'lift', grp: 'walls',
+        rows: [['السماكة', Math.round(e.pit_slab.t) + ' مم'],
+          ['صدم المصدّ', Math.round(e.pit_slab.Vu) + ' kN'],
+          ['مقاومة الثقب φVc', Math.round(e.pit_slab.phiVc) + ' kN']] });
   }
 
   /* ============================== التسليح ============================== */

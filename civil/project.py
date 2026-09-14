@@ -652,8 +652,27 @@ def wizard(p):
                                          'علوياً أطول بالجسر الطرفي')))
 
     # ------------------------- بدائل الأساس -------------------------
-    adv = F.advisor(dict(loads=Ps, qa=qa, footprint=fp, floors=floors, Df=Df,
-                         spacing=min(g['sx'], g['sy'])))
+    # حقائق التربة التي يقرأها جدولا القرار (النطاق والركائز) — تُمرَّر كاملة،
+    # فقد كانت تُحسب بالمعالج ولا تصل المستشار، فيقرّر بنصف المعطيات.
+    # عمق الطبقة الحاملة تحت قاعدة الأساس — من نفس العمود الجيولوجي المرسوم،
+    # يحدّ سُمك الطبقة الانضغاطية بحساب الهبوط ويحدّد طول الركيزة معاً.
+    _beds0 = bed_column(soil_kind, top=ground, depth=40.0, qa=qa,
+                        gypseous=bool(p.get('gypseous')), fill_thk=old_depth)
+    _fb0 = ground - Df
+    _comp = next((b for b in _beds0 if b['bottom'] < _fb0 - 0.05
+                  and (b['qa'] or 0) >= F.COMPETENT_QA), None)
+    # None = لا طبقة حاملة ضمن المجسوس · 0 = الأساس جالس داخلها أصلاً
+    comp_depth = max(0.0, _fb0 - float(_comp['top'])) if _comp else None
+    soil_facts = dict(soil=soil_name, soil_kind=soil_kind, gwt=p.get('gwt'),
+                      comp_depth=comp_depth, comp_bed=(_comp or {}).get('name'),
+                      gypseous=bool(p.get('gypseous')),
+                      expansive=bool(p.get('expansive')),
+                      salts=bool(p.get('salts')),
+                      uplift=bool(p.get('uplift')),
+                      bear_thk=float(p.get('bear_thk') or 0.0),
+                      weak_below=bool(p.get('weak_below')))
+    adv = F.advisor(dict(soil_facts, loads=Ps, qa=qa, footprint=fp, floors=floors,
+                         Df=Df, spacing=min(g['sx'], g['sy'])))
     q_net = adv['q_net'] or 1.0
 
     des_i = E.footing_module(dict(PD=Pmax * 0.7, PL=Pmax * 0.3, qa=qa, fc=fc, fy=fy,
@@ -675,16 +694,17 @@ def wizard(p):
 
     cu = float(p.get('cu') or max(20.0, qa * 0.58))
     Nspt = float(p.get('N') or max(5.0, qa / 10.0))
-    cand = [(0.6, 15), (0.6, 20), (0.8, 20), (0.8, 25), (1.0, 25), (1.0, 30), (1.2, 30)]
-    if p.get('pile_D'):
-        cand = [(float(p['pile_D']), float(p.get('pile_L', 15)))]
-    pl = None
-    for Dp, Lp in cand:
-        pl = F.pile(dict(soil='clay' if soil_kind == 'clay' else 'sand', cu=cu, N=Nspt,
-                         D=Dp, L=Lp, P=Pmax, kind=p.get('pile_kind', 'bored'),
-                         fc=fc, fy=fy, cx=cb))
-        if pl['n'] <= 6:
-            break
+    pile_kind = p.get('pile_kind', 'bored')
+    psoil = 'clay' if soil_kind == 'clay' else 'sand'
+    # الطول من الطبقات المرسومة تحت المبنى نفسها، والقطر من أثقل عمود —
+    # بدل (0.6 م · 15 م) المكتوبتين اللتين كانتا تعطيان العدد نفسه بكل مشروع.
+    fb_est = _fb0
+    geo = F.pile_geometry(dict(beds=_beds0, fb=fb_est, P=Pmax, soil=psoil, kind=pile_kind,
+                               cu=cu, N=Nspt))
+    Dp = float(p['pile_D']) if p.get('pile_D') else geo['D']
+    Lp = float(p['pile_L']) if p.get('pile_L') else geo['L']
+    pl = F.pile(dict(soil=psoil, cu=cu, N=Nspt, D=Dp, L=Lp, P=Pmax, kind=pile_kind,
+                     fc=fc, fy=fy, cx=cb, geom=geo))
     conc_p = (pl['n'] * len(loads) * math.pi * pl['D'] ** 2 / 4 * pl['L']
               + len(loads) * pl['cap']['conc'])
     piles_a = dict(mode='piles', name='ركائز', pile=pl, total_piles=pl['n'] * len(loads),
@@ -1128,6 +1148,50 @@ SEQ = {
 }
 
 
+#: كم تمتدّ المواد الضعيفة قبل أن تظهر الطبقة الحاملة — بدلالة نطاق التحمّل
+#: المُبلَّغ. موقع يُبلَّغ عنه 50 kPa ليس موقعاً بطين طري سماكته مترين ثم رمل
+#: كثيف: الطين الطري يمتدّ فيه عميقاً، ولهذا تطول ركائزه. والعكس بالصخر.
+WEAK_DEPTH_MUL = {'excellent': 1.0, 'good': 1.0, 'fair': 2.0, 'poor': 3.5, 'unfit': 5.0}
+
+
+def bed_column(kind, top=0.0, depth=40.0, gypseous=False, fill_thk=0.0, qa=None):
+    """**العمود الجيولوجي كمصدر واحد** — يُستعمل لرسم المقطع ولاختيار طول الركيزة.
+
+    كان طول الركيزة رقماً مكتوباً (15 م) لا علاقة له بالطبقات المرسومة تحت
+    المبنى، فتظهر ركيزة تنتهي بمنتصف طين طري بينما المقطع يقول إن الرمل الكثيف
+    تحتها بمترين. الآن الطبقات تُبنى مرة واحدة هنا، ويقرأ منها **الرسم** و**قرار
+    الطول** معاً، فلا يفترقان.
+    """
+    seq = list(SEQ.get(kind, SEQ['clay']))
+    if kind != 'fill' and fill_thk > 1e-6:
+        seq.insert(1, 'fill')                      # ردم قديم مُزال يظهر كطبقة
+    if gypseous and 'gypsum' not in seq:
+        seq.insert(min(3, len(seq)), 'stiffclay')  # الجبس يظهر بالوصف لا كطبقة مستقلة
+    mul = WEAK_DEPTH_MUL.get(F.soil_band(qa)['key'], 1.0) if qa is not None else 1.0
+    limit = top - depth
+    beds = []
+    y = top
+    for key in seq:
+        nm, col, tex, t, q, desc = STRATA_MAP[key]
+        t = t or 0.8
+        if key == 'fill' and fill_thk > 1e-6:
+            t = max(0.3, fill_thk)
+        elif q < F.COMPETENT_QA and key != 'topsoil':
+            t = round(t * mul, 2)          # المواد الضعيفة تعمق كلما ضعف التحمّل
+        beds.append(dict(key=key, name=nm, color=col, texture=tex, top=round(y, 2),
+                         bottom=round(y - t, 2), thick=round(t, 2), qa=q, note=desc,
+                         gypseous=(gypseous and key in ('stiffclay', 'sand'))))
+        y -= t
+        if y <= limit:
+            break
+    if y > limit:                                   # أكمل بالصخر الأم حتى قاع الرسم
+        nm, col, tex, t, q, desc = STRATA_MAP['bedrock']
+        beds.append(dict(key='bedrock', name=nm, color=col, texture=tex,
+                         top=round(y, 2), bottom=round(limit, 2),
+                         thick=round(y - limit, 2), qa=q, note=desc, gypseous=False))
+    return beds
+
+
 def soil_profile(soil_name, qa, kind, levels, Df, gwt=None, need_piles=False,
                  pile_L=0.0, gypseous=False):
     """**العمود الجيولوجي** تحت المبنى — لا طبقتين تقريبيتين.
@@ -1144,36 +1208,9 @@ def soil_profile(soil_name, qa, kind, levels, Df, gwt=None, need_piles=False,
     الغاية أن يرى المهندس مقطع الجسّة لا مستطيلين ملوّنين.
     """
     fb = levels['found_bot']; gr = levels['ground']; ex = levels['existing']
-    seq = list(SEQ.get(kind, SEQ['clay']))
-    if kind != 'fill' and ex < gr - 1e-6:
-        seq.insert(1, 'fill')                      # ردم قديم مُزال يظهر كطبقة
-    if gypseous and 'gypsum' not in seq:
-        seq.insert(min(3, len(seq)), 'stiffclay')  # الجبس يظهر بالوصف لا كطبقة مستقلة
-    # الطبقة الحاملة = أول طبقة تحمّلها ≥ qa المُدخَل، وتُثبَّت عند قاعدة الأساس
-    beds = []
-    y = gr
     bottom_limit = fb - (max(pile_L, 0.0) + 3.0 if need_piles else max(2.5 * Df, 6.0))
-    for i, key in enumerate(seq):
-        nm, col, tex, t, q, desc = STRATA_MAP[key]
-        t = t or 0.8
-        if key == 'fill' and ex < gr - 1e-6:
-            t = max(0.3, gr - ex)
-        top = y
-        bot = y - t
-        # الطبقة الحاملة تُمدّ حتى تبتلع قاعدة الأساس إن وقعت داخلها
-        if bot > fb > top - 1e-9 and i < len(seq) - 1:
-            pass
-        beds.append(dict(key=key, name=nm, color=col, texture=tex, top=round(top, 2),
-                         bottom=round(bot, 2), thick=round(t, 2), qa=q, note=desc,
-                         gypseous=(gypseous and key in ('stiffclay', 'sand'))))
-        y = bot
-        if y <= bottom_limit:
-            break
-    if y > bottom_limit:                            # أكمل بالصخر الأم حتى قاع الرسم
-        nm, col, tex, t, q, desc = STRATA_MAP['bedrock']
-        beds.append(dict(key='bedrock', name=nm, color=col, texture=tex,
-                         top=round(y, 2), bottom=round(bottom_limit, 2),
-                         thick=round(y - bottom_limit, 2), qa=q, note=desc, gypseous=False))
+    beds = bed_column(kind, top=gr, depth=gr - bottom_limit, gypseous=gypseous,
+                      fill_thk=max(0.0, gr - ex), qa=qa)
     # أي طبقة يجلس عليها الأساس فعلاً
     for b in beds:
         b['bearing'] = (b['top'] >= fb >= b['bottom'] - 1e-9)

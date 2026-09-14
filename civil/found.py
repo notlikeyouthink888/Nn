@@ -48,93 +48,323 @@ def bearing_capacity(p):
                 qu=qu, qu_net=qu_net, qa_net=qu_net / FS, qa_gross=qu / FS, FS=FS,
                 note="qa الصافي = (qu − γ·Df)/FS — قيم استرشادية، المرجع التقرير الجيوتقني")
 
+# ------------------- جدول القرار: تحمّل التربة يقرّر نوع الأساس -------------------
+#: **هذا هو القرار العملي المعتمد.** نوع الأساس لا يُشتقّ من نسبة مساحات القواعد
+#: إلى مساحة البناء — يُشتقّ أولاً من **نطاق تحمّل التربة**، ثم تأتي المساحة
+#: لتفصل بين خيارات النطاق الواحد فقط (منفصلة أم مشتركة، مثلاً).
+#:
+#: أعمدة الجدول: المفتاح · حدّ التحمّل الأدنى للنطاق (kPa) · المدى المكتوب بالمرجع ·
+#: صنف التربة · الحكم · نوع الأساس الأساسي · هل يلزم تحقق هبوط · شرح.
+BEAR_BANDS = [
+    dict(key='excellent', lo=250.0, span='250 – 1000 kPa',
+         soil='صخر · حصى مدكوك · رمل كثيف',
+         verdict='قواعد منفصلة — ممتاز جداً',
+         base='isolated', settle_chk=False,
+         why='التحمّل عالٍ فمساحة القاعدة تخرج صغيرة ولا تتداخل مع جاراتها، '
+             'والهبوط فوري ينتهي مع انتهاء البناء'),
+    dict(key='good', lo=150.0, span='150 – 180 kPa',
+         soil='رمل متوسط الكثافة · طين قاسٍ',
+         verdict='قواعد منفصلة أو مشتركة',
+         base='isolated', settle_chk=False,
+         why='النطاق الأشيع ببغداد. الأصل قواعد منفصلة، فإن تقاربت القواعد حتى '
+             'تلامست تُدمج بقاعدة مشتركة أو شريطية'),
+    dict(key='fair', lo=80.0, span='90 – 100 kPa',
+         soil='طين متوسط القساوة · رمل مفكّك',
+         verdict='لبشة (حصيرة) أو قواعد واسعة + تحقّق من الهبوط',
+         base='raft', settle_chk=True,
+         why='التحمّل يكفي حسابياً لكن القاعدة تخرج واسعة جداً، ومع الاتساع يكبر '
+             'بصلة الإجهاد ويكبر الهبوط — فالحاكم هنا **الهبوط** لا التحمّل'),
+    dict(key='poor', lo=20.0, span='30 – 50 kPa',
+         soil='طين طري · سبخة',
+         verdict='ركائز أو إحلال إجباري',
+         base='piles', settle_chk=True,
+         why='الهبوط التضاغطي يستمر سنوات ويتجاوز المسموح مهما كبرت القاعدة — '
+             'ولا يعالجه إلا نقل الحمل لطبقة أعمق أو استبدال التربة'),
+    dict(key='unfit', lo=-1.0, span='0 kPa',
+         soil='ردم غير مدكوك',
+         verdict='ممنوع التأسيس السطحي — ركائز أو إحلال',
+         base='piles', settle_chk=True,
+         why='الردم غير المدكوك يهبط بالزمن ولو خفّ الحمل، ولا يُحسب له تحمّل إطلاقاً'),
+]
+
+#: سُلَّم أنواع الأسس — الترقية مسموحة والتنزيل ممنوع: المساحة تستطيع أن ترفع
+#: النوع الذي قرّرته التربة، ولا تستطيع أن تنزل عنه أبداً.
+FOUND_RANK = ['isolated', 'combined', 'raft', 'piles']
+FOUND_NAME = {
+    'isolated': 'أسس منفردة (Isolated Footings)',
+    'combined': 'أسس مشتركة / شريطية (Combined / Strip)',
+    'raft': 'حصيرة (Raft / Mat Foundation)',
+    'piles': 'ركائز (خوازيق) مع هامة',
+}
+
+
+def soil_band(qa):
+    """نطاق تحمّل التربة الذي يقع فيه qa — أول نطاق حدّه الأدنى ≤ qa."""
+    for b in BEAR_BANDS:
+        if qa >= b['lo']:
+            return b
+    return BEAR_BANDS[-1]
+
+
+#: معامل المرونة Es (kPa) وقابلية الانضغاط Cr = Cc/(1+e0) — مشتقّان من qa بعلاقات
+#: تجريبية معروفة، فلا يُدخل المستخدم رقماً عشوائياً ولا يُخترع رقم داخل البرنامج.
+def soil_moduli(qa, kind):
+    if kind == 'rock':
+        return 2.0e6, 0.0, 'صخر — Es ≈ 2 غيغا باسكال والهبوط مهمَل'
+    if kind == 'fill' or qa <= 1.0:
+        return 3000.0, 0.25, 'ردم — Es ≈ 3 ميغا و Cr = 0.25 (قابلية انضغاط عالية جداً)'
+    if kind == 'sand':
+        N = max(4.0, qa / 10.0)
+        return 500.0 * (N + 15.0), 0.0, \
+            'رمل — N ≈ qa/10 = %.0f ضربة و Es = 500·(N+15) = %.0f kPa (Bowles)' % (N, 500.0 * (N + 15.0))
+    cu = qa / 1.71                     # qa الصافي = Nc·cu/FS = 5.14·cu/3 ⇒ cu ≈ qa/1.71
+    # Cc/(1+e0) البكر — يزداد بضعف الطين
+    Cc = 0.20 if qa < 50 else (0.15 if qa < 75 else (0.12 if qa < 150 else 0.08))
+    # الطين الطري **بكر التضاغط** (NC) فيُحسب بـ Cc كاملاً، والطين القاسي
+    # **فوق-متضاغط** (OC) والزيادة تبقى تحت ضغط ما قبل التضاغط فيحكمها معامل
+    # إعادة الانضغاط Cr ≈ Cc/8 — والخلط بينهما يضخّم الهبوط عشرة أضعاف.
+    oc = qa >= 75.0
+    idx = Cc / 8.0 if oc else Cc
+    return 400.0 * cu, idx, \
+        ('طين %s — cu ≈ qa/1.71 = %.0f kPa · Es = 400·cu · Cc/(1+e0) = %.2f'
+         % ('فوق-متضاغط (OC) فالحاكم Cr = Cc/8' if oc else 'بكر التضاغط (NC)', cu, Cc)
+         + (' ⇒ Cr = %.3f' % idx if oc else ''))
+
+
+#: الهبوط المسموح (مم) — الممارسة المعتادة (Skempton & MacDonald · Terzaghi):
+#: 25 مم كلي للقاعدة المنفردة و50 مم للحصيرة، لأن الحصيرة توحّد الهبوط فيبقى
+#: **التفاضلي** صغيراً وهو الذي يشقّق البناء لا الكلي.
+SETTLE_LIMIT = {'isolated': 25.0, 'combined': 25.0, 'raft': 50.0, 'piles': 25.0}
+
+
+def settlement(p):
+    """تقدير أولي للهبوط: آني مرن + تضاغطي للطين. الغاية بوابة قرار لا تصميم."""
+    qa = float(p.get('qa', 150.0)); kind = p.get('kind', 'clay')
+    q = float(p.get('q', 0.0))                 # ضغط التماس الفعلي kPa
+    B = max(0.5, float(p.get('B', 2.0)))       # عرض الأساس (أو الحصيرة) م
+    typ = p.get('typ', 'isolated')
+    Df = float(p.get('Df', 1.5)); gam = float(p.get('gamma', 18.0))
+    Es, Cr, src = soil_moduli(qa, kind)
+    nu = 0.50 if kind == 'clay' else 0.30      # الطين غير المصرَّف ν = 0.5
+    If = {'isolated': 0.95, 'combined': 1.10, 'raft': 1.30}.get(typ, 0.95)
+    # **سُمك الطبقة الانضغاطية محدود**: بصلة الإجهاد تنزل 2B نظرياً، لكنها تقف
+    # عند أول طبقة حاملة (صخر أو رمل كثيف) لأن ما تحتها لا ينضغط عملياً. بدون
+    # هذا القيد تخرج حصيرة عرضها 25 م بهبوط ربع متر على رمل كثيف — وهو باطل.
+    # وفوق ذلك يُقيَّد العرض الفعّال بـ 10 م: الحلّ المرن يفترض Es ثابتاً مع
+    # العمق، وهو غير صحيح لحصيرة عرضها عشرات الأمتار (Es يزداد بالحصر)، فيُبالغ
+    # بالهبوط مبالغة كبيرة. وما بعد ذلك مرجعه التقرير الجيوتقني.
+    Hm = p.get('Hmax')
+    Hm = None if Hm is None else max(1.0, float(Hm))
+    H = 2.0 * B if Hm is None else min(2.0 * B, Hm)
+    Beff = min(B, 10.0) if Hm is None else min(B, Hm, 10.0)
+    Si = q * Beff * (1 - nu * nu) * If / Es * 1000.0         # مم
+    Sc = 0.0
+    if Cr > 0 and H > 0.05:
+        s0 = max(10.0, gam * (Df + H / 2.0))                 # الإجهاد الأصلي بوسط الطبقة
+        ds = 0.50 * q                                        # متوسط الزيادة داخل البصلة
+        Sc = Cr * H * math.log10((s0 + ds) / s0) * 1000.0    # مم
+    S = Si + Sc
+    lim = SETTLE_LIMIT.get(typ, 25.0)
+    hsrc = ('محدود بعمق الطبقة الحاملة %.1f م تحت قاعدة الأساس' % Hm) if Hm \
+           else 'بصلة الإجهاد 2B كاملة (لا طبقة حاملة ضمن المدى المجسوس)'
+    return dict(Si=Si, Sc=Sc, S=S, limit=lim, ok=S <= lim, Es=Es, Cr=Cr, nu=nu,
+                If=If, B=B, q=q, src=src, H=H, Hmax=Hm, Beff=Beff,
+                steps=[('معامل المرونة Es', src),
+                       ('سُمك الطبقة الانضغاطية H', '%.1f م — %s' % (H, hsrc)),
+                       ('الهبوط الآني Si', 'q·B·(1−ν²)·I/Es = %.1f مم' % Si),
+                       ('الهبوط التضاغطي Sc', ('Cr·H·log((σ₀+Δσ)/σ₀) = %.1f مم' % Sc)
+                        if Cr > 0 else 'صفر — التربة غير متضاغطة (رمل أو صخر)'),
+                       ('المجموع', '%.1f مم مقابل المسموح %.0f مم' % (S, lim))],
+                note='تقدير أولي لاتخاذ القرار — الهبوط النهائي من تقرير الجسّات '
+                     'وفحوص التضاغط (Oedometer)')
+
+
 # ----------------------------- مستشار الأسس -------------------------------
 def advisor(p):
-    """يختار نوع الأساس المناسب ويشرح السبب."""
+    """يختار نوع الأساس: **تحمّل التربة أولاً**، ثم المساحة ترفع ولا تُنزل."""
     loads = [float(x) for x in p['loads']]        # أحمال خدمة لكل عمود kN
-    qa = float(p['qa'])                            # kPa صافي مسموح
+    qa = float(p['qa'])                            # kPa إجمالي مسموح
     footprint = float(p['footprint'])              # م² مساحة البناء
     floors = int(p.get('floors', 1))
     Df = float(p.get('Df', 1.5)); gam = float(p.get('gamma', 18.0))
     spacing = float(p.get('spacing', 5.0))         # أقل بحر بين الأعمدة
+    kind = p.get('soil_kind') or 'clay'
     # qa المُدخل إجمالي (gross) — الصافي = الإجمالي ناقص وزن التربة فوق منسوب التأسيس
     q_net = max(20.0, qa - Df * gam) if qa > 1.0 else 0.0
     total = sum(loads)
-    reasons = []; alts = []
+    band = soil_band(qa)
+    reasons = []; alts = []; steps = []
+
+    # ---------- الخطوة ١: النطاق يقرّر النوع الأساسي ----------
+    typ = band['base']
+    steps.append(dict(k='band', t='نطاق التربة',
+                      v='qa = %.0f kPa ← %s (%s)' % (qa, band['soil'], band['span']),
+                      r='%s — %s' % (band['verdict'], band['why'])))
+    reasons.append('تحمّل التربة %.0f kPa يقع في نطاق «%s» (%s) وحكمه: %s'
+                   % (qa, band['soil'], band['span'], band['verdict']))
+    reasons.append(band['why'])
+
     if q_net <= 1.0:
-        pl0 = pile_case(dict(p, q_net=q_net, q_raft=1e9, avg_press=0.0, ratio=9.9))
-        return dict(type='piles', name='ركائز (خوازيق)', ratio=9.9, total=total,
-                    reasons=['التربة ردم غير مدكوك أو تحمّلها معدوم — لا يجوز التأسيس السطحي'],
+        pl0 = pile_case(dict(p, q_net=q_net, q_raft=1e9, avg_press=0.0, ratio=9.9,
+                             band=band, Bmax=0.0, floors=floors))
+        return dict(type='piles', name=FOUND_NAME['piles'], ratio=9.9, total=total,
+                    reasons=reasons + ['التحمّل الصافي معدوم — لا يجوز أي تأسيس سطحي'],
                     alts=['استبدال التربة بالكامل بطبقات سبيس مدكوكة ثم أساس سطحي'],
-                    q_net=q_net, areas=[], sum_area=0.0, floors=floors,
+                    q_net=q_net, areas=[], sum_area=0.0, floors=floors, band=band,
+                    bands=BEAR_BANDS, steps=steps, settle=None,
                     piles=pl0, warn=pl0['triggers'], need_piles=True,
                     avg_press=0.0, Bmax=0.0, overlap=False)
+
     areas = [P / q_net for P in loads]
     sA = sum(areas)
     ratio = sA / footprint if footprint else 9.9
     Bmax = math.sqrt(max(areas)) if areas else 0.0
     overlap = Bmax > 0.9 * spacing
     avg_press = total / footprint if footprint else 0.0
+    q_raft = (total / footprint + 13.0) if footprint else 1e9
 
-    if ratio <= 0.35 and not overlap:
-        typ, name = 'isolated', 'أسس منفردة (Isolated Footings)'
-        reasons.append('مجموع مساحات الأسس = %.0f%% من مساحة البناء (أقل من 35%%) — الأسس المنفردة اقتصادية' % (ratio * 100))
-        reasons.append('أكبر أساس %.2f م وأقل بحر %.2f م — لا يوجد تداخل بين الأسس' % (Bmax, spacing))
-        alts.append('أسس شريطية إذا كانت الأعمدة قريبة على محور واحد')
-    elif ratio <= 0.55:
-        if overlap:
-            typ, name = 'combined', 'أسس مشتركة / شريطية (Combined / Strip)'
-            reasons.append('أبعاد الأساس المنفرد (%.2f م) تقارب البحر بين الأعمدة (%.2f م) — الأسس تتداخل' % (Bmax, spacing))
-            reasons.append('الدمج بأساس مشترك يوزّع الحمل ويقلل الهبوط التفاضلي')
-            alts.append('حصيرة إذا زاد التداخل بأكثر من اتجاه')
+    def raise_to(t, why, key):
+        """ترقية النوع — ولا تنزيل أبداً. المساحة لا تُلغي ما قرّرته التربة."""
+        nonlocal typ
+        if FOUND_RANK.index(t) > FOUND_RANK.index(typ):
+            steps.append(dict(k=key, t='ترقية النوع', v='%s ← %s'
+                              % (FOUND_NAME[typ], FOUND_NAME[t]), r=why))
+            typ = t
+            reasons.append(why)
         else:
-            typ, name = 'isolated', 'أسس منفردة (Isolated Footings)'
-            reasons.append('مجموع مساحات الأسس = %.0f%% من مساحة البناء — ما زال ضمن المدى الاقتصادي' % (ratio * 100))
-            alts.append('حصيرة إذا ظهر هبوط تفاضلي بالتقرير الجيوتقني')
-    elif ratio <= 1.0:
-        typ, name = 'raft', 'حصيرة (Raft / Mat Foundation)'
-        reasons.append('مجموع مساحات الأسس = %.0f%% من مساحة البناء (أكثر من 55%%) — الحصيرة أوفر وأسهل تنفيذاً' % (ratio * 100))
-        reasons.append('الحصيرة توحّد الهبوط وتمنع الهبوط التفاضلي بين الأعمدة')
-        alts.append('أسس مشتركة إذا كانت الأحمال متقاربة والتربة متجانسة')
-    else:
-        # قبل اللجوء للركائز: هل تكفي حصيرة تغطي كامل مساحة البناء؟
-        # ضغط الحصيرة الإجمالي على التربة = الحمل/المساحة + وزن الحصيرة، ويُقارن بالتحمّل الإجمالي
-        q_raft = total / footprint + 13.0 if footprint else 1e9
+            steps.append(dict(k=key, t='بلا ترقية', v='يبقى %s' % FOUND_NAME[typ], r=why))
+
+    # ---------- الخطوة ٢: المساحة تفصل داخل النطاق وترفع عند اللزوم ----------
+    steps.append(dict(k='area', t='مساحة القواعد',
+                      v='مجموع مساحات الأسس %.1f م² = %.0f%% من مساحة البناء · '
+                        'أكبر قاعدة %.2f م وأقل بحر %.2f م' % (sA, ratio * 100, Bmax, spacing),
+                      r='المساحة تفصل بين خيارات النطاق الواحد، ولا تُنزل النوع تحت حكم التربة'))
+    if overlap:
+        raise_to('combined', 'أبعاد القاعدة المنفردة (%.2f م) تتجاوز 90%% من البحر '
+                             '(%.2f م) — القواعد تتلامس فتُدمج بقاعدة مشتركة'
+                 % (Bmax, spacing), 'overlap')
+    if ratio > 0.55:
+        raise_to('raft', 'مساحات القواعد تتجاوز 55% من مساحة البناء — الحصيرة أوفر '
+                         'تنفيذاً من قواعد تكاد تتلاصق، وتوحّد الهبوط', 'ratio55')
+    elif ratio > 0.35:
+        raise_to('combined', 'مساحات القواعد بين 35% و55% من مساحة البناء — '
+                             'الدمج بقواعد مشتركة يوزّع الحمل ويقلّل الهبوط التفاضلي', 'ratio35')
+    if ratio > 1.0:
         if q_raft <= qa:
-            typ, name = 'raft', 'حصيرة (Raft / Mat Foundation)'
-            reasons.append('الأسس المنفردة لا تكفي (المساحة المطلوبة %.0f%% من مساحة البناء)' % (ratio * 100))
-            reasons.append('لكن حصيرة تغطي كامل المساحة تعطي ضغطاً %.0f kPa وهو ضمن تحمّل التربة الإجمالي %.0f kPa'
-                           % (q_raft, qa))
-            reasons.append('الحفر لعمق %.2f م يخفف جزءاً من الضغط الصافي (أساس معوَّض جزئياً)' % Df)
-            alts.append('ركائز إذا أظهر التقرير الجيوتقني هبوطاً يتجاوز المسموح')
+            raise_to('raft', 'المساحة المطلوبة تتجاوز مساحة البناء (%.0f%%) لكن حصيرة '
+                             'كاملة تعطي ضغطاً %.0f kPa ضمن التحمّل %.0f kPa'
+                     % (ratio * 100, q_raft, qa), 'raftok')
         else:
-            typ, name = 'piles', 'ركائز (خوازيق) مع هامة/حصيرة'
-            reasons.append('المساحة المطلوبة للأسس تتجاوز مساحة البناء نفسها (%.0f%%)' % (ratio * 100))
-            reasons.append('حتى الحصيرة الكاملة تعطي ضغطاً %.0f kPa وهو أكبر من تحمّل التربة %.0f kPa'
-                           % (q_raft, qa))
-            alts.append('حصيرة عميقة (أساس معوَّض) مع استبدال تربة إذا كانت الطبقة الضعيفة سطحية فقط')
+            raise_to('piles', 'حتى الحصيرة الكاملة تعطي ضغطاً %.0f kPa وهو أكبر من '
+                              'تحمّل التربة %.0f kPa — لم يبقَ أساس سطحي ممكن'
+                     % (q_raft, qa), 'raftfail')
 
-    pl = pile_case(dict(p, q_net=q_net, q_raft=(total / footprint + 13.0) if footprint else 1e9,
-                        avg_press=avg_press, ratio=ratio, typ=typ))
+    # ---------- الخطوة ٣: الهبوط — حالة حدّية تُفحص دائماً ----------
+    # التحمّل والهبوط فحصان **منفصلان**: قد يمرّ التحمّل ويرسب الهبوط، والهبوط
+    # هو الذي يشقّق البناء. ولهذا يُفحص بكل نطاق لا بالنطاقات الضعيفة فقط.
+    def chk(t):
+        return settlement(dict(qa=qa, kind=kind, typ=t, Df=Df, gamma=gam,
+                               Hmax=p.get('comp_depth'),
+                               q=(q_raft if t == 'raft' else q_net),
+                               B=(math.sqrt(footprint) if t == 'raft' else Bmax)))
+
+    st = chk(typ)
+    steps.append(dict(k='settle', t='تحقّق الهبوط (على %s)' % FOUND_NAME[typ],
+                      v='%.1f مم مقابل المسموح %.0f مم' % (st['S'], st['limit']),
+                      r=(st['src'] + ' — ' + ('مقبول' if st['ok'] else 'راسب'))))
+    if not st['ok'] and typ in ('isolated', 'combined'):
+        raise_to('raft', 'الهبوط المقدَّر %.0f مم يتجاوز المسموح %.0f مم للقاعدة '
+                         'المنفردة — الحصيرة توحّد الهبوط فيصغر التفاضلي، ويرتفع '
+                         'المسموح إلى 50 مم' % (st['S'], st['limit']), 'settle_up')
+        st = chk(typ)                      # يُعاد الفحص بهندسة الحصيرة لا القاعدة
+        steps.append(dict(k='settle2', t='إعادة تحقّق الهبوط (على الحصيرة)',
+                          v='%.1f مم مقابل المسموح %.0f مم' % (st['S'], st['limit']),
+                          r='مقبول' if st['ok'] else 'ما زال راسباً'))
+    if not st['ok'] and typ == 'raft':
+        raise_to('piles', 'الهبوط المقدَّر %.0f مم يتجاوز المسموح %.0f مم حتى '
+                          'بالحصيرة — لا يبقى إلا نقل الحمل لطبقة أعمق'
+                 % (st['S'], st['limit']), 'settle_pile')
+
+    if band['key'] == 'fair':
+        alts.append('قواعد واسعة بدل الحصيرة إن كانت الأعمدة متباعدة وأحمالها متقاربة '
+                    '— بشرط تحقّق الهبوط لكل قاعدة على حدة')
+    if band['key'] in ('poor', 'unfit'):
+        alts.append('الإحلال: استبدال التربة الضعيفة بطبقات سبيس مدكوكة ثم أساس سطحي '
+                    '— أرخص من الركائز إذا كانت الطبقة الضعيفة سطحية فقط')
+    if typ == 'isolated':
+        alts.append('أسس شريطية إذا كانت الأعمدة قريبة على محور واحد')
+    if typ == 'combined':
+        alts.append('حصيرة إذا زاد التداخل بأكثر من اتجاه')
+    if typ == 'raft':
+        alts.append('أسس مشتركة إذا كانت الأحمال متقاربة والتربة متجانسة')
+
+    # ---------- الخطوة ٤: جدول الركائز — أسباب التربة تفرض ولا تُرفَض ----------
+    pl = pile_case(dict(p, q_net=q_net, q_raft=q_raft, avg_press=avg_press,
+                        ratio=ratio, typ=typ, band=band, Bmax=Bmax, floors=floors,
+                        settle=st, soil_kind=kind))
     warn = pl['triggers']
     if pl['need'] and typ != 'piles':
-        # التربة نفسها توجب التأسيس العميق ولو كفت المساحة حسابياً — والقرار لها
-        alts.insert(0, 'كان المقترح «%s» بحسب المساحة، لكن التربة تمنعه' % name)
-        typ, name = 'piles', 'ركائز (خوازيق) مع هامة'
-        reasons = ['التربة توجب التأسيس العميق: ' + ' · '.join(warn)] + reasons
+        alts.insert(0, 'كان المقترح «%s» بحسب التربة والمساحة، لكن جدول الركائز يمنعه'
+                    % FOUND_NAME[typ])
+        raise_to('piles', 'جدول الركائز: ' + ' · '.join(warn), 'pile_rule')
     elif typ == 'piles' and not pl['need']:
-        # ضاقت المساحة لكن لا سبب تربة — البديل الأرخص أولاً، والركائز آخر الخيارات
         alts.insert(0, 'قبل الركائز: استبدال تربة أو أساس معوَّض أو تكبير الحصيرة')
-    return dict(type=typ, name=name, ratio=ratio, sum_area=sA, areas=areas, total=total,
-                reasons=reasons, alts=alts, warn=warn, q_net=q_net, avg_press=avg_press,
-                Bmax=Bmax, overlap=overlap, floors=floors, piles=pl,
+
+    return dict(type=typ, name=FOUND_NAME[typ], ratio=ratio, sum_area=sA, areas=areas,
+                total=total, reasons=reasons, alts=alts, warn=warn, q_net=q_net,
+                avg_press=avg_press, Bmax=Bmax, overlap=overlap, floors=floors, piles=pl,
+                band=band, bands=BEAR_BANDS, steps=steps, settle=st, q_raft=q_raft,
+                rule='القرار بترتيب ثابت: نطاق تحمّل التربة ← مساحة القواعد ← الهبوط ← '
+                     'جدول الركائز. كل خطوة ترفع النوع ولا تُنزله، فلا عشوائية ولا '
+                     'قفزة بلا سبب مكتوب.',
                 need_piles=(typ == 'piles'))
 
 
 # ------------------------- متى الركائز فعلاً؟ (وقلّما تكون) -------------------------
-#: أسباب التربة التي **تُوجب** التأسيس العميق. الطوابق والحمل **ليسا** منها:
-#: مبنى عشرين طابقاً على طين قاسٍ يقف على حصيرة، ومبنى طابقين على سبخة لا يقف
-#: على أي أساس سطحي. القرار للتربة لا للارتفاع.
+#: **جدول قرار الركائز** — تحمّل جيد وحده لا يكفي حكماً. تربة بـ 180 kPa قد
+#: تُبنى عليها قواعد سطحية وقد تُوجب ركائز، والفارق هذه الشروط الستة لا غير.
+#: (المفتاح · الشرط · الحكم · هل يوجب ركائز · شرح · العتبة الرقمية المطبَّقة)
+PILE_TABLE = [
+    dict(k='shallow_ok',
+         cond='تحمّل ضمن نطاق جيد + سماكة الطبقة الحاملة كبيرة + 3–4 طوابق + لا ماء مؤثّر',
+         verdict='قواعد سطحية — بدون ركائز', piles=False,
+         why='هذه الحالة الطبيعية: الطبقة الحاملة تمتدّ تحت بصلة الإجهاد كلها، '
+             'والحمل معتدل، فالأساس السطحي يكفي ويوفّر أضعاف كلفة الركائز',
+         gate='لا يشتعل أي شرط من الخمسة أدناه، و qa ≥ 150 kPa'),
+    dict(k='thin_layer',
+         cond='الطبقة الحاملة قليلة السماكة وتحتها طبقة ضعيفة',
+         verdict='ركائز', piles=True,
+         why='القاعدة تنجح على الطبقة العليا وتثقبها إلى الضعيفة تحتها. '
+             'بصلة الإجهاد تنزل حتى 2B تحت القاعدة، فإن انتهت الطبقة الحاملة '
+             'قبل ذلك فالحمل يصل الضعيفة كاملاً',
+         gate='سماكة الطبقة الحاملة < 2×عرض القاعدة، مع طبقة أضعف تحتها'),
+    dict(k='heavy',
+         cond='مبنى عالٍ أو أحمال ضخمة',
+         verdict='ركائز', piles=True,
+         why='القاعدة تكبر حتى تصير حصيرة، والحصيرة نفسها تهبط لأن بصلة إجهادها '
+             'تنزل بعمق عرضها — والركيزة تنقل الحمل تحت البصلة كلها',
+         gate='عدد الطوابق ≥ 10 (خارج نطاق الصخر والرمل الكثيف)، أو عرض القاعدة المنفردة المطلوب > 6.0 م'),
+    dict(k='settle',
+         cond='الهبوط المتوقّع أكبر من المسموح',
+         verdict='ركائز أو لبشة سميكة', piles=True,
+         why='التحمّل يمرّ والهبوط يرسب — وهما فحصان منفصلان. الهبوط هو الذي '
+             'يشقّق البناء، لا انهيار القص',
+         gate='الهبوط المقدَّر > المسموح (25 مم منفردة · 50 مم حصيرة) حتى بالحصيرة'),
+    dict(k='swell',
+         cond='طين انتفاخي',
+         verdict='ركائز', piles=True,
+         why='الانتفاخ يرفع الأساس بالشتاء ويهبطه بالصيف فيشقّق البناء من الأسفل، '
+             'والركيزة تُمرَّر تحت المنطقة النشطة وتُعزَل عنها',
+         gate='خانة «طين انتفاخي» مؤشّرة بالمعالج'),
+    dict(k='water_salt',
+         cond='ماء جوفي عالٍ وأملاح/كبريتات عالية',
+         verdict='ركائز + خرسانة مقاومة للكبريتات', piles=True,
+         why='الماء يرفع الضغط المسامي فيخفض التحمّل الفعّال، والكبريتات تهاجم '
+             'الخرسانة تحت الأرض — فتلزم ركائز وخلطة مقاومة (ACI 19.3 صنف S2/S3)',
+         gate='منسوب الماء فوق قاعدة الأساس، مع خانة «أملاح/كبريتات عالية»'),
+]
+
+#: أسباب التربة التي **تُوجب** التأسيس العميق بذاتها (تُفحص فوق الجدول أعلاه).
 PILE_SOIL_CASES = [
     ('fill',      'ردم غير مدكوك أو نفايات بناء تحت الأساس',
      'الردم يهبط بالزمن ولو خفّ الحمل — لا يُحسب له تحمّل إطلاقاً'),
@@ -147,8 +377,6 @@ PILE_SOIL_CASES = [
      'وانهيارها لا ينذر ولا يُقاس بفحص التحمّل الجاف'),
     ('liquefy',   'رمل مفكك مشبع تحت منسوب ماء جوفي عالٍ (خطر تميّع زلزالي)',
      'الرمل المفكك المشبع يفقد تحمّله كلياً لحظة الهزة'),
-    ('expansive', 'طين انتفاخي والمنطقة النشطة أعمق من الأساس',
-     'الانتفاخ يرفع الأساس بالشتاء ويهبطه بالصيف فيشقّق البناء من الأسفل'),
     ('capacity',  'حتى الحصيرة الكاملة لا تحمل — الضغط يتجاوز التحمّل',
      'لم يبقَ أساس سطحي ممكن'),
     ('uplift',    'قوى شدّ أو قلب على الأعمدة (صوامع · أبراج · جدران قص طويلة)',
@@ -157,12 +385,12 @@ PILE_SOIL_CASES = [
 
 
 def pile_case(p):
-    """هل تلزم الركائز فعلاً؟ — القرار **من التربة** لا من عدد الطوابق.
+    """هل تلزم الركائز فعلاً؟ — بجدول شروط مكتوب، لا بتقدير.
 
-    كان المنطق السابق يوصي بالركائز لمجرد «تحمّل منخفض مع ٤ طوابق» أو «١٠ طوابق
-    على تربة أقل من 200 kPa» — وهذا يجعلها شبه دائمة، وهو خطأ: أغلب أبنية العراق
-    تقف على أسس منفردة أو حصيرة، والركائز استثناء مكلف يُلجأ إليه حين **التربة
-    نفسها** لا تصلح، لا حين يعلو المبنى.
+    يُفحص مساران ويُجمعان: أسباب التربة الخمسة أعلاه (PILE_SOIL_CASES) التي
+    تُبطل التأسيس السطحي أصلاً، وجدول الشروط الستة (PILE_TABLE) الذي يفصل —
+    عند تحمّل جيد نفسه — بين «قواعد سطحية» و«ركائز». كل صفّ يخرج بعتبته الرقمية
+    وبقيمة المشروع المقابلة لها، فيُرى **لماذا** اشتعل أو لم يشتعل.
     """
     q_net = float(p.get('q_net', 0.0))
     qa = float(p.get('qa', 0.0))
@@ -171,6 +399,12 @@ def pile_case(p):
     gwt = p.get('gwt')
     Df = float(p.get('Df', 1.5))
     q_raft = float(p.get('q_raft', 0.0))
+    floors = int(p.get('floors', 1))
+    Bmax = float(p.get('Bmax', 0.0))
+    st = p.get('settle') or {}
+    bear_thk = float(p.get('bear_thk') or 0.0)      # سماكة الطبقة الحاملة م (0 = غير مُدخَلة)
+    weak_below = bool(p.get('weak_below'))
+    salts = bool(p.get('salts'))
     trig, why = [], []
     hit = set()
 
@@ -193,24 +427,81 @@ def pile_case(p):
     if kind == 'sand' and qa and qa <= 100.0 and gwt is not None \
             and float(gwt) > -(Df + 3.0):
         add('liquefy')
-    if p.get('expansive'):
-        add('expansive')
     if q_raft > qa > 0:
         add('capacity')
     if p.get('uplift'):
         add('uplift')
 
+    # ------------------- جدول الشروط الستة، صفّاً صفّاً -------------------
+    bulb = 2.0 * Bmax                                  # عمق بصلة الإجهاد
+    gw_high = gwt is not None and float(gwt) > -(Df + 0.5)
+    rows = []
+    fired = {}
+    for c in PILE_TABLE:
+        k = c['k']
+        if k == 'thin_layer':
+            on = bear_thk > 0 and weak_below and bear_thk < bulb
+            val = ('سماكة الطبقة الحاملة %.1f م مقابل بصلة الإجهاد 2B = %.1f م · '
+                   'طبقة ضعيفة تحتها: %s'
+                   % (bear_thk, bulb, 'نعم' if weak_below else 'لا')) if bear_thk > 0 \
+                else 'سماكة الطبقة الحاملة غير مُدخَلة — أدخلها من تقرير الجسّات ليُفحص الشرط'
+        elif k == 'heavy':
+            # الارتفاع وحده لا يوجب ركائز على **صخر أو رمل كثيف**: هناك القاعدة
+            # تبقى صغيرة مهما ثقل الحمل. الشرط للنطاقات الأضعف فقط، وهو ما يعنيه
+            # الجدول حين يضع «مبنى عالٍ» عند 180 kPa لا عند 400.
+            band_key = (p.get('band') or {}).get('key', 'good')
+            tall = floors >= 10 and band_key != 'excellent'
+            # 6 م: أوسع قاعدة منفردة تُنفَّذ عملياً. ما بينها وبين 4 م تعالجه
+            # ترقية النوع بالمساحة (مشتركة ← حصيرة) لا الركائز.
+            wide = Bmax > 6.0
+            on = tall or wide
+            val = ('الطوابق %d (العتبة 10%s) · أكبر قاعدة مطلوبة %.2f م (العتبة 6.00 م)'
+                   % (floors, '، ولا تُطبَّق على الصخر والرمل الكثيف'
+                      if band_key == 'excellent' else '', Bmax))
+        elif k == 'settle':
+            on = bool(st) and not st.get('ok', True)
+            val = ('الهبوط المقدَّر %.1f مم مقابل المسموح %.0f مم'
+                   % (st.get('S', 0.0), st.get('limit', 25.0))) if st else 'لم يُحسب'
+        elif k == 'swell':
+            on = bool(p.get('expansive'))
+            val = 'خانة «طين انتفاخي»: %s' % ('مؤشّرة' if on else 'غير مؤشّرة')
+        elif k == 'water_salt':
+            on = gw_high and salts
+            val = ('الماء الجوفي %s · أملاح/كبريتات عالية: %s'
+                   % (('على %.2f م وهو فوق قاعدة الأساس %.2f م'
+                       % (float(gwt), -(Df + 0.5))) if gwt is not None else 'غير مُدخَل',
+                      'نعم' if salts else 'لا'))
+        else:                                           # shallow_ok — يُحسم بعد الباقي
+            on = False
+            val = ''
+        fired[k] = on
+        if on and c['piles']:
+            trig.append(c['cond']); why.append(c['why'])
+        rows.append(dict(c, on=on, value=val))
+
+    others = any(fired[c['k']] for c in PILE_TABLE if c['k'] != 'shallow_ok')
+    rows[0]['on'] = (not others) and not trig and qa >= 150.0
+    rows[0]['value'] = ('لا يشتعل أي شرط · qa = %.0f kPa · الطوابق %d' % (qa, floors))
+
     need = bool(trig)
+    sulfate = fired.get('water_salt', False) or bool(p.get('gypseous'))
     return dict(need=need, triggers=trig, why=why,
                 soil=name, kind=kind, q_net=q_net, q_raft=q_raft,
                 cases=[dict(k=k, t=t, w=w) for k, t, w in PILE_SOIL_CASES],
-                verdict=('التربة توجب التأسيس العميق: ' + ' · '.join(trig)) if need
-                        else ('لا سبب تربة يوجب الركائز — الأساس السطحي كافٍ. '
-                              'الركائز أساس **استثنائي** كلفته أضعاف السطحي '
-                              'وتحتاج جسّاً وفحص تحميل، ولا تُقترح لمجرد ارتفاع '
-                              'المبنى أو كِبَر الحمل.'),
-                rule='القرار من التربة لا من عدد الطوابق (ACI 13.4 + الممارسة '
-                     'الجيوتقنية) — والاختيار النهائي للتقرير الجيوتقني.')
+                table=rows, fired=fired, sulfate=sulfate, bulb=bulb,
+                bear_thk=bear_thk, weak_below=weak_below,
+                sulfate_note=('الماء والأملاح يوجبان خلطة مقاومة للكبريتات: '
+                              'صنف تعرّض S2 على الأقل — f\'c ≥ 31 ميغا و w/cm ≤ 0.45 '
+                              'وإسمنت مقاوم نوع V (جدول ACI 318M-14 رقم 19.3.2.1)')
+                             if sulfate else '',
+                verdict=('الركائز لازمة: ' + ' · '.join(trig)) if need
+                        else ('لا شرط من شروط الركائز الستة مشتعل — الأساس السطحي '
+                              'كافٍ. الركائز أساس **استثنائي** كلفته أضعاف السطحي '
+                              'وتحتاج جسّاً وفحص تحميل.'),
+                rule='تحمّل جيد وحده لا يعني «بدون ركائز»: تربة 180 kPa قد تُبنى '
+                     'عليها قواعد سطحية وقد تُوجب ركائز، والفارق سماكة الطبقة '
+                     'الحاملة وما تحتها · الحمل والارتفاع · الهبوط · الانتفاخ · '
+                     'الماء والأملاح — وهذه الستة تُفحص بعتباتها أعلاه.')
 
 # -------------------------------- الحصيرة ---------------------------------
 def raft(p):
@@ -278,23 +569,13 @@ def _alpha(cu):
     if cu >= 70: return 0.5
     return 1.0 - 0.5 * (cu - 25) / 45.0
 
-def pile(p):
-    """قدرة الركيزة المفردة والمجموعة."""
-    soil = p.get('soil', 'clay')
-    D = float(p.get('D', 0.6)); L = float(p.get('L', 15.0))
-    P = float(p.get('P', 1200.0))                 # حمل خدمة للعمود kN
-    FS = float(p.get('FS', 2.5))
-    kind = p.get('kind', 'bored')
-    gam = float(p.get('gamma', 18.0))
+
+def _capacity(soil, D, L, cu, N, kind, FS=2.5):
+    """قدرة ركيزة واحدة — تُستدعى من التصميم ومن اختيار الأبعاد بالسواء."""
     Ab = math.pi * D * D / 4.0; As = math.pi * D * L
-    steps = []
     if soil == 'clay':
-        cu = float(p.get('cu', 60.0))
-        al = _alpha(cu)
-        fs = al * cu
-        Qs = fs * As
-        qb = 9.0 * cu
-        Qb = qb * Ab
+        al = _alpha(cu); fs = al * cu
+        Qs = fs * As; qb = 9.0 * cu; Qb = qb * Ab
         steps = [("طريقة الحساب", "طريقة α للتربة الطينية (Tomlinson / API)"),
                  ("معامل الالتصاق α", "%.2f (من cu = %.0f kPa)" % (al, cu)),
                  ("احتكاك الجانب fs", "α·cu = %.1f kPa" % fs),
@@ -303,7 +584,6 @@ def pile(p):
                  ("مقاومة القاعدة qb", "9·cu = %.0f kPa" % qb),
                  ("مقاومة القاعدة Qb", "qb·Ab = %.0f kN" % Qb)]
     else:
-        N = float(p.get('N', 20.0))               # SPT متوسط
         k = 2.0 if kind == 'driven' else 1.0      # Meyerhof
         fs = min(k * N, 100.0)
         Qs = fs * As
@@ -311,22 +591,143 @@ def pile(p):
         Qb = qb * Ab
         steps = [("طريقة الحساب", "طريقة Meyerhof بالاعتماد على SPT للتربة الرملية"),
                  ("عدد الضربات N", "%.0f" % N),
-                 ("احتكاك الجانب fs", "%s·N = %.1f kPa (حد أقصى 100)" % ("2" if kind == 'driven' else "1", fs)),
+                 ("احتكاك الجانب fs", "%s·N = %.1f kPa (حد أقصى 100)"
+                  % ("2" if kind == 'driven' else "1", fs)),
                  ("مساحة الجانب As", "π·D·L = %.2f م²" % As),
                  ("مقاومة الجانب Qs", "fs·As = %.0f kN" % Qs),
                  ("مقاومة القاعدة qb", "%.0f kPa" % qb),
                  ("مقاومة القاعدة Qb", "qb·Ab = %.0f kN" % Qb)]
     W = Ab * L * 24.0 * 0.6                        # وزن الركيزة الصافي التقريبي
     Qu = Qs + Qb
-    Qall = (Qu - W) / FS
+    return dict(Ab=Ab, As=As, Qs=Qs, Qb=Qb, Qu=Qu, W=W, FS=FS,
+                Qall=(Qu - W) / FS, steps=steps)
+
+
+#: أقطار الركائز القياسية لكل نوع تنفيذ — القطر يُختار **من هذا السُّلَّم** لا
+#: من رقم افتراضي ثابت، والتباعد بعده s = 3D فيتغيّر معه.
+PILE_D_LADDER = {
+    'bored':  (0.40, 0.50, 0.60, 0.80, 1.00, 1.20, 1.50),
+    'driven': (0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.60),
+    'cfa':    (0.40, 0.50, 0.60, 0.80, 1.00),
+    'micro':  (0.15, 0.20, 0.25, 0.30),
+}
+COMPETENT_QA = 250.0      # kPa — أدنى تحمّل تُعدّ عنده الطبقة «حاملة للركيزة»
+PILE_L_MIN = 6.0
+PILE_L_MAX = 30.0
+
+
+def pile_geometry(p):
+    """**طول الركيزة من التربة وقطرها من الحمل** — لا قيمة افتراضية ثابتة.
+
+    الخطأ الذي كان: D = 0.60 م و L = 15 م مكتوبتان بالبرنامج مهما تغيّرت التربة
+    أو الحمل، فتخرج القدرة نفسها فيخرج العدد نفسه (ثلاث ركائز) بكل مشروع —
+    وهذا ما يبدو «عشوائياً» وهو في الحقيقة **ثابت** لا عشوائي.
+
+    الصحيح: الطول تقرّره **الطبقة الحاملة** — تُمدّ الركيزة حتى تخترق أول طبقة
+    تحمّلها ≥ 250 kPa بمقدار غرزة (Socket) = 3D على الأقل. فإن لم توجد طبقة
+    حاملة ضمن المدى العملي فهي **ركيزة احتكاك** ويُزاد طولها حتى تكفي. والقطر
+    يُختار من السُّلَّم القياسي: أصغر قطر تكفي معه المجموعة الدنيا (ثلاث ركائز)،
+    فإن لم يكفِ أكبر قطر زِيد العدد.
+    """
+    beds = p.get('beds') or []
+    fb = float(p.get('fb', -1.5))                 # منسوب قاعدة الهامة (سالب)
+    P = float(p.get('P', 1200.0))
+    soil = p.get('soil', 'clay')
+    kind = p.get('kind', 'bored')
+    cu = float(p.get('cu', 60.0)); N = float(p.get('N', 20.0))
+    FS = float(p.get('FS', 2.5))
+    n_min = int(p.get('n_min', 3))
+    ladder = PILE_D_LADDER.get(kind, PILE_D_LADDER['bored'])
+
+    # ---- الطبقة الحاملة: أول طبقة تحت قاعدة الهامة تحمّلها ≥ 250 kPa ----
+    target = None
+    for b in beds:
+        if b.get('bottom', 0.0) < fb - 0.05 and float(b.get('qa') or 0.0) >= COMPETENT_QA:
+            target = b
+            break
+    reach = max(0.0, fb - float(target['top'])) if target else 0.0
+
+    best = None
+    for D in ladder:
+        if target:
+            socket = max(3.0 * D, 1.0)
+            L = math.ceil((reach + socket) * 2) / 2.0        # تقريب لأقرب 0.5 م
+            L = min(PILE_L_MAX, max(PILE_L_MIN, L))
+            grow = False
+        else:
+            L = PILE_L_MIN
+            grow = True
+        for _ in range(60):
+            cap = _capacity(soil, D, L, cu, N, kind, FS)
+            n = max(n_min, math.ceil(P / max(cap['Qall'], 1.0)))
+            if not grow or n <= n_min or L >= PILE_L_MAX:
+                break
+            L = min(PILE_L_MAX, L + 1.0)                     # ركيزة احتكاك: طوِّلها
+        util = P / max(n * cap['Qall'], 1.0)
+        cand = dict(D=D, L=L, n=n, util=util, Qall=cap['Qall'], socket_ok=bool(target))
+        # المفاضلة: أقل عدد ركائز أولاً، ثم أعلى استغلال (أصغر قطر عملياً)
+        if best is None or (cand['n'], -cand['util']) < (best['n'], -best['util']):
+            best = cand
+        if cand['n'] <= n_min:
+            break
+
+    why = []
+    if target:
+        why.append('الطول من التربة: قاعدة الهامة على %.2f م وأول طبقة حاملة '
+                   '(%s · %d kPa) تبدأ على %.2f م، فالاختراق %.1f م + غرزة '
+                   '(Socket) ≥ 3D = %.1f م ⇒ **L = %.1f م**'
+                   % (fb, target.get('name', ''), int(target.get('qa') or 0),
+                      float(target['top']), reach, max(3.0 * best['D'], 1.0), best['L']))
+    else:
+        why.append('لا توجد طبقة تحمّلها ≥ %d kPa ضمن %d م — فهي **ركيزة احتكاك** '
+                   '(Friction Pile) وطولها %.1f م هو ما تلزمه القدرة لا ما تلزمه '
+                   'طبقة' % (int(COMPETENT_QA), int(PILE_L_MAX), best['L']))
+    why.append('القطر من الحمل: أثقل عمود %.0f kN وقدرة الركيزة الواحدة %.0f kN، '
+               'فأصغر قطر بالسُّلَّم %s يكفي عنده %d ركائز هو **Ø%.2f م** '
+               '(الاستغلال %.0f%%)'
+               % (P, best['Qall'], str(tuple(ladder)), best['n'], best['D'],
+                  best['util'] * 100))
+    why.append('والتباعد تابع للقطر: s = 3D = %.2f م — لا رقم مكتوب باليد. '
+               'أقل من 3D تتداخل بصلات الإجهاد فتنهار كفاءة المجموعة، وأكثر '
+               'من 3D تكبر الهامة بلا فائدة.' % (3.0 * best['D']))
+    return dict(D=best['D'], L=best['L'], n=best['n'], util=best['util'],
+                Qall=best['Qall'], target=target, reach=reach, ladder=list(ladder),
+                spacing=3.0 * best['D'], why=why,
+                rule='L من الطبقة الحاملة · D من الحمل · s = 3D — ثلاثة مقادير '
+                     'مشتقّة، وليس فيها رقم افتراضي واحد.')
+
+
+def pile(p):
+    """قدرة الركيزة المفردة والمجموعة."""
+    soil = p.get('soil', 'clay')
+    D = float(p.get('D', 0.6)); L = float(p.get('L', 15.0))
+    P = float(p.get('P', 1200.0))                 # حمل خدمة للعمود kN
+    FS = float(p.get('FS', 2.5))
+    kind = p.get('kind', 'bored')
+    gam = float(p.get('gamma', 18.0))
+    cap0 = _capacity(soil, D, L, float(p.get('cu', 60.0)), float(p.get('N', 20.0)),
+                     kind, FS)
+    Ab, As = cap0['Ab'], cap0['As']
+    Qs, Qb, Qu, W = cap0['Qs'], cap0['Qb'], cap0['Qu'], cap0['W']
+    steps = cap0['steps']
+    Qall = cap0['Qall']
     s = 3.0 * D                                    # التباعد بين الركائز
 
     def group(n):
-        m = 1 if n == 1 else (2 if n <= 4 else 3)
-        rows = max(1, math.ceil(n / m))
+        # **الثلاثة مثلث لا شبكة.** كان الحساب يجبر كل مجموعة على شبكة مستطيلة
+        # ثم يرفع العدد إلى m×rows، فتقفز الثلاثة إلى أربعة دائماً ويخرج العدد
+        # نفسه بكل مشروع. المثلث المتطابق الأضلاع ثابت بكل الاتجاهات بثلاث
+        # ركائز فقط، وهو الترتيب المنفَّذ فعلاً بالموقع.
+        if n == 3:
+            m, rows = 3, 1                       # تُرسم مثلثاً — انظر tri=True
+        else:
+            m = 1 if n == 1 else (2 if n <= 4 else 3)
+            rows = max(1, math.ceil(n / m))
         if n == 1: return m, rows, 1.0
         if soil != 'clay' and s >= 3 * D: return m, rows, 1.0   # يُهمل بالرملية عند 3D
         th = math.degrees(math.atan(D / s))
+        if n == 3:                               # Converse-Labarre للمثلث: 3 وصلات
+            return m, rows, 1.0 - th / 90.0 * (2.0 / 3.0)
         e = 1.0 - th / 90.0 * ((rows - 1) * m + (m - 1) * rows) / (m * rows)
         return m, rows, e
 
@@ -344,8 +745,10 @@ def pile(p):
         n += 1
     n = max(n, n_min)
     m, rows, eff = group(n)
-    n = max(n, m * rows)          # الشبكة تُبنى كاملة — لا نصف ركيزة بالزاوية
-    m, rows, eff = group(n)
+    if n != 3:                    # الشبكة تُبنى كاملة — لا نصف ركيزة بالزاوية
+        n = max(n, m * rows)      # (والثلاثة مثلث لا شبكة فلا تُرفَع لأربعة)
+        m, rows, eff = group(n)
+    tri = (n == 3)
     n_cap = dict(
         n_min=n_min, forced=(P / max(Qall, 1.0) <= n_min),
         need_tie=(n <= 2),
@@ -359,8 +762,13 @@ def pile(p):
               % (P / max(Qall, 1.0))) if P / max(Qall, 1.0) <= n_min else
              'عدد الركائز محكوم بالحمل')
     Qgroup = n * Qall * eff
-    cap_B = (m - 1) * s + D + 0.6
-    cap_L = (rows - 1) * s + D + 0.6
+    if tri:
+        # مثلث متطابق الأضلاع ضلعه s: عرضه s وارتفاعه s·√3/2
+        cap_B = s + D + 0.6
+        cap_L = s * math.sqrt(3.0) / 2.0 + D + 0.6
+    else:
+        cap_B = (m - 1) * s + D + 0.6
+        cap_L = (rows - 1) * s + D + 0.6
     cap_h = max(0.6, 0.9 * D + 0.3)
 
     rec = 'bored'
@@ -374,8 +782,12 @@ def pile(p):
     spiral_s = 150.0 if D <= 0.8 else 200.0
     # انحناء الهامة عند وجه العمود: الركائز خارج المقطع الحرج × ذراعها
     cx = float(p.get('cx', 500)) / 1000.0
-    arm = max(0.10, (m - 1) / 2.0 * s - cx / 2.0)     # مسافة الصف الخارجي عن وجه العمود
-    piles_side = rows if m > 1 else 0                  # عدد الركائز خارج المقطع
+    if tri:                       # رأسا المثلث الخارجيان على بعد s/2 من المحور
+        arm = max(0.10, s / 2.0 - cx / 2.0)
+        piles_side = 2
+    else:
+        arm = max(0.10, (m - 1) / 2.0 * s - cx / 2.0)  # بُعد الصف الخارجي عن وجه العمود
+        piles_side = rows if m > 1 else 0              # عدد الركائز خارج المقطع
     Pu_pile = 1.45 * P / max(n, 1)
     Mu_cap = Pu_pile * piles_side * arm                # kN·m لكامل عرض الهامة
     d_cap = cap_h * 1000 - 75 - 20
@@ -392,7 +804,10 @@ def pile(p):
                      label="Ø%d @ %d مم بالاتجاهين (سفلي)" % (cb_['db'], int(s_cap)),
                      top_db=16, top_s=200.0, top_label="Ø16 @ 200 مم بالاتجاهين (علوي)")
     return dict(soil=soil, kind=kind, D=D, L=L, Ab=Ab, As=As, Qs=Qs, Qb=Qb, Qu=Qu,
-                rebar=rebar, cap_rebar=cap_rebar,
+                rebar=rebar, cap_rebar=cap_rebar, geom=p.get('geom'), tri=tri,
+                layout=('مثلث متطابق الأضلاع ضلعه %.2f م' % s) if tri
+                       else ('شبكة %d × %d بتباعد %.2f م' % (m, rows, s)),
+                util=P / max(Qgroup, 1.0),
                 W=W, FS=FS, Qall=Qall, n=n, spacing=s, eff=eff, Qgroup=Qgroup,
                 ok=Qgroup >= P, P=P, steps=steps, rows=rows, cols=m,
                 cap=dict(B=cap_B, L=cap_L, h=cap_h, conc=cap_B * cap_L * cap_h),

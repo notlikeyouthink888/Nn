@@ -47,9 +47,12 @@ const csid = k => k.replace('+', 'p').replace('-', 'm');
 const kpi = (l, v, cls = '') => `<div class="kpi ${cls}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
 const tag = ok => ok ? '<span class="tag t-ok">مقبول ✓</span>' : '<span class="tag t-bad">غير مقبول ✗</span>';
 const rcol = r => r <= 0.7 ? '#34d399' : r <= 0.9 ? '#a3e635' : r <= 1.0 ? '#fbbf24' : '#f87171';
-const table = (heads, rows) => `<div style="overflow-x:auto"><table><thead><tr>${
+/* الوسيط الثالث (اختياري): نمط CSS لكل صف — يُستعمل لتمييز الصف المنطبق على
+   المشروع بجداول القرار، فيراه المهندس بلمحة بدل أن يقرأ العمود الأخير. */
+const table = (heads, rows, styles) => `<div style="overflow-x:auto"><table><thead><tr>${
   heads.map(x => `<th>${x}</th>`).join('')}</tr></thead><tbody>${
-  rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  rows.map((r, i) => `<tr${styles && styles[i] ? ` style="${styles[i]}"` : ''}>${
+    r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 
 /* ---------- SVG plot ---------- */
 function plot(o) {
@@ -1248,25 +1251,96 @@ function cantiPanel(r) {
         <b>«كانتيليفر (شناشيل)»</b> لترى الحديد الأصفر بالأعلى والأزرق بالأسفل بعينك.</div></div>`;
 }
 
+/* بطاقات قرار بدل جدول عريض — الجداول ذات الخمسة أعمدة تُقصّ على شاشة الموبايل
+   فيختفي الحكم والعتبة وقيمة المشروع، وهي كلّ الفائدة. هنا كل صفّ بطاقة مستقلة
+   تُقرأ بعرض 430 بكسل كما تُقرأ على الحاسبة. */
+function decCards(rows) {
+  return rows.map(r => {
+    const col = r.on ? (r.bad ? '#f87171' : 'var(--ok)') : 'var(--mut)';
+    const bg = r.on ? (r.bad ? 'rgba(248,113,113,.09)' : 'rgba(52,211,153,.09)') : 'transparent';
+    return `<div style="border-right:3px solid ${col};background:${bg};border-radius:8px;
+        padding:9px 11px;margin:7px 0">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline">
+        <b style="font-size:13px;line-height:1.7">${r.title}</b>
+        ${r.tag === null || (r.noTag && !r.on) ? '' : `<span class="tag ${r.on ? (r.bad ? 't-bad' : 't-ok') : ''}"
+          style="${r.on ? '' : 'opacity:.55'};white-space:nowrap">${
+            r.on ? (r.tag || 'نعم') : 'لا'}</span>`}</div>
+      ${(r.lines || []).map(([k, v]) => `<div style="font-size:12px;line-height:1.85;
+        color:var(--mut);margin-top:3px"><span style="opacity:.7">${k}:</span>
+        <span style="color:var(--tx)">${v}</span></div>`).join('')}
+    </div>`;
+  }).join('');
+}
+
+/* ---------- نطاق تحمّل التربة: هو الذي يقرّر نوع الأساس ---------- */
+function bandPanel(a) {
+  const b = a && a.band; if (!b) return '';
+  const st = a.settle;
+  return `
+    <div class="card" style="margin-top:16px"><h3>🧭 لماذا هذا النوع بالذات — قرار التربة أولاً</h3>
+      <div class="note" style="margin-bottom:10px">${a.rule || ''}</div>
+      ${decCards((a.bands || []).map(x => ({
+        title: x.span + ' — ' + x.soil, on: x.key === b.key, bad: false,
+        noTag: true, tag: '◄ حالتك',
+        lines: [['الحكم العملي', '<b>' + x.verdict + '</b>'],
+          ['لماذا', x.why]] })))}
+      <h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">خطوات القرار بالترتيب</h4>
+      ${decCards((a.steps || []).map((s, i) => ({
+        title: (i + 1) + ' · ' + s.t, on: false, noTag: true,
+        lines: [['القيمة المحسوبة', s.v], ['الأثر', s.r]] })))}
+      ${st ? `<h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">تحقّق الهبوط</h4>
+      ${table(['البند', 'القيمة'], st.steps.map(x => [x[0], x[1]]))}
+      <div class="note">${st.note} — والتحمّل والهبوط <b>فحصان منفصلان</b>:
+        قد يمرّ التحمّل ويرسب الهبوط، والهبوط هو الذي يشقّق البناء لا انهيار القص.</div>` : ''}
+    </div>`;
+}
+
 /* ---------- الركائز: متى تلزم فعلاً — وقلّما تلزم ---------- */
 function pilePanel(r) {
   const a = r.advisor, pl = a && a.piles;
   if (!pl) return '';
   const hit = pl.triggers || [];
+  const g = (r.alts && r.alts.piles && r.alts.piles.pile) || null;
+  const geo = g && g.geom;
   return `
     <div class="card"><h3>🪨 الركائز — متى تلزم فعلاً (وقلّما تلزم)</h3>
       <div class="rec" style="margin:0 0 12px;border-right:3px solid ${pl.need ? '#f87171' : 'var(--ok)'}">
-        <h3 style="margin-top:0">${pl.need ? '⚠️ التربة توجب التأسيس العميق' : '✓ لا حاجة للركائز'}</h3>
+        <h3 style="margin-top:0">${pl.need ? '⚠️ الركائز لازمة' : '✓ لا حاجة للركائز'}</h3>
         <div style="font-size:13px;line-height:1.9">${pl.verdict}</div></div>
-      <div class="note" style="margin-bottom:10px"><b>القرار من التربة لا من عدد الطوابق.</b>
-        مبنى عشرين طابقاً على طين قاسٍ يقف على حصيرة، ومبنى طابقين على سبخة لا يقف على
-        أي أساس سطحي. الارتفاع والحمل يقرّران <b>حجم</b> الأساس لا <b>نوعه</b>.</div>
-      ${table(['الحالة', 'الشرط', 'لماذا', 'ينطبق؟'], pl.cases.map(c2 => {
-        const on = hit.indexOf(c2.t) >= 0;
-        return [on ? '<b style="color:#f87171">✗ قائمة</b>' : '<span style="color:var(--mut)">—</span>',
-          c2.t, '<span style="font-size:11.5px;color:var(--mut)">' + c2.w + '</span>',
-          on ? '<span class="tag t-bad">نعم</span>' : '<span class="tag t-ok">لا</span>'];
-      }))}
+      <div class="note" style="margin-bottom:10px">${pl.rule}</div>
+      <h4 style="margin:4px 0 6px;color:var(--mut);font-size:13px">جدول القرار — ستة شروط، كلٌّ بعتبته</h4>
+      ${decCards((pl.table || []).map(c2 => ({
+        title: c2.cond, on: c2.on, bad: c2.piles,
+        lines: [['الحكم', '<b>' + c2.verdict + '</b>'],
+          ['عتبة الاشتعال', c2.gate],
+          ['قيمة مشروعك', c2.value || '—']] })))}
+      ${pl.sulfate ? `<div class="note" style="border-right:3px solid #fbbf24">
+        <b>⚗️ خرسانة مقاومة للكبريتات:</b> ${pl.sulfate_note}</div>` : ''}
+      <h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">أسباب التربة التي تُبطل التأسيس السطحي أصلاً</h4>
+      ${decCards(pl.cases.map(c2 => ({
+        title: c2.t, on: hit.indexOf(c2.t) >= 0, bad: true, noTag: true,
+        lines: [['لماذا', c2.w]] })))}
+      ${geo ? `<h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">
+        من أين جاء الطول والقطر والتباعد — لا رقم افتراضي واحد</h4>
+      ${decCards([
+        { title: 'طول الركيزة L = ' + nf(g.L, 1) + ' م', on: true, tag: null,
+          lines: [['من أين', geo.target ? ('تخترق حتى ' + geo.target.name + ' (' +
+            int(geo.target.qa) + ' kPa) بغرزة 3D')
+            : 'ركيزة احتكاك — لا طبقة حاملة ضمن المجسوس']] },
+        { title: 'القطر D = Ø' + int(g.D * 1000) + ' مم', on: true, tag: null,
+          lines: [['السُّلَّم القياسي', (geo.ladder || []).map(x => nf(x, 2)).join(' · ') + ' م'],
+            ['المختار', 'أصغر قطر تكفي معه المجموعة — استغلال المجموعة ' +
+              nf(g.util * 100, 0) + '% بعد كفاءة التجاور']] },
+        { title: 'التباعد s = ' + nf(g.spacing, 2) + ' م', on: true, tag: null,
+          lines: [['القاعدة', 's = 3D — تابع للقطر لا رقم ثابت']] },
+        { title: 'الترتيب: ' + (g.layout || ''), on: true, tag: null,
+          lines: [['لماذا', g.tri ? 'ثلاث ركائز بمثلث — ثابتة بكل الاتجاهات بلا جسور رابطة'
+            : 'شبكة منتظمة تحت الهامة']] },
+        { title: 'قدرة الركيزة الواحدة ' + int(g.Qall) + ' kN', on: true, tag: null,
+          lines: [['المصدر', 'احتكاك جانبي + ارتكاز طرفي ÷ معامل أمان ' + nf(g.FS, 1)]] },
+      ])}
+      <ul style="font-size:12px;line-height:1.9;color:var(--mut);margin:8px 18px 0 0">
+        ${(geo.why || []).map(x => '<li>' + x + '</li>').join('')}</ul>` : ''}
       <div class="note"><b>وإذا لزمت الركائز:</b> لا تُنفَّذ <b>ركيزة مفردة</b> تحت عمود
         أبداً — خطأ موقعها المسموح بالتنفيذ يحوّل الحمل المحوري إلى عزم على رأسها،
         وليس لها بديل إن ظهر بها عيب صبّ. والاثنتان تقاومان العزم بمحور واحد فقط
@@ -2239,7 +2313,20 @@ PAGES.wizard = {
       ${F('تحمّل التربة qa (0=حسب النوع)', 'w_qa', 0, 5, 'kPa')}
       ${F('منسوب الأرض الطبيعية', 'w_ground', -0.30, .05, 'م من البنج مارك')}
       ${F('عمق الهدم/الحفر القديم', 'w_old', 0, .1, 'م تحت الأرض')}
-      ${F('عمق التأسيس Df', 'w_df', 1.50, .05, 'م')}</div>
+      ${F('عمق التأسيس Df', 'w_df', 1.50, .05, 'م')}
+      ${F('منسوب الماء الجوفي (0=بلا ماء)', 'w_gwt', 0, .25, 'م من البنج مارك')}
+      ${F('سُمك الطبقة الحاملة (0=غير معروف)', 'w_bthk', 0, .5, 'م من تقرير الجسّات')}</div>
+      <div class="chips" style="margin-top:8px">
+        ${C('طبقة ضعيفة تحت الطبقة الحاملة', 'w_weak', false)}
+        ${C('طين انتفاخي (Expansive)', 'w_exsw', false)}
+        ${C('تربة جبسية انهيارية', 'w_gyp', false)}
+        ${C('أملاح/كبريتات عالية', 'w_salt', false)}
+        ${C('قوى شدّ أو قلب على الأعمدة', 'w_upl', false)}</div>
+      <div class="hint"><b>هذه الخمس هي التي تفصل بين «قواعد سطحية» و«ركائز» على
+        التربة نفسها.</b> تربة 180 kPa قد تُبنى عليها قواعد منفصلة وقد توجب ركائز،
+        والفارق سُمك الطبقة الحاملة وما تحتها، والانتفاخ، والماء والأملاح — لا رقم
+        التحمّل وحده. اتركها فارغة إن لم يكن عندك تقرير جسّات، وسيقول الجدول صراحةً
+        إن الشرط لم يُفحص.</div>
       <h3 style="margin-top:14px">أصناف التعرّض — ACI 318M-14 جدول 19.3.1.1</h3>
       <div class="f">${expSelects()}
       ${F('نسبة الماء/الأسمنت w/cm (0=غير محدّدة)', 'w_wcm', 0, .01, '')}</div>
@@ -2292,6 +2379,9 @@ PAGES.wizard = {
   payload: () => ({ area: val('w_area'), floors: val('w_floors'), coverage: val('w_cov'),
     story_h: val('w_hs'), use: txt('w_use'), fc: val('w_fc'), fy: val('w_fy'), city: txt('w_city'),
     soil: txt('w_soil'), qa: val('w_qa') || null, ground: val('w_ground'), old_depth: val('w_old'),
+    gwt: val('w_gwt') || null, bear_thk: val('w_bthk') || 0,
+    weak_below: chk('w_weak'), expansive: chk('w_exsw'), gypseous: chk('w_gyp'),
+    salts: chk('w_salt'), uplift: chk('w_upl'),
     Df: val('w_df'), slab_type: txt('w_slab'), exposure: txt('w_exp'), lap_mode: txt('w_lap'),
     exposure_classes: expPick(), wcm: val('w_wcm') || null,
     cantilever: { L: val('w_cL'), parapet: val('w_cP'), h: val('w_cH') || null,
@@ -2414,6 +2504,7 @@ PAGES.wizard = {
         ${a.alts.map(x => `<li>${x}</li>`).join('')}</ul>` : ''}
       <div style="margin-top:8px;font-size:12px;color:var(--mut)">تحمّل التربة الصافي ${nf(a.q_net, 0)} kPa ·
         مجموع مساحات الأسس ${nf(a.sum_area, 1)} م² (${nf(a.ratio * 100, 0)}% من مساحة البناء)</div></div>
+    ${bandPanel(a)}
 
     <div class="card" style="margin-top:16px"><h3>مقارنة بدائل الأساس</h3>
       ${table(['البديل', 'الوصف', 'الخرسانة (م³)', 'الحديد (طن)', 'الحالة', ''],
@@ -2717,7 +2808,10 @@ PAGES.projects = {
       set('w_area', i.area); set('w_floors', i.floors); set('w_cov', i.coverage); set('w_hs', i.story_h);
       set('w_use', i.use); set('w_fc', i.fc); set('w_fy', i.fy); set('w_city', i.city);
       set('w_soil', i.soil); set('w_qa', i.qa); set('w_ground', i.ground); set('w_old', i.old_depth);
-      set('w_df', i.Df);
+      set('w_df', i.Df); set('w_gwt', i.gwt); set('w_bthk', i.bear_thk);
+      const ck = (id, v) => { const e = $('#' + id); if (e) e.checked = !!v; };
+      ck('w_weak', i.weak_below); ck('w_exsw', i.expansive); ck('w_gyp', i.gypseous);
+      ck('w_salt', i.salts); ck('w_upl', i.uplift);
       PAGES.wizard.run();
     }, 200);
   },

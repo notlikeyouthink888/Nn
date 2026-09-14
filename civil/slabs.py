@@ -72,7 +72,13 @@ def hordi(p):
         x = (Vu - phiVc) / (w_rib if w_rib else 1.0)
         solid_len = max(0.30, math.ceil(x * 20) / 20.0)
     Ash = 0.0018 * 1000.0 * top
-    mesh = E.bar_spacing(max(Ash, 100.0), dbs=(6, 8, 10), smax=min(5 * top, 300.0))
+    # **لا Ø6 بحديد التسليح.** أصغر سيخ مضلّع يُباع بالسوق العراقي Ø8، و Ø6 لا
+    # يوجد إلا سلكاً أملس بالشبك الملحوم (Welded Wire Fabric) وهو منتج آخر
+    # بمواصفة أخرى. كان الحساب يختار Ø6 لأنه بسُلَّم الأقطار، فتخرج شبكة لا
+    # تُشترى. والحدّ الأدنى للتباعد بشبكة الانكماش = أصغر من 5h أو 450 مم
+    # (ACI 318M-14 المادة 24.4.3.3) لا 300.
+    mesh = E.bar_spacing(max(Ash, 100.0), dbs=(8, 10, 12),
+                         smax=min(5 * top, 450.0))
     return dict(kind='hordi', name='هوردي (عصبي بالبلوك)', h=h, hmin=hmin, ok_h=h >= hmin,
                 block=dict(L=bL, W=bW, H=bH, kg=q['block_kg']), rib_w=rw, spacing=s,
                 topping=top, ribs_per_m=ribs_m, blocks_per_m2=blocks_m2,

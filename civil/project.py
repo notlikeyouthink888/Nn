@@ -212,10 +212,20 @@ def design_special(kind, g, t_slab, wD_super, live, fc, fy, cb, chh, Pu, opts):
                     note='بلا جسور داخلية — شرائح الأعمدة تعمل كجسور مخفية داخل سماكة البلاطة')
     elif kind in ('hordi', 'waffle'):
         ml = DT.mesh_layers(h, cov, cov, 10.0, 10.0)
-        m = r.get('mesh') or E.bar_spacing(0.0018 * 1000.0 * r['topping'], dbs=(6, 8, 10), smax=300.0)
-        lay = _layer(m, h - cov - 5.0, 'الطبقة العلوية', 'شبكة انكماش فوق البلوك/الأعصاب')
-        mesh = dict(short=lay, long=dict(lay, order='شبكة انكماش — الاتجاه الثاني'),
-                    top=dict(lay, order='علوي فوق المساند'))
+        m = r.get('mesh') or E.bar_spacing(0.0018 * 1000.0 * r['topping'],
+                                           dbs=(8, 10, 12), smax=450.0)
+        # الهوردي **ليس فيه فرش وغطاء وعلوي**: حديده الرئيسي بالأعصاب، وفوق
+        # البلوك شبكة انكماش واحدة بالاتجاهين. تسميتها بثلاث طبقات كانت تُظهر
+        # ثلاثة صفوف متطابقة توحي بتسليح لا وجود له.
+        lay = _layer(m, h - cov - 5.0, 'الاتجاه القصير',
+                     'شبكة الانكماش بطبقة التغطية — السلك الأول')
+        mesh = dict(short=lay,
+                    long=dict(lay, dir='الاتجاه الطويل',
+                              order='الشبكة نفسها متعامدة — السلك الثاني'),
+                    top=dict(lay, dir='فوق المساند',
+                             order='الشبكة نفسها تستمر — والحديد العلوي الحامل '
+                                   'بالأعصاب' + (' (%s)' % r['top_bars']['label']
+                                                 if r.get('top_bars') else '')))
         geom = dict(kind=kind, spacing=r['spacing'], rib_w=r['rib_w'], topping=r['topping'],
                     rib_h=r.get('rib_h', r.get('block', {}).get('H', 240.0)),
                     block=r.get('block'), blocks_per_m2=r.get('blocks_per_m2'),
@@ -900,6 +910,11 @@ def wizard(p):
                            slab_type=slab_kind, lap_mode=lap_mode, dowel_mode=dowel_mode,
                            chair_kind=chair_kind, exposure=exposure, bent=bent,
                            hordi=hordi_in, grid_override=go,
+                           gwt=p.get('gwt'), bear_thk=float(p.get('bear_thk') or 0.0),
+                           weak_below=bool(p.get('weak_below')),
+                           expansive=bool(p.get('expansive')),
+                           gypseous=bool(p.get('gypseous')),
+                           salts=bool(p.get('salts')), uplift=bool(p.get('uplift')),
                            footprint_override=p.get('footprint_override')),
                 canti=canti,
                 grid=g, footprint=fp, loads=loads, total=total, Pmax=Pmax, Pumax=Pumax,

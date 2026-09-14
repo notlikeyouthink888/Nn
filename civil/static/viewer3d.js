@@ -134,11 +134,25 @@ function Viewer3D(el, M, onPick) {
         { title: 'هامة ركائز PC' + (k + 1), kind: 'cap', grp: 'piles',
           rows: [['الأبعاد', cp.B.toFixed(2) + ' × ' + cp.L.toFixed(2) + ' م'],
             ['عدد الركائز', pil.n], ['التسليح', pil.cap_rebar.label]] });
+      /* مواقع الركائز تحت العمود — **مثلث** عند الثلاث لا صفّاً.
+         كان الرسم شبكة rows×cols دائماً، فتظهر الثلاث بخطّ مستقيم واحد وهي
+         أضعف ترتيب ممكن (لا تقاوم العزم إلا بمحور واحد)، بينما المحسوب مثلث. */
+      const pos = [];
+      if (pil.tri) {
+        const R = pil.spacing / Math.sqrt(3);          // نصف قطر الدائرة المحيطة
+        for (let i = 0; i < 3; i++) {
+          const th = -Math.PI / 2 + i * 2 * Math.PI / 3;
+          pos.push([X + R * Math.cos(th), Z + R * Math.sin(th)]);
+        }
+      } else {
+        for (let rr = 0; rr < pil.rows; rr++) for (let cc = 0; cc < pil.cols; cc++) {
+          if (pos.length >= pil.n) break;
+          pos.push([X + (cc - (pil.cols - 1) / 2) * pil.spacing,
+                    Z + (rr - (pil.rows - 1) / 2) * pil.spacing]);
+        }
+      }
       let n = 0;
-      for (let rr = 0; rr < pil.rows; rr++) for (let cc = 0; cc < pil.cols; cc++) {
-        if (n >= pil.n) break;
-        const ax = X + (cc - (pil.cols - 1) / 2) * pil.spacing;
-        const az = Z + (rr - (pil.rows - 1) / 2) * pil.spacing;
+      for (const [ax, az] of pos) {
         const o = new T.Mesh(new T.CylinderGeometry(pil.D / 2, pil.D / 2, pil.L, 16),
           mat(0x7c6ad8, recIs('piles') ? 1 : .3));
         o.position.set(ax, fb - pil.L / 2, az);
@@ -1215,8 +1229,11 @@ function Viewer3D(el, M, onPick) {
     const g2 = new T.BufferGeometry(), v = [], idx = [];
     pts.forEach((p, i) => {
       const off = p[1] * scale;
+      // محور Z **معكوس** بالمشهد (pz = −(v − B/2))، فالسير بطول الجسر باتجاه Y
+      // يكون بالطرح لا بالجمع. الجمع كان يخرج بالمغلّف من أول محور إلى خارج
+      // المبنى، فتظهر «أجنحة» عزوم معلّقة بالفراغ لا تلامس أي جسر.
       if (dir === 'x') { v.push(cX + p[0], y0, cZ, cX + p[0], y0 + off, cZ); }
-      else { v.push(cX, y0, cZ + p[0], cX, y0 + off, cZ + p[0]); }
+      else { v.push(cX, y0, cZ - p[0], cX, y0 + off, cZ - p[0]); }
       if (i) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
     });
     g2.setAttribute('position', new T.Float32BufferAttribute(v, 3));
@@ -2100,6 +2117,15 @@ function Viewer3D(el, M, onPick) {
     rebar: v => { if (v) buildRebar(); G.rebar.visible = v; G.extra.visible = v && on.extra !== 0;
       G.chairs.visible = v && on.chairs !== 0; applyVis(); return visStats(); },
     moments: v => { if (v) buildMoments(); G.moments.visible = v; applyVis(); },
+    /* حدود مغلّف العزوم مقابل حدود المبنى — للتحقق أن الرسم فوق الجسور لا خارجها */
+    momentBox: () => {
+      buildMoments();
+      const bb = new T.Box3().setFromObject(G.moments);
+      return { mx: [+bb.min.x.toFixed(2), +bb.max.x.toFixed(2)],
+               mz: [+bb.min.z.toFixed(2), +bb.max.z.toFixed(2)],
+               bx: [+(-L / 2).toFixed(2), +(L / 2).toFixed(2)],
+               bz: [+(-B / 2).toFixed(2), +(B / 2).toFixed(2)] };
+    },
     punch: v => { if (v) buildPunch(); G.punch.visible = v; },
     defl: v => { if (v) buildDefl(); G.defl.visible = v; applyVis(); },
     xray: v => {

@@ -30,6 +30,16 @@ def build(sp, removed=None):
     Ab, Ib1, Ib2 = bb * bh, bh * bb ** 3 / 12 * 0.35, bb * bh ** 3 / 12 * 0.35
     Jb = F3.torsion_J(bb, bh) * 0.35
     ids = {}
+    # ---- نواة المصعد كعمود مكافئ (Wide-Column) ----
+    # النواة أقسى عنصر بالمبنى بالمستوى الأفقي. إن وُجدت ولم تدخل التحليل خرج
+    # الانزياح الجانبي أكبر ممّا هو، وخرجت الأعمدة حاملةً قوة تأخذها النواة
+    # فعلاً. تُمثَّل بعمود واحد عند مركزها بخصائص مقطعها الصندوقي، ويُربط
+    # بالديافرام الصلب كبقية عقد الطابق — وهو النموذج المعتاد للنوى.
+    core = sp.get('core') or None
+    cnid = {}
+    if core:
+        for k in range(nf + 1):
+            cnid[k] = f.node(float(core['x']), float(core['y']), k * hs)
     for k in range(nf):
         for j in range(ny + 1):
             for i in range(nx + 1):
@@ -54,10 +64,23 @@ def build(sp, removed=None):
                 ids[key] = f.member(nid[(i, j, k)], nid[(i, j + 1, k)], Ec, Ab, Ib1, Ib2, Jb,
                                     qz=-wi, tag='by',
                                     meta=dict(key=key, b=bb, h=bh, story=k, i=i, j=j, span=sy))
-        f.diaphragm([nid[(i, j, k)] for j in range(ny + 1) for i in range(nx + 1)])
+        dia = [nid[(i, j, k)] for j in range(ny + 1) for i in range(nx + 1)]
+        if core:
+            dia.append(cnid[k])
+        f.diaphragm(dia)
     for j in range(ny + 1):
         for i in range(nx + 1):
             f.support(nid[(i, j, 0)])
+    if core:
+        for k in range(nf):
+            key = ('core', 0, 0, k + 1)
+            ids[key] = f.member(cnid[k], cnid[k + 1], Ec, float(core['A']),
+                                float(core['Ix']), float(core['Iy']), float(core['J']),
+                                tag='core',
+                                meta=dict(key=key, b=core.get('wo', 1.8) * 1000,
+                                          h=core.get('ho', 1.95) * 1000,
+                                          story=k + 1, i=0, j=0))
+        f.support(cnid[0])
     # القوة الجانبية تُسلَّط عند مركز الديافرام لا عند ركن — وإلا ولّدت التواءً وهمياً
     ic, jc = nx // 2, ny // 2
     for lat in (sp.get('lateral') or []):
@@ -103,7 +126,24 @@ def capacities(sp):
     Aoh = (bb - 80) * (bh - 80); ph = 2 * ((bb - 80) + (bh - 80))
     phiTn = 0.75 * 2 * 0.85 * Aoh * (Av / 2) * fy / st['s'] / 1e6
     r = 0.3 * chh / 1000.0
-    return dict(pts=pts, P0=P0, phiPmax=pts[0]['P'], phiMn_pos=phiMn_pos, phiMn_neg=phiMn_neg,
+    # مقاومات نواة المصعد — من مقطعها الصندوقي وحديدها الأدنى، لا من العمود
+    core = sp.get('core')
+    core_cap = None
+    if core:
+        A = float(core['A']) * 1e6                       # مم²
+        Lw = float(core.get('ho', 1.8)) * 1000.0         # طول الجدار بمستوى القص
+        tw = float(core.get('t', 200.0))
+        # المقاومات تأتي من تصميم الجدار نفسه (elevator.wall_design) حين يُمرَّر،
+        # وإلا حُسبت هنا بالحديد الأدنى كحدّ أدنى محافظ.
+        core_cap = dict(
+            phiPn=0.55 * 0.65 * fc * A / 1000.0,         # 11.5.3.1
+            phiVn=float(core.get('phiVn') or
+                        0.75 * 0.17 * math.sqrt(fc) * (2 * tw) * (0.8 * Lw) / 1000.0),
+            phiMn=float(core.get('phiMn') or
+                        0.9 * (0.0012 * tw * Lw) * fy * (0.8 * Lw) / 1e6 * 2.0),
+            phiTn=0.75 * 2 * 0.85 * (float(core['J']) * 1e12 / max(tw, 1.0))
+                  * (0.0025 * tw * 1000.0 / 1000.0) * fy / 1e6)
+    return dict(core=core_cap, pts=pts, P0=P0, phiPmax=pts[0]['P'], phiMn_pos=phiMn_pos, phiMn_neg=phiMn_neg,
                 phiVn=phiVn, phiTth=phiTth, phiTn=max(phiTn, phiTth), r=r,
                 Ec=E.Ec(fc) * 1000.0, Ic=cb * chh ** 3 / 12 / 1e12, fc=fc, fy=fy,
                 col=(cb, chh), beam=(bb, bh), d=dbe)
@@ -118,7 +158,17 @@ def check_member(m, dg, cap, hs):
     Vy = max(abs(p['Vy']) for p in dg); Vz = max(abs(p['Vz']) for p in dg)
     Tq = max(abs(p['T']) for p in dg)
     out = dict(N=N, Nt=Nt, M=max(Mz, My), V=max(Vy, Vz), T=Tq)
-    if m['tag'] == 'col':
+    if m['tag'] == 'core':
+        # النواة تُفحص بمقاومات الجدار لا بمقاومات العمود
+        c = cap.get('core') or {}
+        Pu = abs(min(N, 0.0))
+        Mu = math.sqrt(Mz ** 2 + My ** 2)
+        out.update(bending=Mu / max(c.get('phiMn', 1e9), 1e-9),
+                   buckling=Pu / max(c.get('phiPn', 1e9), 1e-9),
+                   shear=max(Vy, Vz) / max(c.get('phiVn', 1e9), 1e-9),
+                   torsion=Tq / max(c.get('phiTn', 1e9), 1e-9),
+                   tension=0.0)
+    elif m['tag'] == 'col':
         Pu = abs(min(N, 0.0))
         Mu = math.sqrt(Mz ** 2 + My ** 2)
         phiMn, rb = E.col_check(Pu, Mu, cap['pts'])
@@ -196,7 +246,8 @@ def compare(sp):
             worst = row
     rows.sort(key=lambda r: -r['after'])
     fails = [r for r in rows if r['fail']]
-    KA = {'col': 'عمود', 'bx': 'جسر باتجاه X', 'by': 'جسر باتجاه Y'}
+    KA = {'col': 'عمود', 'bx': 'جسر باتجاه X', 'by': 'جسر باتجاه Y',
+          'core': 'نواة المصعد'}
     rml = _as_list(removed)
     if len(rml) == 1:
         r0 = rml[0]
@@ -230,7 +281,8 @@ def compare(sp):
                            % (sM0, sM, (sM / sM0 - 1) * 100))
     if worst:
         summary.append('أشد عنصر متأثر: %s طابق %d — النسبة %.2f → %.2f (%s)' % (
-            {'col': 'عمود', 'bx': 'جسر X', 'by': 'جسر Y'}.get(worst['tag'], worst['tag']),
+            {'col': 'عمود', 'bx': 'جسر X', 'by': 'جسر Y',
+             'core': 'نواة المصعد'}.get(worst['tag'], worst['tag']),
             worst['story'], worst['before'], worst['after'], worst['mode_ar']))
     dmax = max([abs(x) for x in aft['drift']] or [0])
     summary.append('أقصى انزياح جانبي بعد الحذف %.1f مم (قبله %.1f مم)' % (

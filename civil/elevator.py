@@ -147,6 +147,11 @@ def wall_design(p):
     need_shear = Vu > phiVc
     if need_shear:
         Ast = max(Ast, (Vu / 0.75 - phiVc / 0.75) * 1000.0 / (fy * d) * 1000.0)
+    # المقاومة الكلية للقصّ = خرسانة + الحديد الأفقي المصمَّم (11.5.4.8).
+    # كان المعروض φVc وحده، فتظهر النواة راسبة بالقصّ رغم أن حديدها الأفقي
+    # زِيد فعلاً لمقاومته — المقاومة تُقاس بالمقطع **وحديده** لا بالخرسانة وحدها.
+    phiVs = 0.75 * (Ast / 1000.0) * fy * d / 1000.0
+    phiVn = min(phiVc + phiVs, 0.75 * Vn_max)
     two_layers = t >= 250.0
     smax = min(3 * t, 450.0)
     vl = E.bar_spacing(Asl * (0.5 if two_layers else 1.0), dbs=(10, 12, 16), smax=smax)
@@ -155,11 +160,26 @@ def wall_design(p):
     sig = (Pu * 1000.0 / (t * Lw * 1000.0)
            + Mu * 1e6 / (t * (Lw * 1000.0) ** 2 / 6.0)) if Lw > 0 else 0.0
     need_be = sig > 0.20 * fc
+    # **وحديد الانحناء يُصمَّم، لا يُكتفى بالأدنى.** الحديد الأدنى (ρ = 0.0012)
+    # وُضع للانكماش والحرارة لا لمقاومة عزم القلب: نواة تأخذ 88% من قص الطابق
+    # على ارتفاع 16 م تولّد عزماً يتجاوز مقاومة الحديد الأدنى بستة أضعاف.
+    # يُحسب الحديد كزوج قوى بين طرفَي الجدار (ذراع 0.8·Lw) ويُركَّز بعنصري الحدّ.
+    zarm = 0.8 * Lw * 1000.0
+    As_be = max(0.0, Mu * 1e6 / (0.9 * fy * zarm)) if Lw > 0 else 0.0
+    As_min_be = 0.0012 * t * Lw * 1000.0 / 2.0            # نصيب الطرف من الأدنى
+    As_be = max(As_be, As_min_be)
+    be = E.pick_bars(As_be, dbs=(16, 20, 25, 32), nmin=4, nmax=16)
+    L_be = max(0.15 * Lw * 1000.0, t)                      # طول عنصر الحدّ (18.10.6.4)
+    phiMn = 0.9 * be['As'] * fy * zarm / 1e6               # kN·م
     return dict(t=t, Lw=Lw, Pu=Pu, Vu=Vu, Mu=Mu, phiPn=round(phiPn, 1),
                 ok_axial=Pu <= phiPn, phiVc=round(phiVc, 1), Vn_max=round(Vn_max, 1),
-                ok_shear=Vu <= max(phiVc, 0.0) or need_shear,
+                phiVs=round(phiVs, 1), phiVn=round(phiVn, 1),
+                ok_shear=Vu <= phiVn,
                 ok_section=Vu <= 0.75 * Vn_max,
                 rho_l=rho_l, rho_t=rho_t, need_shear=need_shear,
+                As_be=round(As_be, 0), be=be, L_be=round(L_be, 0),
+                phiMn=round(phiMn, 1), ok_flex=phiMn >= Mu,
+                be_tie_s=round(min(t / 3.0, 96.0, 150.0), 0),
                 two_layers=two_layers, vert=vl, horiz=vt,
                 sigma=round(sig, 2), need_boundary=need_be,
                 rows=[('سماكة الجدار', '%d مم%s' % (int(t),
@@ -167,14 +187,21 @@ def wall_design(p):
                        else ' — شبكة واحدة')),
                       ('الحمل المحوري φPn', '%.0f kN مقابل Pu = %.0f kN (11.5.3.1 '
                        'الطريقة المبسّطة)' % (phiPn, Pu)),
-                      ('قصّ الخرسانة φVc', '%.0f kN مقابل Vu = %.0f kN (11.5.4.3)'
-                       % (phiVc, Vu)),
+                      ('قصّ الخرسانة φVc', '%.0f kN (11.5.4.3)' % phiVc),
+                      ('قصّ الحديد الأفقي φVs', '%.0f kN' % phiVs),
+                      ('المقاومة الكلية φVn', '%.0f kN مقابل Vu = %.0f kN — %s'
+                       % (phiVn, Vu, 'مقبول' if Vu <= phiVn else 'يلزم تثخين الجدار')),
                       ('حدّ المقطع', 'Vu لا يتجاوز 0.75·Vn,max = %.0f kN — وإلا '
                        'وجب تثخين الجدار' % (0.75 * Vn_max)),
                       ('الحديد الرأسي', '%s — ρ = %.4f (11.6.1)' % (vl['label'], rho_l)),
                       ('الحديد الأفقي', '%s — ρ = %.4f%s'
                        % (vt['label'], rho_t,
                           ' (زِيد لمقاومة القصّ 11.5.4.8)' if need_shear else '')),
+                      ('حديد الانحناء بعنصر الحدّ', '%s بكل طرف (As = %d مم²) — '
+                       'زوج قوى بذراع 0.8·Lw = %.2f م يقاوم Mu = %.0f kN·م · φMn = %.0f kN·م'
+                       % (be['label'], int(As_be), zarm / 1000.0, Mu, phiMn)),
+                      ('تطويق عنصر الحدّ', 'أساور Ø10 @ %d مم على طول %d مم من كل طرف '
+                       '(18.10.6.4)' % (int(min(t / 3.0, 96.0, 150.0)), int(L_be))),
                       ('إجهاد الضغط بالطرف', '%.2f ميغا — %s' % (sig,
                        'يتجاوز 0.2·f\'c فيلزم **عنصر حدّ** مطوَّق (18.10.6.3)'
                        if need_be else 'أقلّ من 0.2·f\'c فلا يلزم عنصر حدّ')),
@@ -200,7 +227,10 @@ def design(p):
     Pu_wall = 1.2 * (sw / 4.0) + 1.4 * ld['R_top'] / 4.0
     # قص الطابق الذي تجذبه النواة — يُمرَّر من المشروع إن حُسب، وإلا صفر
     Vu = float(p.get('V_core', 0.0))
-    Mu = Vu * H * 0.55                         # ذراع مكافئ لقوة موزّعة بالارتفاع
+    # عزم القلب عند القاعدة: **لا ذراع مفترض**. يُمرَّر Σ(F_i · h_i) من توزيع
+    # القوة الزلزالية على الطوابق (ASCE 7 المادة 12.8.3) ويُضرب بحصة النواة،
+    # فالعزم ناتج التوزيع الفعلي لا تقدير موضع محصّلة.
+    Mu = float(p.get('M_core') or (Vu * H * 0.70))
     wl = wall_design(dict(t=t, story_h=hs, floors=floors, fc=fc, fy=fy,
                           Pu=Pu_wall, Vu=Vu / 2.0, Lw=Lw, Mu=Mu / 2.0))
     op = ST.opening(dict(w=w, h=h, slab_h=p.get('slab_h', 200.0), fc=fc, fy=fy,

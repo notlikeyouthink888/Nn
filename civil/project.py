@@ -854,18 +854,58 @@ def wizard(p):
     elev = None
     ein = p.get('elevator') or None
     if ein and (ein.get('on') is not False):
-        _sec = EV.core_section(float(ein.get('w') or 1.6), float(ein.get('h') or 1.75),
-                               float(ein.get('t') or 200.0))
+        _ew = float(ein.get('w') or 1.6); _eh = float(ein.get('h') or 1.75)
+        _et = float(ein.get('t') or 200.0)
+        _sec = EV.core_section(_ew, _eh, _et)
         _rig = EV.rigidity(_sec, len(loads), cb, ch)
         _V = float(seis.get('V') or 0.0)      # قص القاعدة الزلزالي الفعلي
-        elev = EV.design(dict(ein, story_h=hs, floors=floors, fc=fc, fy=fy,
-                              slab_h=slab['h'], span=min(g['sx'], g['sy']),
+        _Mb = sum(float(d.get('Fx') or 0.0) * float(d.get('h') or 0.0)
+                  for d in (seis.get('dist') or []))       # Σ(F·h) عند القاعدة
+        _ex = float(ein.get('x') or g['sx'] / 2.0)
+        _ey = float(ein.get('y') or g['sy'] / 2.0)
+        # **الطلب من التحليل الفراغي نفسه، لا من نسبة صلابات.** النواة والإطار
+        # لهما شكلا انحراف مختلفان (النواة كابولي والإطار قصّي)، والديافرام
+        # الصلب يفرض توافقهما فيعلّق الإطار بالنواة عند الأعلى — فيتجاوز عزم
+        # قاعدة النواة قيمة Σ(F·h) الحرّة. نسبة الصلابات تقديرٌ لا يلتقط هذا،
+        # فيُشغَّل النموذج الفراغي مرة واحدة بالنواة داخله وتُقرأ قواها فعلاً.
+        _Vc, _Mc = _rig['share'] * _V, _rig['share'] * _Mb
+        _src = 'نسبة الصلابات (تعذّر التحليل الفراغي)'
+        try:
+            import lab as _LB
+            _lat = [dict(floor=int(round(d0['h'] / hs)) or 1, Fx=d0['Fx'], Fy=0.0)
+                    for d0 in seis['dist']]
+            _sp = dict(nx=g['nx'], ny=g['ny'], sx=g['sx'], sy=g['sy'],
+                       floors=floors, story_h=hs, fc=fc, fy=fy,
+                       col_b=cb, col_h=ch, beam_b=bx['section']['b'],
+                       beam_h=bx['section']['h'],
+                       wu=1.2 * D + 1.6 * live, lateral=_lat,
+                       core=dict(x=_ex, y=_ey, A=_sec['A'], Ix=_sec['Ix'],
+                                 Iy=_sec['Iy'], J=_sec['J'], wo=_sec['wo'],
+                                 ho=_sec['ho'], t=_et))
+            _f3, _ids, _ = _LB.build(_sp, None)
+            _f3.run()
+            for _i, _m in enumerate(_f3.members):
+                if _m['tag'] != 'core' or _m['meta']['story'] != 1:
+                    continue
+                _dg = _f3.diagram(_i, 9)
+                _Mc = max(math.hypot(q['Mz'], q['My']) for q in _dg)
+                _Vc = max(max(abs(q['Vy']), abs(q['Vz'])) for q in _dg)
+                _src = 'التحليل الفراغي بديافرام صلب — القوى المقروءة عند قاعدة النواة'
+                break
+        except Exception:
+            pass
+        elev = EV.design(dict(ein, w=_ew, h=_eh, t=_et, story_h=hs, floors=floors,
+                              fc=fc, fy=fy, slab_h=slab['h'],
+                              span=min(g['sx'], g['sy']),
                               mesh_db=slab['mesh']['short']['db'],
                               mesh_s=slab['mesh']['short']['s'],
-                              V_core=_rig['share'] * _V))
+                              V_core=_Vc, M_core=_Mc))
+        _rig['V_base'] = round(_V, 1); _rig['M_base'] = round(_Mb, 1)
+        _rig['V_core'] = round(_Vc, 1); _rig['M_core'] = round(_Mc, 1)
+        _rig['source'] = _src
         elev['rigidity'] = _rig
-        elev['x'] = float(ein.get('x') or g['sx'] / 2.0)
-        elev['y'] = float(ein.get('y') or g['sy'] / 2.0)
+        elev['x'] = _ex
+        elev['y'] = _ey
 
     layout = slab_layout(g['L'], g['B'], slab['mesh'], slab['cover'], slab.get('geom'),
                          laps.get(int(slab['mesh']['short']['db']), {}).get('bottom', 0.0))
@@ -1309,7 +1349,21 @@ def lab_spec(R):
                 col_rebar=dict(nb=m['col']['rebar']['nb'], db=m['col']['rebar']['db']),
                 beam_rebar=dict(bottom_As=reb['bottom']['As'], top_As=reb['top']['As']),
                 stirrup=dict(db=reb['stirrup']['db'], s=reb['stirrup']['s'],
-                             legs=reb['stirrup']['legs']))
+                             legs=reb['stirrup']['legs']),
+                # النواة تدخل النموذج الفراغي كعمود مكافئ بخصائص مقطعها
+                core=(dict(x=m['elevator']['x'], y=m['elevator']['y'],
+                           A=m['elevator']['section']['A'],
+                           Ix=m['elevator']['section']['Ix'],
+                           Iy=m['elevator']['section']['Iy'],
+                           J=m['elevator']['section']['J'],
+                           wo=m['elevator']['section']['wo'],
+                           ho=m['elevator']['section']['ho'],
+                           t=m['elevator']['t'],
+                           # مقاومة الانحناء من الحديد **المصمَّم** بعنصري الحدّ
+                           # لا من الحديد الأدنى — وإلا خرجت النواة راسبة دائماً
+                           phiMn=m['elevator']['wall']['phiMn'] * 2.0,
+                           phiVn=m['elevator']['wall']['phiVn'] * 2.0
+                           ) if m.get('elevator') else None))
 
 def lab(p):
     """يحذف عنصراً ويعيد التحليل — يقبل مدخلات المعالج مباشرة."""

@@ -1087,6 +1087,7 @@ function detailPanel(r) {
           <br>المختار: <b>${r.model.slab.name}</b> بسماكة ${int(r.model.slab.h)} مم ووزن ذاتي
           ${nf(r.floor.slab_sw, 2)} kN/m².
           <button class="btn gh" style="margin-top:8px" onclick="wtab('slabs')">قارن كل الأنواع بالتفصيل</button></div></div>
+      ${barMapPanel(r)}
       ${liftPanel(r)}
       ${fieldPanel(r)}
       ${extraPanel(r)}
@@ -1440,6 +1441,165 @@ function stressCards(active, ratios) {
           <b style="color:${a.color}">شكل الفشل:</b> <span style="color:var(--mut)">${a.fail}</span></div>
       </div>`;
     }).join('')}</div>`;
+}
+
+/* ========== بيان الشياش: أيّها مستمر وأيّها ينقطع — وأين بالضبط ==========
+   السؤال العملي بالموقع ليس «كم سيخاً» بل **أي سيخ يمشي من أوله لآخره وأيّها
+   يُقطع وأين**. الرسم أدناه مقطع طولي لبحر نموذجي مبنيّ على أرقام التصميم
+   نفسها: أطوال القطع من الكود (9.7.3)، ومنطقة الوصل الممنوعة من 18.6.3.3،
+   ومناطق الأساور الحرجة من 18.6.4. */
+function barMapSvg(R, o) {
+  const sp = o.span, sw = o.sup_w, ln = o.ln;
+  const X0 = 70, X1 = 880, W = X1 - X0, S = W / sp;        // بكسل لكل متر
+  const m = v => X0 + v * S;
+  const yT = 118, hpx = 104, yB = yT + hpx;                 // وجها الجسر
+  const swp = sw * S, fL = m(sw / 2), fR = m(sp - sw / 2);  // وجها المسند
+  const C = { top: '#f87171', bot: '#38bdf8', cont: '#34d399',
+              tie: '#fb923c', dim: '#94a3b8', sp: '#facc15' };
+  const lab = (x, y, t, c, sz, anc) => `<text x="${x}" y="${y}" fill="${c || C.dim}"
+    font-size="${sz || 13}" text-anchor="${anc || 'middle'}" font-weight="600">${t}</text>`;
+  const dim = (x1, x2, y, t, c) => `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}"
+      stroke="${c || C.dim}" stroke-width="1.1"/>
+    <line x1="${x1}" y1="${y - 6}" x2="${x1}" y2="${y + 6}" stroke="${c || C.dim}" stroke-width="1.1"/>
+    <line x1="${x2}" y1="${y - 6}" x2="${x2}" y2="${y + 6}" stroke="${c || C.dim}" stroke-width="1.1"/>
+    ${lab((x1 + x2) / 2, y - 8, t, c, 12)}`;
+  // ---- الأساور ----
+  const zc = Math.min(2 * o.h / 1000, ln / 3);
+  let ties = '';
+  const tick = x => `<line x1="${x}" y1="${yT + 7}" x2="${x}" y2="${yB - 7}"
+    stroke="${C.tie}" stroke-width="1.7" opacity=".85"/>`;
+  for (let v = 0; v <= zc + 1e-9; v += o.s_hoop / 1000) { ties += tick(fL + v * S); ties += tick(fR - v * S); }
+  for (let v = zc; v <= ln - zc + 1e-9; v += o.s / 1000) ties += tick(fL + v * S);
+  // ---- الشياش ----
+  const yTc = yT + 13, yT1 = yT + 26, yT2 = yT + 38;
+  const yBc = yB - 13, yB1 = yB - 27;
+  const bar = (x1, x2, y, c, w) => `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}"
+    stroke="${c}" stroke-width="${w || 4}" stroke-linecap="round"/>`;
+  const t1 = Math.min(o.top1, ln / 2) * S, t2 = Math.min(o.top2, ln / 2) * S;
+  const cut = 0.1 * ln;
+  // direction:ltr وإلا بدأ التمرير من يمين الرسم (الصفحة RTL) فاختفت بدايته
+  return `<div style="overflow-x:auto;direction:ltr"><svg viewBox="0 0 950 300"
+      style="min-width:700px;width:100%;height:auto;background:#0b1220;border-radius:10px">
+    ${lab(X0, 26, 'مقطع طولي لبحر نموذجي — جسر ' + o.dir, '#e2e8f0', 15, 'start')}
+    ${lab(X1, 26, int(o.b) + ' × ' + int(o.h) + ' مم', C.dim, 13, 'end')}
+    ${lab(X0, 52, '▬ مستمر', C.cont, 13, 'start')}
+    ${lab(X0 + 100, 52, '▬ علوي مقطوع', C.top, 13, 'start')}
+    ${lab(X0 + 235, 52, '▬ سفلي مقطوع', C.bot, 13, 'start')}
+    ${lab(X0 + 370, 52, '❙ كانات', C.tie, 13, 'start')}
+    ${lab(X0 + 460, 52, '▨ نطاق الوصل', C.sp, 13, 'start')}
+    <!-- المساند -->
+    <rect x="${fL - swp}" y="${yT}" width="${swp}" height="${hpx + 54}" fill="#1e293b" stroke="#334155"/>
+    <rect x="${fR}" y="${yT}" width="${swp}" height="${hpx + 54}" fill="#1e293b" stroke="#334155"/>
+    ${lab(fL - swp / 2, yB + 74, 'عمود', C.dim, 12)}
+    ${lab(fR + swp / 2, yB + 74, 'عمود', C.dim, 12)}
+    <!-- جسم الجسر -->
+    <rect x="${fL - swp}" y="${yT}" width="${fR + 2 * swp - fL}" height="${hpx}"
+      fill="#111c2e" stroke="#334155" stroke-width="1.5"/>
+    ${ties}
+    <!-- نطاق الوصل -->
+    <rect x="${m(o.splice[0])}" y="${yT + 2}" width="${(o.splice[1] - o.splice[0]) * S}"
+      height="${hpx - 4}" fill="${C.sp}" opacity=".09"/>
+    <!-- علوي -->
+    ${bar(fL - swp, fR + swp, yTc, C.cont, 4.6)}
+    ${lab(m(sp / 2), yT - 10, '٢Ø' + int(o.top_db) + ' علوي مستمر — لا يُقطع', C.cont, 13)}
+    ${o.top_n > 2 ? bar(fL - swp, fL + t1, yT1, C.top) + bar(fR - t1, fR + swp, yT1, C.top) : ''}
+    ${o.top_n > 3 ? bar(fL - swp, fL + t2, yT2, C.top, 3) + bar(fR - t2, fR + swp, yT2, C.top, 3) : ''}
+    ${o.top_n > 2 ? dim(fL, fL + t1, yT - 32, 'L/3 = ' + nf(o.top1, 2) + ' م', C.top) : ''}
+    ${o.top_n > 3 ? dim(fR - t2, fR, yT - 32, 'L/5 = ' + nf(o.top2, 2) + ' م', C.top) : ''}
+    <!-- سفلي -->
+    ${bar(fL - swp, fR + swp, yBc, C.cont, 4.6)}
+    ${o.bot_n > 2 ? bar(fL + cut * S, fR - cut * S, yB1, C.bot) : ''}
+    ${lab(m(sp / 2), yB + 20, '٢Ø' + int(o.bot_db) + ' سفلي مستمر — يدخل العمود وينشر fy',
+      C.cont, 13)}
+    ${o.bot_n > 2 ? dim(fL, fL + cut * S, yB + 40, '0.1·ln = ' + nf(cut, 2) + ' م', C.bot) : ''}
+    ${dim(m(o.splice[0]), m(o.splice[1]), yB + 40, 'نطاق الوصل المسموح', C.sp)}
+    <!-- الأساور -->
+    ${dim(fL, fL + zc * S, yB + 66, 'Ø' + int(o.tie_db) + '@' + int(o.s_hoop) + ' على 2h = '
+      + nf(zc, 2) + ' م', C.tie)}
+    ${dim(fL + zc * S, fR - zc * S, yB + 66, 'Ø' + int(o.tie_db) + '@' + int(o.s), C.tie)}
+    ${dim(fR - zc * S, fR, yB + 66, nf(zc, 2) + ' م', C.tie)}
+    ${dim(fL, fR, yB + 92, 'البحر الصافي ln = ' + nf(ln, 2) + ' م')}
+  </svg></div>`;
+}
+function barMapPanel(r) {
+  const rows = ((r.aci_extra || {}).beam_rules || {}).rows || [];
+  if (!rows.length) return '';
+  const body = rows.map(x => {
+    const mb = r.model.beams[x.beam === 'X' ? 'x' : 'y'];
+    const o = { dir: x.beam, b: x.b, h: x.h, d: x.d, span: x.span, ln: x.ln,
+      sup_w: x.span - x.ln, top1: mb.detail.top1, top2: mb.detail.top2,
+      top_n: mb.rebar.top.n, top_db: mb.rebar.top.db,
+      bot_n: mb.rebar.bottom.n, bot_db: mb.rebar.bottom.db,
+      tie_db: mb.rebar.stirrup.db, s: mb.rebar.stirrup.s,
+      s_hoop: (x.splice || {}).s_hoop || mb.rebar.stirrup.s,
+      splice: (x.splice || {}).zone || [x.span * 0.3, x.span * 0.7] };
+    const cut = x.cut || {};
+    return `<h4 style="margin:14px 0 8px;color:var(--mut);font-size:13px">
+        جسر باتجاه ${x.beam} — ${int(x.b)} × ${int(x.h)} مم · بحر ${nf(x.span, 2)} م</h4>
+      ${barMapSvg(r, o)}
+      ${decCards([
+        { title: 'علوي — الطبقة المستمرة · 2Ø' + int(o.top_db), on: true, tag: 'مستمر',
+          lines: [['أين', 'يمشي على طول الجسر كله ويمرّ خلال كل عمود — لا يُقطع أبداً'],
+            ['البند', 'ACI 318M-14 18.6.3.1']] },
+        { title: 'علوي — الطبقة الأولى المقطوعة · ' + Math.max(0, o.top_n - 2) + 'Ø' + int(o.top_db),
+          on: o.top_n > 2, bad: true, tag: 'ينقطع',
+          lines: [['أين ينتهي', 'على L/3 = ' + nf(o.top1, 2) + ' م من وجه المسند لكل جهة'],
+            ['البند', 'ACI 318M-14 9.7.3.8.4']] },
+        { title: 'علوي — الطبقة الثانية', on: o.top_n > 3, bad: true, tag: 'ينقطع',
+          lines: [['أين ينتهي', o.top_n > 3 ? 'تُقطع أبكر عند L/5 = ' + nf(o.top2, 2) + ' م'
+            : 'غير مطلوبة بهذا المقطع'], ['البند', 'ACI 318M-14 9.7.3.8.4']] },
+        { title: 'امتداد ثلث الحديد العلوي بعد نقطة الانقلاب', on: true, tag: 'إلزامي',
+          lines: [['المقدار', ((cut.neg_third || {}).n || 2) + ' سيخ يتجاوز نقطة الانقلاب ('
+            + nf(cut.inflect || 0, 2) + ' م) بـ ' + nf((cut.neg_third || {}).ext || 0, 2)
+            + ' م = الأكبر من d و12db و ln/16'],
+            ['لماذا', 'نقطة الانقلاب موضع نظري يتحرّك مع نمط التحميل — فيُمدّ الحديد بعدها احتياطاً'],
+            ['البند', 'ACI 318M-14 9.7.3.8.4']] },
+        { title: 'سفلي — الطبقة المستمرة · 2Ø' + int(o.bot_db), on: true, tag: 'مستمر',
+          lines: [['أين', 'يدخل العمود و**ينشر fy عند وجهه**'],
+            ['ما هو', 'حديد التماسك الإنشائي الذي يمنع الانهيار التدريجي لو فُقد مسند'],
+            ['البند', 'ACI 318M-14 9.7.7 + 9.7.3.8.2']] },
+        { title: 'سفلي — الباقي · ' + Math.max(0, o.bot_n - 2) + 'Ø' + int(o.bot_db),
+          on: o.bot_n > 2, bad: true, tag: 'ينقطع',
+          lines: [['أين ينتهي', 'على بُعد 0.1·ln ≈ ' + nf(0.1 * o.ln, 2) + ' م من وجه المسند'
+            + (mb.detail.bent ? ' — ونصفه يُثنى 45° عند ln/7 = ' + nf(mb.detail.bend_at, 2) + ' م' : '')],
+            ['البند', 'ACI 318M-14 9.7.3.8.3']] },
+        { title: 'وصلات الحديد السفلي', on: true, tag: 'بمكان محدّد',
+          lines: [['النطاق المسموح', nf(o.splice[0], 2) + ' – ' + nf(o.splice[1], 2)
+            + ' م من مركز المسند'],
+            ['الممنوع', 'الوصل قرب وجه العمود — هناك تتكوّن المفصلة اللدنة والوصلة تنزلق'],
+            ['البند', 'ACI 318M-14 18.6.3.3']] },
+        { title: 'الكانات — المنطقة الحرجة · Ø' + int(o.tie_db) + '@' + int(o.s_hoop) + ' مم',
+          on: true, tag: 'مكثّفة',
+          lines: [['المدى', 'على 2h = ' + nf(Math.min(2 * o.h / 1000, o.ln / 3), 2)
+            + ' م من وجه كل عمود'],
+            ['العكفة', '135° تدخل لبّ الجسر — لا 90° تنفتح مع تقشّر الغطاء'],
+            ['البند', 'ACI 318M-14 18.6.4.1 + 25.3.4']] },
+        { title: 'الكانات — باقي البحر · Ø' + int(o.tie_db) + '@' + int(o.s) + ' مم',
+          on: true, tag: 'عادية',
+          lines: [['أين', 'بوسط البحر حيث القص أقلّ'],
+            ['الحدّ', 'التباعد لا يتجاوز d/2 = ' + int(x.d / 2) + ' مم'],
+            ['البند', 'ACI 318M-14 9.7.6.2.2']] },
+      ])}`;
+  }).join('');
+  return `<div class="card"><h3>🧵 الشياش المستمرة وغير المستمرة — والكانات</h3>
+    <div class="note" style="margin-bottom:10px">السؤال بالموقع ليس «كم سيخاً» بل
+      <b>أي سيخ يمشي من أوله لآخره وأيّها يُقطع وأين</b>. الرسم مقطع طولي لبحر
+      نموذجي مبنيّ على أرقام هذا المشروع نفسه:
+      <b style="color:#34d399">الأخضر مستمر</b> ·
+      <b style="color:#f87171">الأحمر علوي مقطوع</b> ·
+      <b style="color:#38bdf8">الأزرق سفلي مقطوع</b> ·
+      <b style="color:#fb923c">البرتقالي كانات</b> ·
+      <b style="color:#facc15">الأصفر نطاق الوصل المسموح</b>.</div>
+    ${body}
+    <div class="note"><b>لماذا يوجد سيخ مستمر أصلاً:</b> الحديد السفلي المستمر
+      الذي يدخل العمود وينشر إجهاد خضوعه هناك هو <b>حديد التماسك الإنشائي</b>
+      (ACI 9.7.7): لو فُقد عمود، يتدلّى الجسر ويصير الحديد السفلي <b>شدّاً</b>
+      يمسك البلاطة كالحبل بدل أن تسقط. وهذا بالضبط ما تقيسه تجربة حذف العمود
+      بتبويب «الإنشائيات والتجربة».
+      <br><b>ولماذا تُكثَّف الكانات عند الأعمدة:</b> القص أقصى ما يكون عند وجه
+      المسند، وهناك أيضاً تتكوّن <b>المفصلة اللدنة</b> بالزلزال. الكانة المكثّفة
+      تخيط الشقّ القطري وتطوّق الخرسانة وتمنع انبعاج الأسياخ الطولية — ولهذا
+      عكفتها <b>135°</b> تدخل اللبّ لا 90° تنفتح مع تقشّر الغطاء.</div></div>`;
 }
 
 /* ---------- المصعد: نواة قصّ بحملها وعزمها وتسليحها ---------- */

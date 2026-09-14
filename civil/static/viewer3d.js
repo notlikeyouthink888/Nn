@@ -36,9 +36,10 @@ function Viewer3D(el, M, onPick) {
 
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
   const GN = ['ghost', 'soil', 'stress', 'layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
-              'canti', 'stairs', 'rebar', 'extra', 'chairs', 'moments', 'punch', 'defl',
+              'canti', 'stairs', 'rebar', 'extra', 'chairs', 'moments', 'field', 'punch', 'defl',
               'human', 'plan', 'site'];
   const G = {}; GN.forEach(k => { G[k] = new T.Group(); G[k].name = k; sc.add(G[k]); });
+  G.field.visible =
   G.moments.visible = G.punch.visible = G.defl.visible = G.rebar.visible = G.extra.visible =
     G.chairs.visible = G.human.visible = G.plan.visible = G.ghost.visible =
     G.soil.visible = G.stress.visible = false;
@@ -1278,6 +1279,103 @@ function Viewer3D(el, M, onPick) {
     m.userData = info || {}; if (info) picks.push(m);
     return m;
   }
+  /* ===================== حقل عزوم السقف (كنتور ملوّن) =====================
+     الحقل يأتي محسوباً من الخادم (`moments.field`) كشبكة قيم kN·م/م، ويُرسم
+     سطحاً ملوّناً على السقف. السُّلَّم **ثنائي الاتجاه حول الصفر**: الأحمر عزم
+     موجب (شدّ بالوجه السفلي ⇒ حديد سفلي) والأزرق سالب (شدّ علوي ⇒ حديد علوي).
+     ولهذا لا يصلح سُلَّم أحادي: إشارة العزم هي التي تقرّر **أين** يوضع الحديد. */
+  let fBuilt = false, fldMode = 'gov';
+  function fieldColor(t) {
+    // t ∈ [-1, 1] — أزرق(سالب) → رمادي(صفر) → أحمر(موجب) بتدرّج مطابق للمرجع
+    const st = [[-1.00, 0x1e3a8a], [-0.66, 0x2563eb], [-0.33, 0x38bdf8],
+                [0.00, 0xe2e8f0], [0.33, 0xfacc15], [0.66, 0xf97316], [1.00, 0xdc2626]];
+    t = Math.max(-1, Math.min(1, t));
+    for (let i = 0; i < st.length - 1; i++) {
+      if (t <= st[i + 1][0]) {
+        const f = (t - st[i][0]) / (st[i + 1][0] - st[i][0] || 1);
+        const a = st[i][1], b2 = st[i + 1][1];
+        const mix = (sh) => (((a >> sh) & 255) * (1 - f) + ((b2 >> sh) & 255) * f) / 255;
+        return [mix(16), mix(8), mix(0)];
+      }
+    }
+    return [1, 0, 0];
+  }
+  function fieldVal(F, i, j) {
+    const a = F.mx[j][i], b2 = F.my[j][i];
+    return fldMode === 'x' ? a : fldMode === 'y' ? b2
+      : (Math.abs(a) >= Math.abs(b2) ? a : b2);      // الحاكم: الأكبر مطلقاً
+  }
+  function buildField() {
+    const F = md.slab && md.slab.field;
+    if (!F || ROOM || !F.xs || !F.xs.length) return;
+    while (G.field.children.length) G.field.remove(G.field.children[0]);
+    const nxp = F.xs.length, nyp = F.ys.length;
+    /* تموّج الأعصاب يُطبَّق **هنا** لا بالخادم: دوره أدقّ من خطوة العيّنة،
+       فتُنعَّم الشبكة بعامل sub ليقع 6 نقاط على كل عصب فلا يتشوّه بالتقطيع. */
+    const rb = F.ribs;
+    const stepX = (F.xs[nxp - 1] - F.xs[0]) / (nxp - 1);
+    const stepZ = (F.ys[nyp - 1] - F.ys[0]) / (nyp - 1);
+    let subX = 1, subZ = 1;
+    if (rb && rb.spacing > 0) {
+      const need = rb.spacing / 6;
+      if (rb.dir === 'x' || rb.dir === 'both') subZ = Math.min(8, Math.max(1, Math.ceil(stepZ / need)));
+      if (rb.dir === 'y' || rb.dir === 'both') subX = Math.min(8, Math.max(1, Math.ceil(stepX / need)));
+    }
+    const NX = (nxp - 1) * subX + 1, NZ = (nyp - 1) * subZ + 1;
+    const gx = k => F.xs[0] + (F.xs[nxp - 1] - F.xs[0]) * k / (NX - 1);
+    const gz = k => F.ys[0] + (F.ys[nyp - 1] - F.ys[0]) * k / (NZ - 1);
+    const comb = (v, on) => (rb && on) ? Math.max(0,
+      1 + rb.amp * Math.cos(2 * Math.PI * (v - F.xs[0] * 0) / rb.spacing)) : 1;
+    // قيمة منعّمة بالاستيفاء الثنائي من شبكة الخادم
+    const at = (kx, kz) => {
+      const fx = kx / subX, fz = kz / subZ;
+      const i = Math.min(nxp - 2, Math.floor(fx)), j = Math.min(nyp - 2, Math.floor(fz));
+      const a = fx - i, b2 = fz - j;
+      const v = fieldVal(F, i, j) * (1 - a) * (1 - b2) + fieldVal(F, i + 1, j) * a * (1 - b2)
+        + fieldVal(F, i, j + 1) * (1 - a) * b2 + fieldVal(F, i + 1, j + 1) * a * b2;
+      if (!rb) return v;
+      // الأعصاب باتجاه x تتكرّر على z، والعكس بالعكس
+      let f = 1;
+      if (rb.dir === 'x' || rb.dir === 'both') f *= comb(gz(kz), true);
+      if (rb.dir === 'y' || rb.dir === 'both') f *= comb(gx(kx), true);
+      return v * f;
+    };
+    let amp = 1e-6;
+    for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++)
+      amp = Math.max(amp, Math.abs(at(i, j)));
+
+    for (let s = 1; s <= nf; s++) {
+      const y = s * hs + .012;                     // فوق سطح السقف بقليل
+      const pos = [], col = [], idx = [];
+      for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) {
+        pos.push(MAPX(gx(i)), y, MAPZ(gz(j)));
+        const c = fieldColor(at(i, j) / amp);
+        col.push(c[0], c[1], c[2]);
+      }
+      for (let j = 0; j < NZ - 1; j++) for (let i = 0; i < NX - 1; i++) {
+        const a = j * NX + i;
+        idx.push(a, a + NX, a + 1, a + 1, a + NX, a + NX + 1);
+      }
+      const g2 = new T.BufferGeometry();
+      g2.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+      g2.setAttribute('color', new T.Float32BufferAttribute(col, 3));
+      g2.setIndex(idx); g2.computeVertexNormals();
+      const m = new T.Mesh(g2, new T.MeshBasicMaterial({ vertexColors: true,
+        transparent: true, opacity: .82, side: T.DoubleSide, depthWrite: false }));
+      m.userData = { title: 'حقل عزوم ' + F.name + ' — سقف طابق ' + s,
+        kind: 'field', grp: 'moments', floor: s,
+        rows: [['النظام', F.name], ['الشكل', F.shape],
+          F.per_rib ? ['عزم العصب الواحد', 'موجب ' + F.per_rib.pos + ' · سالب ' +
+            F.per_rib.neg + ' kN·م (تباعد ' + F.per_rib.spacing + ' م)'] : ['', ''],
+          ['المعروض', fldMode === 'x' ? 'Mx (أسياخ باتجاه X)'
+            : fldMode === 'y' ? 'My (أسياخ باتجاه Y)' : 'الحاكم — الأكبر مطلقاً'],
+          ['أقصى موجب', F.hi.toFixed(1) + ' kN·م/م (شدّ سفلي ⇒ حديد سفلي)'],
+          ['أقصى سالب', F.lo.toFixed(1) + ' kN·م/م (شدّ علوي ⇒ حديد علوي)'],
+          ['توزيع الحمل', F.split.rule]] };
+      G.field.add(m); picks.push(m);
+    }
+    fBuilt = true;
+  }
   function buildMoments() {
     if (mBuilt || ROOM) return; mBuilt = true;
     const scale = Math.max(g.sx, g.sy) / 700.0;
@@ -2151,7 +2249,12 @@ function Viewer3D(el, M, onPick) {
     group: (n, v) => { on[n] = v ? 1 : 0; if (G[n]) G[n].visible = !!v; applyVis(); return visStats(); },
     rebar: v => { if (v) buildRebar(); G.rebar.visible = v; G.extra.visible = v && on.extra !== 0;
       G.chairs.visible = v && on.chairs !== 0; applyVis(); return visStats(); },
-    moments: v => { if (v) buildMoments(); G.moments.visible = v; applyVis(); },
+    moments: v => { if (v) { buildMoments(); buildField(); }
+      G.moments.visible = v; G.field.visible = v; applyVis(); },
+    /* Mx أو My أو الحاكم — إشارة العزم تقرّر وجه الحديد، فالتبديل مهم */
+    fieldMode: m => { fldMode = m || 'gov'; buildField();
+      G.field.visible = G.moments.visible; applyVis(); return fldMode; },
+    fieldInfo: () => (md.slab && md.slab.field) || null,
     /* موضع أول كرسي + كاميرا قريبة — للتحقق البصري من شكل الكرسي */
     chairSpot: () => { buildRebar();
       const m4 = new T.Matrix4(), v = new T.Vector3();

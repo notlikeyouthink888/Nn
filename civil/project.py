@@ -12,6 +12,7 @@ import detail as DT
 import rebar as RB
 import slabs as SL
 import stairs as ST
+import moments as MO
 import plan as PL
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'projects')
@@ -831,6 +832,21 @@ def wizard(p):
                   column=DT.cover('column', exposure, col_rebar['db']),
                   footing_bottom=cov_fb, footing_top=cov_ft,
                   table=[dict(name=a, v=b, ref=c) for a, b, c in DT.COVER_TABLE])
+    # ---------------- حقل العزوم على السقف — حسب نظام السقف ----------------
+    # محاور المساند: من المخطط إن وُجد، وإلا من البحور المتساوية.
+    _axx = [round(float(v), 3) for v in g['axes_x']] if g.get('axes_x') \
+        else [round(i * g['sx'], 3) for i in range(g['nx'] + 1)]
+    _axy = [round(float(v), 3) for v in g['axes_y']] if g.get('axes_y') \
+        else [round(j * g['sy'], 3) for j in range(g['ny'] + 1)]
+    _gm = slab.get('geom') or {}
+    _sysk = MO.system_key(slab_kind if slab_kind != 'auto' else 'solid',
+                          slab.get('kind') == 'one')
+    mfield = MO.field(dict(L=g['L'], B=g['B'], axes_x=_axx, axes_y=_axy,
+                           wD=D, wL=live, h=slab['h'], fc=fc, system=_sysk,
+                           one_dir=('x' if g['sx'] >= g['sy'] else 'y')
+                                   if _sysk == 'hordi' else None,
+                           rib_spacing=_gm.get('spacing'), rib_w=_gm.get('rib_w')))
+
     layout = slab_layout(g['L'], g['B'], slab['mesh'], slab['cover'], slab.get('geom'),
                          laps.get(int(slab['mesh']['short']['db']), {}).get('bottom', 0.0))
 
@@ -859,7 +875,7 @@ def wizard(p):
         slab=dict(h=slab['h'], kind=slab['kind'], mesh=slab['mesh'], name=slab['kind_name'],
                   chairs=ch_slab, top_strip=0.5, type=slab_kind,
                   geom=slab.get('geom'), layout=layout, cover=slab['cover'],
-                  top_len=top_len,
+                  top_len=top_len, field=mfield,
                   extra=dict(corner=dict(db=slab['mesh']['top']['db'],
                                          s=slab['mesh']['top']['s'], size=0.2),
                              integrity=dict(n=2, db=slab['mesh']['short']['db']))),

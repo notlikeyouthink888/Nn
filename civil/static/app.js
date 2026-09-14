@@ -614,6 +614,10 @@ function v3bar(o) {
     ${o.rebar === false ? '' : '<button id="btnRebar" onclick="toggleRebar()">🧵 إظهار التسليح</button>'}
     <button id="btnXray" onclick="toggleXray()">🩻 وضع الأشعة</button>
     ${o.analysis ? `<button id="btnMom" onclick="toggleMoments()">📈 العزوم</button>
+      <select id="momMode" onchange="V3&&V3.fieldMode(this.value)" style="display:none">
+        <option value="gov">الحاكم (الأكبر مطلقاً)</option>
+        <option value="x">Mx — أسياخ باتجاه X</option>
+        <option value="y">My — أسياخ باتجاه Y</option></select>
       <button id="btnPun" onclick="togglePunch()">🎯 قص الثقب</button>
       <button id="btnDef" onclick="toggleDefl()">〰️ الهطول</button>` : ''}
     <button id="btnHum" onclick="toggleHuman()">🧍 إنسان 1.85 م</button>
@@ -861,6 +865,7 @@ function togglePlan() {
   if (PLAN_ON && !XRAY_ON) toggleXray();   // وإلا خبّأته السقوف المصمتة
 }
 function toggleMoments() { if (!V3) return; MOM_ON = !MOM_ON; V3.moments(MOM_ON); tgl('btnMom', MOM_ON);
+  const sel = $('#momMode'); if (sel) sel.style.display = MOM_ON ? '' : 'none';
   if (MOM_ON && !XRAY_ON) toggleXray(); }
 function togglePunch() { if (!V3) return; PUN_ON = !PUN_ON; V3.punch(PUN_ON); tgl('btnPun', PUN_ON); }
 function toggleDefl() { if (!V3) return; DEF_ON = !DEF_ON; V3.defl(DEF_ON); tgl('btnDef', DEF_ON); }
@@ -1002,6 +1007,7 @@ function detailPanel(r) {
           <br>المختار: <b>${r.model.slab.name}</b> بسماكة ${int(r.model.slab.h)} مم ووزن ذاتي
           ${nf(r.floor.slab_sw, 2)} kN/m².
           <button class="btn gh" style="margin-top:8px" onclick="wtab('slabs')">قارن كل الأنواع بالتفصيل</button></div></div>
+      ${fieldPanel(r)}
       ${extraPanel(r)}
       ${tiePanel(r)}
       ${beamRebarPanel(r)}
@@ -1249,6 +1255,56 @@ function cantiPanel(r) {
         ])}`).join('')}
       <div class="note">${c.note}<br>شغّل <b>«التسليح»</b> بالمجسم واختر طبقة
         <b>«كانتيليفر (شناشيل)»</b> لترى الحديد الأصفر بالأعلى والأزرق بالأسفل بعينك.</div></div>`;
+}
+
+/* ---------- حقل العزوم: يختلف بكل نظام سقف، وكل موضع مكتوب بقيمته ---------- */
+function fieldPanel(r) {
+  const F = r.model && r.model.slab && r.model.slab.field;
+  if (!F) return '';
+  const sign = v => v > 0 ? '<b style="color:#f87171">+' + nf(v, 2) + '</b>'
+                          : '<b style="color:#60a5fa">' + nf(v, 2) + '</b>';
+  const face = v => v > 0 ? 'سفلي' : 'علوي';
+  const st = F.strips, to = F.torsion;
+  return `
+    <div class="card"><h3>🗺️ حقل العزوم على السقف — ${F.name}</h3>
+      <div class="rec" style="margin:0 0 12px"><h3 style="margin-top:0">شكل الحقل بهذا النظام</h3>
+        <div style="font-size:13px;line-height:1.9">${F.shape}</div>
+        <div style="font-size:12.5px;line-height:1.9;color:var(--mut);margin-top:8px">
+          <b>وأين يذهب الحديد:</b> ${F.rebar}</div></div>
+      <div class="grid g4">
+        ${kpi('أقصى موجب', nf(F.hi, 1) + ' kN·م/م', 'ok')}
+        ${kpi('أقصى سالب', nf(F.lo, 1) + ' kN·م/م', 'bad')}
+        ${kpi('الحمل المعامل wu', nf(F.wu, 2) + ' kN/م²')}
+        ${kpi('نقاط الحقل', F.xs.length + ' × ' + F.ys.length)}</div>
+      <div class="note" style="margin-top:10px"><b>توزيع الحمل بين الاتجاهين:</b> ${F.split.rule}</div>
+
+      <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        كل موضع له عزم — باسمه وإحداثيه وقيمته ووجه الحديد الذي يقاومه</h4>
+      ${table(['الموضع', 'الإحداثي', 'العزم (kN·م/م)', 'وجه الشدّ', 'لماذا'],
+        F.spots.map(s => [`<b>${s.name}</b>`, s.where, sign(s.M),
+          s.M === 0 ? '—' : '<span class="tag">' + face(s.M) + '</span>',
+          `<span style="font-size:11.5px;color:var(--mut)">${s.note}</span>`]))}
+
+      ${st.applies ? `<h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        شريحة العمود والشريحة الوسطى — جدولا 8.10.5</h4>
+      ${table(['الاتجاه', 'عرض الشريحة (م)', 'سالب بشريحة العمود', 'سالب بالوسطى',
+               'موجب بشريحة العمود', 'موجب بالوسطى'],
+        st.rows.map(x => [x.dir, 'عمود ' + nf(x.b_cs, 2) + ' · وسطى ' + nf(x.b_ms, 2),
+          sign(x.neg_cs), sign(x.neg_ms), sign(x.pos_cs), sign(x.pos_ms)]))}
+      <div class="note">${st.note}</div>` : `<div class="note">${st.note}</div>`}
+
+      <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        عزم الالتواء بالأركان — ${to.clause || 'ACI 8.7.3.1'}</h4>
+      <div class="note" style="border-right:3px solid ${to.required ? '#facc15' : 'var(--mut)'}">
+        ${to.required ? '<b>مطلوب:</b> ' + nf(to.M, 2) + ' kN·م/م على طول ' +
+          nf(to.length, 2) + ' م من الركن — ' : ''}${to.note}</div>
+
+      <div class="note" style="margin-top:12px"><b>كيف حُسب:</b> ${F.method}</div>
+      <div class="hint">شغّل <b>«📈 العزوم»</b> بالمجسم لترى الحقل ملوّناً على السقف،
+        وبدّل بين <b>Mx</b> و<b>My</b> و<b>الحاكم</b> من القائمة بجانب الزر.
+        <b style="color:#dc2626">الأحمر موجب</b> (شدّ بالوجه السفلي ⇒ حديد سفلي) و
+        <b style="color:#2563eb">الأزرق سالب</b> (شدّ بالوجه العلوي ⇒ حديد علوي) —
+        وإشارة العزم هي التي تقرّر <b>وجه</b> الحديد، لا مقداره فقط.</div></div>`;
 }
 
 /* بطاقات قرار بدل جدول عريض — الجداول ذات الخمسة أعمدة تُقصّ على شاشة الموبايل

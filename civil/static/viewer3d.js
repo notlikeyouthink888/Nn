@@ -36,7 +36,7 @@ function Viewer3D(el, M, onPick) {
 
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
   const GN = ['ghost', 'soil', 'stress', 'layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
-              'canti', 'stairs', 'rebar', 'extra', 'chairs', 'moments', 'field', 'punch', 'defl',
+              'canti', 'stairs', 'rebar', 'extra', 'chairs', 'moments', 'field', 'labdef', 'punch', 'defl',
               'human', 'plan', 'site'];
   const G = {}; GN.forEach(k => { G[k] = new T.Group(); G[k].name = k; sc.add(G[k]); });
   G.field.visible =
@@ -75,6 +75,9 @@ function Viewer3D(el, M, onPick) {
     const e = new T.LineSegments(new T.EdgesGeometry(m.geometry),
       new T.LineBasicMaterial({ color: 0x08101f, transparent: true, opacity: .45, clippingPlanes: [clip] }));
     e.position.copy(m.position); grp.add(e);
+    // الحافة تتبع مجسّمها: بدونها يبقى **هيكل** العنصر المخفيّ معلّقاً بالفراغ
+    // حين يُحذف بالتجربة أو يُستبدل بمجسّم تشوّهه.
+    e.userData._owner = m; m.userData._edge = e;
     if (info) picks.push(m);
     return m;
   }
@@ -85,6 +88,9 @@ function Viewer3D(el, M, onPick) {
     const e = new T.LineSegments(new T.EdgesGeometry(m.geometry),
       new T.LineBasicMaterial({ color: 0x08101f, transparent: true, opacity: .45, clippingPlanes: [clip] }));
     e.position.copy(m.position); grp.add(e);
+    // الحافة تتبع مجسّمها: بدونها يبقى **هيكل** العنصر المخفيّ معلّقاً بالفراغ
+    // حين يُحذف بالتجربة أو يُستبدل بمجسّم تشوّهه.
+    e.userData._owner = m; m.userData._edge = e;
     if (info) picks.push(m);
     return m;
   }
@@ -1950,6 +1956,185 @@ function Viewer3D(el, M, onPick) {
 
   /* ===================== وضع المختبر: الإنشائيات والتجربة ===================== */
   let labOn = false;
+  /* ==================== العنصر المتضرّر بشكله الحقيقي ====================
+     لا يكفي أن يُلوَّن العمود المتضرّر بالأحمر: **لكل نمط فشل شكل تشوّه مختلف
+     تماماً**، وهو الذي يعرّف المهندس بما يحصل فعلاً:
+
+       انحناء  — يتقوّس بانحناء مزدوج بين السقفين، فيُشدّ وجه ويُضغط الآخر،
+                 والشقوق شاقولية تبدأ من الوجه المشدود عند الطرفين.
+       قصّ     — المقاطع **تنزلق** بعضها على بعض فيميل العمود كمتوازي أضلاع
+                 بلا تقوّس، والشقّ قطري 45° لأن الإجهاد الرئيسي قطري.
+       التواء  — المقاطع **تدور** حول المحور بزوايا متزايدة، والشقّ حلزوني.
+       ضغط     — ينبعج بنصف موجة وينتفخ وسطه ويتقشّر غطاؤه.
+       شدّ     — يستطيل ويُخصَر مقطعه، والشقوق عرضية منتظمة.
+
+     التشوّه **مُضخَّم** ليُرى (النسبة مكتوبة بالبطاقة)، والشكل نفسه صحيح. */
+  const DEF_COL = { bending: 0xfacc15, shear: 0xfb923c, torsion: 0xa78bfa,
+                    buckling: 0x60a5fa, tension: 0xf87171 };
+  function axisFrame(axis, w, h, d) {
+    // e = اتجاه المحور الطولي · p و q = الاتجاهان العرضيان مع مقاسيهما
+    if (axis === 'y') return { e: [0, 1, 0], p: [1, 0, 0], q: [0, 0, 1], L: h, S1: w, S2: d };
+    if (axis === 'x') return { e: [1, 0, 0], p: [0, 1, 0], q: [0, 0, 1], L: w, S1: h, S2: d };
+    return { e: [0, 0, 1], p: [1, 0, 0], q: [0, 1, 0], L: d, S1: w, S2: h };
+  }
+  function defShape(mode, t, A, isCol) {
+    // يرجع {off1, off2, rot, sc, ext} بالموضع النسبي t ∈ [0,1]
+    const S = Math.sin(Math.PI * t);
+    switch (mode) {
+      case 'shear':                       // انزلاق خطّي بلا تقوّس
+        return { off1: A * (t - .5) * 2, off2: 0, rot: 0, sc: 1, ext: 0 };
+      case 'torsion':                     // دوران متزايد حول المحور
+        return { off1: 0, off2: 0, rot: (t - .5) * A * 3.2, sc: 1, ext: 0 };
+      case 'buckling':                    // انبعاج نصف موجة + انتفاخ وسطي
+        return { off1: A * S, off2: A * S * .35, rot: 0, sc: 1 + .22 * S, ext: 0 };
+      case 'tension':                     // استطالة + تخصّر المقطع
+        return { off1: 0, off2: 0, rot: 0, sc: 1 - .16 * S, ext: (t - .5) * A * .9 };
+      default:
+        // العمود بين سقفين ينحني **انحناءً مزدوجاً** (S): صفر عند الطرفين
+        // وعند الوسط، وأقصاه عند الربعين. والجسر ينحني **انحناءً مفرداً**
+        // (تدلٍّ) أقصاه بوسط البحر. وكانت الصيغة تقلب الإشارة عند الوسط
+        // فتُحدث **قفزة** بالمجسم لا انحناءً.
+        return { off1: isCol ? A * Math.sin(2 * Math.PI * t)
+                             : -A * Math.sin(Math.PI * t),
+                 off2: 0, rot: 0, sc: 1, ext: 0 };
+    }
+  }
+  function deformGeo(w, h, d, axis, mode, A) {
+    const F = axisFrame(axis, w, h, d), NS = 28, isCol = axis === 'y';
+    const pos = [], idx = [];
+    const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    for (let i = 0; i <= NS; i++) {
+      const t = i / NS, u = (t - .5) * F.L;
+      const D = defShape(mode, t, A, isCol);
+      const cs = Math.cos(D.rot), sn = Math.sin(D.rot);
+      for (const [ca, cb] of corners) {
+        const a = ca * F.S1 / 2 * D.sc, b2 = cb * F.S2 / 2 * D.sc;
+        const a2 = a * cs - b2 * sn + D.off1, b3 = a * sn + b2 * cs + D.off2;
+        const uu = u + D.ext;
+        pos.push(F.e[0] * uu + F.p[0] * a2 + F.q[0] * b3,
+                 F.e[1] * uu + F.p[1] * a2 + F.q[1] * b3,
+                 F.e[2] * uu + F.p[2] * a2 + F.q[2] * b3);
+      }
+    }
+    for (let i = 0; i < NS; i++) {
+      const a = i * 4, b2 = (i + 1) * 4;
+      for (let c = 0; c < 4; c++) {
+        const c2 = (c + 1) % 4;
+        idx.push(a + c, b2 + c, a + c2, a + c2, b2 + c, b2 + c2);
+      }
+    }
+    idx.push(0, 2, 1, 0, 3, 2);
+    const n4 = NS * 4;
+    idx.push(n4, n4 + 1, n4 + 2, n4, n4 + 2, n4 + 3);
+    const g2 = new T.BufferGeometry();
+    g2.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+    g2.setIndex(idx); g2.computeVertexNormals();
+    return g2;
+  }
+  /* الشقوق: خطوط على سطح العنصر بشكل الشقّ الحقيقي لكل نمط */
+  function crackGeo(w, h, d, axis, mode, A) {
+    const F = axisFrame(axis, w, h, d), v = [], isCol = axis === 'y';
+    const at = (t, a, b2) => {
+      const D = defShape(mode, t, A, isCol);
+      const cs = Math.cos(D.rot), sn = Math.sin(D.rot);
+      const a2 = a * D.sc * cs - b2 * D.sc * sn + D.off1;
+      const b3 = a * D.sc * sn + b2 * D.sc * cs + D.off2;
+      const uu = (t - .5) * F.L + D.ext;
+      return [F.e[0] * uu + F.p[0] * a2 + F.q[0] * b3,
+              F.e[1] * uu + F.p[1] * a2 + F.q[1] * b3,
+              F.e[2] * uu + F.p[2] * a2 + F.q[2] * b3];
+    };
+    const seg = (p1, p2) => { v.push(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]); };
+    const s1 = F.S1 / 2 * 1.02, s2 = F.S2 / 2 * 1.02;
+    if (mode === 'shear') {
+      // شقوق قطرية 45° قرب الطرفين — على وجهي العنصر
+      for (const [t0, dir] of [[.08, 1], [.72, 1]]) {
+        const dt = Math.min(.20, s1 * 2 / Math.max(F.L, .001));
+        for (let k = 0; k < 3; k++) {
+          const o = t0 + k * dt * .45;
+          seg(at(o, -s1, s2 * dir), at(Math.min(.99, o + dt), s1, s2 * dir));
+          seg(at(o, -s1, -s2 * dir), at(Math.min(.99, o + dt), s1, -s2 * dir));
+        }
+      }
+    } else if (mode === 'torsion') {
+      // شقّ حلزوني يلفّ حول العنصر
+      let prev = null;
+      for (let i = 0; i <= 40; i++) {
+        const t = i / 40, ang = t * Math.PI * 2.4;
+        const a = Math.cos(ang) * s1, b2 = Math.sin(ang) * s2;
+        const cur = at(t, a, b2);
+        if (prev) seg(prev, cur);
+        prev = cur;
+      }
+    } else if (mode === 'tension') {
+      for (let k = 1; k <= 6; k++) {
+        const t = k / 7;
+        seg(at(t, -s1, s2), at(t, s1, s2));
+        seg(at(t, -s1, -s2), at(t, s1, -s2));
+      }
+    } else if (mode === 'buckling') {
+      // تقشّر وسحق عند الطرفين: خطوط شاقولية قصيرة
+      for (const t0 of [.05, .88]) for (let k = -1; k <= 1; k++) {
+        seg(at(t0, k * s1 * .6, s2), at(t0 + .07, k * s1 * .6, s2));
+        seg(at(t0, k * s1 * .6, -s2), at(t0 + .07, k * s1 * .6, -s2));
+      }
+    } else {
+      // انحناء: الشقوق تبدأ من **الوجه المشدود**. بالعمود ذي الانحناء المزدوج
+      // الوجه المشدود ينقلب بين الطرفين، وبالجسر المتدلّي الشدّ بالوجه السفلي
+      // بوسط البحر. فالمواضع تختلف بينهما — وهذا ما يراه المهندس بالموقع.
+      const spots = isCol ? [[.05, 1], [.87, -1]] : [[.38, -1], [.50, -1], [.62, -1]];
+      for (const [t0, side] of spots) for (let k = 0; k < (isCol ? 4 : 2); k++) {
+        const t = Math.min(.97, t0 + k * .035);
+        seg(at(t, side * s1, s2 * .9), at(t, side * s1 * .1, s2 * .9));
+        seg(at(t, side * s1, -s2 * .9), at(t, side * s1 * .1, -s2 * .9));
+      }
+    }
+    const g2 = new T.BufferGeometry();
+    g2.setAttribute('position', new T.Float32BufferAttribute(v, 3));
+    return g2;
+  }
+  function labDeform(o, r) {
+    const pr = o.geometry && o.geometry.parameters;
+    if (!pr || pr.width === undefined) return;
+    const tag = (o.userData.gk || '').split('|')[0];
+    const axis = tag === 'col' ? 'y' : (tag === 'bx' ? 'x' : 'z');
+    const mode = r.mode === 'buckling' ? 'buckling' : r.mode;
+    const F = axisFrame(axis, pr.width, pr.height, pr.depth);
+    // السعة من شدّة التجاوز: 3% من الطول عند النسبة 1.0 وتصل 12% عند 2.5
+    const A = F.L * Math.min(.12, .03 + .06 * (r.after - 1));
+    const col = DEF_COL[mode] || 0xf87171;
+    const m = new T.Mesh(deformGeo(pr.width, pr.height, pr.depth, axis, mode, A),
+      new T.MeshLambertMaterial({ color: col, transparent: true, opacity: .96,
+        clippingPlanes: [clip], side: T.DoubleSide }));
+    m.position.copy(o.position);
+    m.userData = Object.assign({}, o.userData, {
+      title: (o.userData.title || '') + ' — ' + r.mode_ar,
+      labRows: [['النمط الحاكم', r.mode_ar],
+        ['النسبة قبل الحذف', r.before.toFixed(2)], ['بعد الحذف', r.after.toFixed(2)],
+        ['شكل التشوّه', {
+          bending: 'انحناء مزدوج بين السقفين — وجه مشدود ووجه مضغوط',
+          shear: 'انزلاق المقاطع بعضها على بعض — يميل بلا تقوّس',
+          torsion: 'دوران المقاطع حول المحور بزوايا متزايدة',
+          buckling: 'انبعاج بنصف موجة مع انتفاخ الوسط وتقشّر الغطاء',
+          tension: 'استطالة وتخصّر المقطع',
+        }[mode] || ''],
+        ['شكل الشقّ', {
+          bending: 'شاقولي يبدأ من الوجه المشدود عند الطرفين',
+          shear: '**قطري 45°** قرب المسند — الإجهاد الرئيسي قطري',
+          torsion: '**حلزوني** يلفّ حول العنصر',
+          buckling: 'تقشّر وسحق عند الطرفين وانبعاج الأسياخ بين الأساور',
+          tension: 'عرضي منتظم عمودي على اتجاه الشدّ',
+        }[mode] || ''],
+        ['ملاحظة', 'التشوّه **مُضخَّم** ليُرى — الشكل صحيح والمقدار مكبَّر']] });
+    G.labdef.add(m); picks.push(m);
+    const cr = new T.LineSegments(
+      crackGeo(pr.width, pr.height, pr.depth, axis, mode, A),
+      new T.LineBasicMaterial({ color: 0x0b1220, linewidth: 2,
+        transparent: true, opacity: .95, clippingPlanes: [clip] }));
+    cr.position.copy(o.position);
+    G.labdef.add(cr);
+  }
+
   function labApply(res, removed) {
     /* res = { "col|i|j|k": {after, mode_ar, before, modes} } — تلوين حسب نسبة الاستغلال */
     const key = o => {
@@ -1957,13 +2142,28 @@ function Viewer3D(el, M, onPick) {
       if (!u.gk) return null;
       return u.gk;
     };
+    // العناصر المشوّهة تُبنى من جديد بكل تحليل
+    while (G.labdef.children.length) {
+      const c = G.labdef.children.pop();
+      const at = picks.indexOf(c); if (at >= 0) picks.splice(at, 1);
+      if (c.geometry) c.geometry.dispose();
+    }
     [G.columns, G.beams].forEach(grp => grp.children.forEach(o => {
       const k = key(o); if (!k || !o.material) return;
       if (o.userData._c0 === undefined) o.userData._c0 = o.material.color.getHex();
       if (removed && removed.indexOf(k) >= 0) { o.visible = false; o.userData._gone = true; return; }
       o.userData._gone = false;
+      o.userData._def = false;
       const r = res && res[k];
       if (!res) { o.material.color.setHex(o.userData._c0); o.userData.labRows = null; return; }
+      // العنصر الذي تجاوز مقاومته يُرسم **بشكل تشوّهه الحقيقي** لا بلونه فقط
+      if (r && r.after > 1.0 && r.mode) {
+        labDeform(o, r);
+        o.userData._def = true;
+        o.visible = false;
+        o.userData.labRows = null;
+        return;
+      }
       const v = r ? r.after : 0;
       o.material.color.setHex(!r ? 0x2e4258 : v > 1 ? 0xf87171 : v > .7 ? 0xfbbf24 : 0x34d399);
       o.userData.labRows = r ? [['نسبة الاستغلال قبل الحذف', r.before.toFixed(2)],
@@ -1973,6 +2173,7 @@ function Viewer3D(el, M, onPick) {
         ['ضغط/انبعاج', (r.modes.buckling || 0).toFixed(2)],
         ['شد', (r.modes.tension || 0).toFixed(2)]] : null;
     }));
+    G.labdef.visible = !!res;
     labOn = !!res;
     applyVis();
   }
@@ -1981,11 +2182,16 @@ function Viewer3D(el, M, onPick) {
   const ray = new T.Raycaster(), mouse = new T.Vector2();
   let floorSel = 'all', anim = null;
   function applyVis() {
-    [G.columns, G.beams, G.slabs, G.walls, G.rebar, G.extra, G.chairs, G.moments, G.defl]
+    [G.columns, G.beams, G.slabs, G.walls, G.rebar, G.extra, G.chairs, G.moments,
+     G.field, G.labdef, G.defl]
       .forEach(grp => grp.children.forEach(o => {
         const u = o.userData || {};
-        const okG = u.grp ? on[u.grp] !== 0 : true;
-        o.visible = okG && !u._gone && (floorSel === 'all' || !u.floor || u.floor === floorSel);
+        const own = u._owner ? (u._owner.userData || {}) : null;
+        const uu = own || u;                    // الحافة تتبع مجسّمها بكل شيء
+        const okG = uu.grp ? on[uu.grp] !== 0 : true;
+        // _gone = محذوف بالتجربة · _def = استُبدل بمجسّم تشوّهه الحقيقي
+        o.visible = okG && !uu._gone && !uu._def
+          && (floorSel === 'all' || !uu.floor || uu.floor === floorSel);
       }));
   }
   function pickAt(ev) {
@@ -2425,6 +2631,32 @@ function Viewer3D(el, M, onPick) {
       const rm = !removed ? null
         : (Array.isArray(removed[0]) ? removed : [removed]).map(r => r.join('|'));
       labApply(res, rm);
+    },
+    dbgLines: () => {
+      const out = [];
+      Object.keys(G).forEach(k => G[k].traverse(o => {
+        if (!o.isLineSegments && !o.isLine) return;
+        if (!o.visible) return;
+        o.geometry.computeBoundingBox();
+        const bb = o.geometry.boundingBox;
+        out.push({ g: k, size: [+(bb.max.x-bb.min.x).toFixed(2),
+          +(bb.max.y-bb.min.y).toFixed(2), +(bb.max.z-bb.min.z).toFixed(2)],
+          at: [+o.position.x.toFixed(2), +o.position.y.toFixed(2), +o.position.z.toFixed(2)] });
+      }));
+      return out.filter(r => Math.max(...r.size) > .7).slice(0, 12);
+    },
+    labSpot: () => { const m = G.labdef.children.find(o => o.isMesh);
+      return m ? [m.position.x, m.position.y, m.position.z] : null; },
+    /* عدّ العناصر المرسومة بشكل تشوّهها — للتحقق */
+    labStats: () => {
+      const by = {};
+      G.labdef.children.forEach(o => {
+        if (!o.isMesh) return;
+        const m = (o.userData.labRows || []).length ? o.userData.labRows[0][1] : '?';
+        by[m] = (by[m] || 0) + 1;
+      });
+      return { deformed: G.labdef.children.filter(o => o.isMesh).length,
+               cracks: G.labdef.children.filter(o => o.isLineSegments).length, byMode: by };
     },
     /* إبراز العناصر المرشّحة للحذف قبل تنفيذه (تحديد متعدد) */
     labMark: keys => {

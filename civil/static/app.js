@@ -1753,6 +1753,19 @@ function bandPanel(a) {
       ${decCards((a.steps || []).map((s, i) => ({
         title: (i + 1) + ' · ' + s.t, on: false, noTag: true,
         lines: [['القيمة المحسوبة', s.v], ['الأثر', s.r]] })))}
+      ${a.replace ? `<h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">
+        الإحلال — يُفحص قبل اللجوء للركائز</h4>
+      <div class="note" style="border-right:3px solid ${a.replace.ok ? 'var(--ok)' : '#f87171'}">
+        <b>${a.replace.ok ? '✓ الإحلال يكفي — لا حاجة للركائز'
+          : '✗ الإحلال لا يكفي هنا'}</b>
+        <ul style="margin:6px 18px 0 0;line-height:1.9">
+          ${(a.replace.why || []).map(x => '<li>' + x + '</li>').join('')}</ul>
+        ${a.replace.ok ? `<div style="margin-top:8px">${a.replace.spec}</div>
+          <div style="margin-top:6px;color:var(--mut)">حجم الإحلال التقريبي
+            <b>${nf(a.replace.volume, 0)} م³</b> · تحمّل الطبقة بعد الدكّ
+            <b>${int(a.replace.qa_new)} kPa</b></div>` : ''}
+        <div style="margin-top:6px;color:var(--mut);font-size:11.5px">${a.replace.note}</div>
+      </div>` : ''}
       ${st ? `<h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">تحقّق الهبوط</h4>
       ${table(['البند', 'القيمة'], st.steps.map(x => [x[0], x[1]]))}
       <div class="note">${st.note} — والتحمّل والهبوط <b>فحصان منفصلان</b>:
@@ -1785,6 +1798,8 @@ function pilePanel(r) {
       ${decCards(pl.cases.map(c2 => ({
         title: c2.t, on: hit.indexOf(c2.t) >= 0, bad: true, noTag: true,
         lines: [['لماذا', c2.w]] })))}
+      ${geo && geo.warn ? `<div class="note" style="border-right:3px solid #f87171">
+        <b>⚠️ تنبيه:</b> ${geo.warn}</div>` : ''}
       ${geo ? `<h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">
         من أين جاء الطول والقطر والتباعد — لا رقم افتراضي واحد</h4>
       ${decCards([
@@ -1799,8 +1814,17 @@ function pilePanel(r) {
         { title: 'التباعد s = ' + nf(g.spacing, 2) + ' م', on: true, tag: null,
           lines: [['القاعدة', 's = 3D — تابع للقطر لا رقم ثابت']] },
         { title: 'الترتيب: ' + (g.layout || ''), on: true, tag: null,
-          lines: [['لماذا', g.tri ? 'ثلاث ركائز بمثلث — ثابتة بكل الاتجاهات بلا جسور رابطة'
-            : 'شبكة منتظمة تحت الهامة']] },
+          lines: [['الوضع', g.mode === 'raft'
+            ? 'ركائز تحت حصيرة (Piled Raft) — الحصيرة تربط الرؤوس فلا هامات'
+            : 'مجموعات تحت الأعمدة بهامات'],
+            ['العدد الكلي بالمبنى', '<b>' + (g.n_total || 0) + ' ركيزة</b>' +
+              (g.n_range ? ' (' + g.n_range[0] + '–' + g.n_range[1] + ' لكل عمود)' : '') +
+              ' — الحمل الكلي ' + int(g.P_total || 0) + ' kN ÷ قدرة الركيزة ' +
+              int(g.Qall) + ' kN'],
+            ['لماذا', g.mode === 'raft'
+              ? 'العدد من **الحمل الكلي** لا من حدّ أدنى تحت كل عمود'
+              : (g.tri ? 'ثلاث ركائز بمثلث — ثابتة بكل الاتجاهات بلا جسور رابطة'
+                 : 'الحمل يحتاج أكثر من ركيزة لكل عمود')]] },
         { title: 'قدرة الركيزة الواحدة ' + int(g.Qall) + ' kN', on: true, tag: null,
           lines: [['المصدر', 'احتكاك جانبي + ارتكاز طرفي ÷ معامل أمان ' + nf(g.FS, 1)]] },
       ])}
@@ -2804,15 +2828,19 @@ PAGES.wizard = {
       ${F('عمق الهدم/الحفر القديم', 'w_old', 0, .1, 'م تحت الأرض')}
       ${F('عمق التأسيس Df', 'w_df', 1.50, .05, 'م')}
       ${F('منسوب الماء الجوفي (0=بلا ماء)', 'w_gwt', 0, .25, 'م من البنج مارك')}
-      ${F('سُمك الطبقة الحاملة (0=غير معروف)', 'w_bthk', 0, .5, 'م من تقرير الجسّات')}</div>
+      ${F('سُمك الطبقة الحاملة (0=غير معروف)', 'w_bthk', 0, .5, 'م من تقرير الجسّات')}
+      ${F('سُمك التربة الضعيفة (0=يُقدَّر)', 'w_wdep', 0, .5, 'م تحت منسوب التأسيس')}</div>
       <div class="chips" style="margin-top:8px">
         ${C('طبقة ضعيفة تحت الطبقة الحاملة', 'w_weak', false)}
         ${C('طين انتفاخي (Expansive)', 'w_exsw', false)}
         ${C('تربة جبسية انهيارية', 'w_gyp', false)}
         ${C('أملاح/كبريتات عالية', 'w_salt', false)}
         ${C('قوى شدّ أو قلب على الأعمدة', 'w_upl', false)}</div>
-      <div class="hint"><b>هذه الخمس هي التي تفصل بين «قواعد سطحية» و«ركائز» على
-        التربة نفسها.</b> تربة 180 kPa قد تُبنى عليها قواعد منفصلة وقد توجب ركائز،
+      <div class="hint"><b>سُمك التربة الضعيفة هو الذي يقرّر: إحلال أم ركائز.</b>
+        إن كان الضعيف سطحياً (٣ أمتار فأقل) يُحفر ويُستبدل بسبيس مدكوك ويُبنى
+        عليه أساس سطحي — وهذا الحلّ المنفَّذ لأغلب بيوت العراق، وأرخص من الركائز
+        بمراتب. والركائز لا تلزم إلا حين يعمق الضعيف أو يثقل المبنى.
+        <br><b>وهذه الخمس تفصل بين «قواعد سطحية» و«ركائز» على التربة نفسها.</b> تربة 180 kPa قد تُبنى عليها قواعد منفصلة وقد توجب ركائز،
         والفارق سُمك الطبقة الحاملة وما تحتها، والانتفاخ، والماء والأملاح — لا رقم
         التحمّل وحده. اتركها فارغة إن لم يكن عندك تقرير جسّات، وسيقول الجدول صراحةً
         إن الشرط لم يُفحص.</div>
@@ -2869,6 +2897,7 @@ PAGES.wizard = {
     story_h: val('w_hs'), use: txt('w_use'), fc: val('w_fc'), fy: val('w_fy'), city: txt('w_city'),
     soil: txt('w_soil'), qa: val('w_qa') || null, ground: val('w_ground'), old_depth: val('w_old'),
     gwt: val('w_gwt') || null, bear_thk: val('w_bthk') || 0,
+    weak_depth: val('w_wdep') || 0,
     weak_below: chk('w_weak'), expansive: chk('w_exsw'), gypseous: chk('w_gyp'),
     salts: chk('w_salt'), uplift: chk('w_upl'),
     Df: val('w_df'), slab_type: txt('w_slab'), exposure: txt('w_exp'), lap_mode: txt('w_lap'),
@@ -3299,6 +3328,7 @@ PAGES.projects = {
       set('w_use', i.use); set('w_fc', i.fc); set('w_fy', i.fy); set('w_city', i.city);
       set('w_soil', i.soil); set('w_qa', i.qa); set('w_ground', i.ground); set('w_old', i.old_depth);
       set('w_df', i.Df); set('w_gwt', i.gwt); set('w_bthk', i.bear_thk);
+      set('w_wdep', i.weak_depth_in);
       const ck = (id, v) => { const e = $('#' + id); if (e) e.checked = !!v; };
       ck('w_weak', i.weak_below); ck('w_exsw', i.expansive); ck('w_gyp', i.gypseous);
       ck('w_salt', i.salts); ck('w_upl', i.uplift);

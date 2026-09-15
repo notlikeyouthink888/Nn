@@ -129,30 +129,30 @@ function Viewer3D(el, M, onPick) {
             ['السماكة', iso.typical.h.toFixed(0) + ' مم'], ['حمل الخدمة', l.P.toFixed(0) + ' kN'],
             ['ضغط التربة', (l.P / (s.B * s.B)).toFixed(1) + ' kPa'], ['التسليح', iso.typical.bars_label]] });
     }
-    if (pil) {
+    if (pil && pil.mode !== 'raft') {
       const cp = pil.cap;
+      const nHere = (pil.per_col && pil.per_col[k] != null) ? pil.per_col[k] : pil.n;
       box(G.piles, cp.B, cp.h, cp.L, X, fb + cp.h / 2, Z, 0x4a7fb5, recIs('piles') ? 1 : .3,
         { title: 'هامة ركائز PC' + (k + 1), kind: 'cap', grp: 'piles',
           rows: [['الأبعاد', cp.B.toFixed(2) + ' × ' + cp.L.toFixed(2) + ' م'],
-            ['عدد الركائز', pil.n], ['التسليح', pil.cap_rebar.label]] });
-      /* مواقع الركائز تحت العمود — **مثلث** عند الثلاث لا صفّاً.
-         كان الرسم شبكة rows×cols دائماً، فتظهر الثلاث بخطّ مستقيم واحد وهي
-         أضعف ترتيب ممكن (لا تقاوم العزم إلا بمحور واحد)، بينما المحسوب مثلث. */
+            ['عدد الركائز', nHere], ['التسليح', pil.cap_rebar.label]] });
+      /* مواقع الركائز تحت العمود — **مثلث** عند الثلاث لا صفّاً. */
       const pos = [];
-      if (pil.tri) {
-        const R = pil.spacing / Math.sqrt(3);          // نصف قطر الدائرة المحيطة
+      if (nHere === 3) {
+        const R2 = pil.spacing / Math.sqrt(3);
         for (let i = 0; i < 3; i++) {
           const th = -Math.PI / 2 + i * 2 * Math.PI / 3;
-          pos.push([X + R * Math.cos(th), Z + R * Math.sin(th)]);
+          pos.push([X + R2 * Math.cos(th), Z + R2 * Math.sin(th)]);
         }
       } else {
-        for (let rr = 0; rr < pil.rows; rr++) for (let cc = 0; cc < pil.cols; cc++) {
-          if (pos.length >= pil.n) break;
-          pos.push([X + (cc - (pil.cols - 1) / 2) * pil.spacing,
-                    Z + (rr - (pil.rows - 1) / 2) * pil.spacing]);
+        const m2 = nHere <= 1 ? 1 : (nHere <= 4 ? 2 : 3);
+        const rw = Math.max(1, Math.ceil(nHere / m2));
+        for (let rr = 0; rr < rw; rr++) for (let cc = 0; cc < m2; cc++) {
+          if (pos.length >= nHere) break;
+          pos.push([X + (cc - (m2 - 1) / 2) * pil.spacing,
+                    Z + (rr - (rw - 1) / 2) * pil.spacing]);
         }
       }
-      let n = 0;
       for (const [ax, az] of pos) {
         const o = new T.Mesh(new T.CylinderGeometry(pil.D / 2, pil.D / 2, pil.L, 16),
           mat(0x7c6ad8, recIs('piles') ? 1 : .3));
@@ -160,7 +160,7 @@ function Viewer3D(el, M, onPick) {
         o.userData = { title: 'ركيزة Ø' + (pil.D * 1000).toFixed(0), kind: 'pile', grp: 'piles',
           rows: [['الطول', pil.L + ' م'], ['القدرة', pil.Qall.toFixed(0) + ' kN'],
             ['التسليح', pil.rebar.label], ['الحلزون', pil.rebar.spiral_label]] };
-        G.piles.add(o); picks.push(o); n++;
+        G.piles.add(o); picks.push(o);
       }
     }
     for (let s = 0; s < nf; s++) {
@@ -594,6 +594,29 @@ function Viewer3D(el, M, onPick) {
             k ? null : { title: 'بئر مصعد — جدران قص', kind: 'shaft', grp: 'walls',
               floor: s, rows: sh.rows.map(r => [r[0], r[1]]) }));
       });
+    }
+    /* ركائز تحت حصيرة: شبكة واحدة على كامل المساحة، لا مجموعة تحت كل عمود.
+       هذا هو الترتيب المنفَّذ فعلاً (Piled Raft) — والحصيرة تربط الرؤوس. */
+    if (pil && pil.mode === 'raft' && pil.grid) {
+      const gx = pil.grid.nx, gy = pil.grid.ny, sgx = pil.grid.s;
+      const WX = rf ? rf.Lx : L, WZ2 = rf ? rf.Ly : B;
+      let first = true;
+      for (let i = 0; i < gx; i++) for (let j = 0; j < gy; j++) {
+        const ax = -WX / 2 + (WX / gx) * (i + .5);
+        const az = -WZ2 / 2 + (WZ2 / gy) * (j + .5);
+        const o = new T.Mesh(new T.CylinderGeometry(pil.D / 2, pil.D / 2, pil.L, 14),
+          mat(0x7c6ad8, recIs('piles') ? 1 : .3));
+        o.position.set(ax, fb - pil.L / 2, az);
+        o.userData = first ? { title: 'ركائز تحت الحصيرة (Piled Raft)', kind: 'pile',
+          grp: 'piles', rows: [['الترتيب', pil.layout],
+            ['العدد الكلي', pil.n_total + ' ركيزة للمبنى كله'],
+            ['القطر والطول', 'Ø' + (pil.D * 1000).toFixed(0) + ' مم · ' + pil.L + ' م'],
+            ['قدرة الركيزة', pil.Qall.toFixed(0) + ' kN'],
+            ['الحمل الكلي', (pil.P_total || 0).toFixed(0) + ' kN'],
+            ['التسليح', pil.rebar.label]] } : {};
+        if (first) picks.push(o);
+        G.piles.add(o); first = false;
+      }
     }
     buildLift();
     const bxs = md.beams.x, bys = md.beams.y;

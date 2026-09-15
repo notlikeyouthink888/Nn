@@ -675,8 +675,20 @@ def wizard(p):
                   and (b['qa'] or 0) >= F.COMPETENT_QA), None)
     # None = لا طبقة حاملة ضمن المجسوس · 0 = الأساس جالس داخلها أصلاً
     comp_depth = max(0.0, _fb0 - float(_comp['top'])) if _comp else None
+    # **سُمك التربة الضعيفة** ≠ عمق طبقة رأس الركيزة. الركيزة تريد طبقة تحمّلها
+    # 250 kPa فأكثر لترتكز عليها، أمّا الإحلال فيكفيه الوصول إلى أول طبقة تصلح
+    # للتأسيس السطحي (150 kPa) — وبينهما فرق أمتار. وحين خُلط بينهما خرج طين
+    # طري سطحي عمقه «7 أمتار» فاستحال الإحلال وفُرضت الركائز بلا داعٍ.
+    SHALLOW_QA = 150.0
+    _good = next((b for b in _beds0 if b['bottom'] < _fb0 - 0.05
+                  and (b['qa'] or 0) >= SHALLOW_QA), None)
+    weak_depth = float(p.get('weak_depth') or 0.0) or (
+        max(0.0, _fb0 - float(_good['top'])) if _good else None)
+    qa_under = float(_good['qa']) if _good else None
     soil_facts = dict(soil=soil_name, soil_kind=soil_kind, gwt=p.get('gwt'),
                       comp_depth=comp_depth, comp_bed=(_comp or {}).get('name'),
+                      weak_depth=weak_depth, weak_bed=(_good or {}).get('name'),
+                      qa_under=qa_under,
                       gypseous=bool(p.get('gypseous')),
                       expansive=bool(p.get('expansive')),
                       salts=bool(p.get('salts')),
@@ -712,15 +724,37 @@ def wizard(p):
     # بدل (0.6 م · 15 م) المكتوبتين اللتين كانتا تعطيان العدد نفسه بكل مشروع.
     fb_est = _fb0
     geo = F.pile_geometry(dict(beds=_beds0, fb=fb_est, P=Pmax, soil=psoil, kind=pile_kind,
-                               cu=cu, N=Nspt))
+                               cu=cu, N=Nspt, P_total=total, n_cols=len(loads),
+                               footprint=fp))
     Dp = float(p['pile_D']) if p.get('pile_D') else geo['D']
     Lp = float(p['pile_L']) if p.get('pile_L') else geo['L']
+    # العدد يُقرَّر من **الحمل الكلي وعدد الأعمدة والمساحة**، لا من عمود واحد:
+    # بيت 200 م² بطابقين حمله الكلي ≈ 2000 kN، وركيزة واحدة تحمل 250 kN،
+    # فثمان ركائز تكفي المبنى كله — لا ثلاث تحت كل عمود.
     pl = F.pile(dict(soil=psoil, cu=cu, N=Nspt, D=Dp, L=Lp, P=Pmax, kind=pile_kind,
-                     fc=fc, fy=fy, cx=cb, geom=geo))
-    conc_p = (pl['n'] * len(loads) * math.pi * pl['D'] ** 2 / 4 * pl['L']
-              + len(loads) * pl['cap']['conc'])
-    piles_a = dict(mode='piles', name='ركائز', pile=pl, total_piles=pl['n'] * len(loads),
-                   conc=conc_p, area=len(loads) * pl['cap']['B'] * pl['cap']['L'],
+                     fc=fc, fy=fy, cx=cb, geom=geo,
+                     P_total=total, n_cols=len(loads), footprint=fp,
+                     # الركائز تحت حصيرة حين يكون الأساس الفوقي حصيرة أصلاً
+                     raft_base=(adv['type'] == 'raft' or adv['ratio'] > 0.55),
+                     aspect=(g['L'] / g['B']) if g['B'] else 1.0))
+    # العدد الحقيقي: كل عمود بحمله هو، لا أثقل عمود × عدد الأعمدة
+    if pl['mode'] == 'group':
+        _per = [F.piles_for(l['P'], pl['Qall'], psoil, pl['D'], pl['spacing'], 2)
+                for l in loads]
+        pl['n_total'] = sum(_per)
+        pl['per_col'] = _per
+        pl['n_range'] = [min(_per), max(_per)]
+    _npt = pl['n_total']
+    if pl['mode'] == 'raft':
+        # ركائز تحت حصيرة: خرسانة الركائز + الحصيرة نفسها (لا هامات منفصلة)
+        conc_p = _npt * math.pi * pl['D'] ** 2 / 4 * pl['L'] + rf['conc']
+        _area = rf['A']
+    else:
+        conc_p = (_npt * math.pi * pl['D'] ** 2 / 4 * pl['L']
+                  + len(loads) * pl['cap']['conc'])
+        _area = len(loads) * pl['cap']['B'] * pl['cap']['L']
+    piles_a = dict(mode='piles', name='ركائز', pile=pl, total_piles=_npt,
+                   conc=conc_p, area=_area,
                    steel=conc_p * 100.0 / 1000.0, ok=pl['ok'])
 
     alts = dict(isolated=iso, raft=raft_a, piles=piles_a)
@@ -735,7 +769,9 @@ def wizard(p):
         if rec == 'raft':
             hf, where = rf['h'], 'الحصيرة'; qu_f = rf['q_u']
         elif rec == 'piles':
-            hf, where = pl['cap']['h'] * 1000.0, 'هامة الركائز'; qu_f = 0.0
+            hf = (rf['h'] if pl['mode'] == 'raft' else pl['cap']['h'] * 1000.0)
+            where = ('حصيرة على ركائز' if pl['mode'] == 'raft' else 'هامة الركائز')
+            qu_f = 0.0
         else:
             hf, where = des_i['h'], 'الأساس المنفرد'
             qu_f = l['Pu'] / max(iso['sizes'][idx]['B'] ** 2, 0.01)
@@ -752,7 +788,8 @@ def wizard(p):
 
     # ------------------------- الحفريات والردم -------------------------
     foot_h = (rf['h'] if rec == 'raft' else
-              (pl['cap']['h'] * 1000 if rec == 'piles' else des_i['h'])) / 1000.0
+              ((rf['h'] if pl['mode'] == 'raft' else pl['cap']['h'] * 1000)
+               if rec == 'piles' else des_i['h'])) / 1000.0
     ew = W.earthwork(dict(plot=area, footprint=fp, ground=ground, old_depth=old_depth,
                           Df=Df, foot_h=foot_h, foot_area=sum_foot_area,
                           dig_mode='full' if rec in ('raft', 'piles') else 'trench'))
@@ -988,6 +1025,8 @@ def wizard(p):
                            hordi=hordi_in, grid_override=go,
                            gwt=p.get('gwt'), bear_thk=float(p.get('bear_thk') or 0.0),
                            weak_below=bool(p.get('weak_below')),
+                           weak_depth_in=float(p.get('weak_depth') or 0.0),
+                           weak_depth=weak_depth,
                            expansive=bool(p.get('expansive')),
                            gypseous=bool(p.get('gypseous')),
                            salts=bool(p.get('salts')), uplift=bool(p.get('uplift')),
@@ -1242,7 +1281,11 @@ SEQ = {
 #: كم تمتدّ المواد الضعيفة قبل أن تظهر الطبقة الحاملة — بدلالة نطاق التحمّل
 #: المُبلَّغ. موقع يُبلَّغ عنه 50 kPa ليس موقعاً بطين طري سماكته مترين ثم رمل
 #: كثيف: الطين الطري يمتدّ فيه عميقاً، ولهذا تطول ركائزه. والعكس بالصخر.
-WEAK_DEPTH_MUL = {'excellent': 1.0, 'good': 1.0, 'fair': 2.0, 'poor': 3.5, 'unfit': 5.0}
+#: القيم السابقة (2.0 · 3.5 · 5.0) كانت **مبالغة**: تجعل موقعاً يُبلَّغ عنه
+#: 50 kPa بطين طري عمقه 16 م، فيستحيل الإحلال وتُفرَض الركائز على كل مشروع.
+#: التربة الضعيفة بالعراق غالباً **سطحية**: مترين إلى أربعة فوق طبقة أقسى.
+#: والقيمة الحقيقية من تقرير الجسّات، وتُدخَل بخانة «سُمك التربة الضعيفة».
+WEAK_DEPTH_MUL = {'excellent': 1.0, 'good': 1.0, 'fair': 1.2, 'poor': 1.5, 'unfit': 1.6}
 
 
 def bed_column(kind, top=0.0, depth=40.0, gypseous=False, fill_thk=0.0, qa=None):

@@ -14,6 +14,7 @@ import detail as DT
 import slabs as SL
 import plan as PL
 import aci as ACI
+import beamtype as BT
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, 'static')
@@ -47,6 +48,10 @@ def meta():
                 canti_sides=[dict(k=a, name=b) for a, b in PJ.CANTI_SIDES],
                 joint_conf=[dict(k=a, name=b, gamma=c) for a, b, c in E.JOINT_CONF],
                 cover_table=[dict(name=a, v=b, ref=c) for a, b, c in DT.COVER_TABLE],
+                beam_types=[dict(k=t['k'], name=t['name'], short=t['short'],
+                                 slab=t['slab'], torsion=t['torsion'],
+                                 desc=t['desc'], pros=t['pros'], cons=t['cons'])
+                            for t in BT.TYPES],
                 hordi=SL.HORDI_DEFAULT, version="3.0")
 
 ROUTES = {

@@ -13,6 +13,7 @@ import rebar as RB
 import slabs as SL
 import stairs as ST
 import moments as MO
+import beamtype as BT
 import elevator as EV
 import plan as PL
 
@@ -247,30 +248,101 @@ def design_special(kind, g, t_slab, wD_super, live, fc, fy, cb, chh, Pu, opts):
              why='اختيار المستخدم/التوصية: %s — %s' % (r['name'], SL.TYPE_MAP[kind][3]))
     return r
 
-def design_beam(span, nspan, trib, wD_floor, live, fc, fy, col_b, spans=None):
-    """جسر مستمر: مقطع + تسليح + أساور.
-    spans = قائمة أطوال البحور الحقيقية من المخطط (إن وُجدت) بدل بحر واحد مكرَّر."""
+def design_beam(span, nspan, trib, wD_floor, live, fc, fy, col_b, spans=None,
+                btype='drop', slab_h=200.0, col_h=None, side=4.0, w_slab=0.0):
+    """جسر مستمر: مقطع + تسليح + أساور — **حسب نوع الجسر**.
+
+    نوع الجسر يقرّر: العمق (المخفي عمقه = سماكة السقف)، والعرض وعدد أرجل
+    الأساور، وأي إشارة عزم تنفعها شفة البلاطة، والتفاصيل الخاصّة (تعليق
+    المقلوب · التواء الطرفي · حديد العميق الموزّع).
+    """
     lens = [float(x) for x in (spans or []) if float(x) > 0.5] or [span] * max(1, nspan)
     span = max(lens)                                  # البحر الحاكم للمقطع
     nspan = len(lens)
-    bw = max(250.0, min(col_b, 400.0))
-    hb = max(400.0, math.ceil(span * 1000.0 / 12.0 / 50.0) * 50.0)
-    for _ in range(6):
+    # الحمل المعلَّق بالجسر المقلوب هو حمل البلاطة **المُكبَّر** الداخل من الوجه
+    # السفلي — أي حمل الجسر الموزّع نفسه، لا الحمل الخدمي.
+    w_slab = 1.2 * wD_floor * trib + 1.6 * live * trib
+    bt = BT.spec(btype, dict(span=span, slab_h=slab_h, col_b=col_b,
+                             col_h=col_h or col_b, fy=fy,
+                             clear_span_side=side, w_slab=w_slab))
+    bw, hb = bt['bw0'], bt['h0']
+    fixed_h = (btype == 'hidden')                     # المخفي لا يُعمَّق: يُعرَّض
+    for _ in range(14):
+        _bt = BT.spec(btype, dict(span=span, slab_h=slab_h, col_b=col_b,
+                                  col_h=col_h or col_b, fy=fy,
+                                  clear_span_side=side, w_slab=w_slab))
+        bfp = bt['bf_pos'] + (bw - bt['bw0'])
+        bfn = bt['bf_neg'] + (bw - bt['bw0'])
+        legs, _ = BT.stirrup_legs(bw, hb - 60.0)
+        # الجسر المقلوب: البلاطة تدخل من وجهه **السفلي** فيلزم تعليقها بأساور
+        # تعبر كامل العمق، وهذه الأساور تُجمَع على أساور القصّ (R9.7.6.2.2).
+        av_add = (BT.hanger(w_slab, fy)['Av_s'] / 1000.0
+                  if (btype == 'inverted' and w_slab > 0) else 0.0)
         r = E.beam_module(dict(spans=[dict(L=L, wD=wD_floor * trib, wL=live * trib)
                                       for L in lens],
-                               b=bw, h=hb, fc=fc, fy=fy))
+                               b=bw, h=hb, fc=fc, fy=fy,
+                               bf_pos=bfp, bf_neg=bfn, legs=legs, av_add=av_add))
         ok = all(d['flex']['ok'] and d['shear']['ok'] and d['defl_ok'] for d in r['design'])
         if ok: break
-        hb += 50.0
+        # المخفي يُعالَج بالتعريض لأن عمقه مقيَّد، والباقي بالتعميق
+        if fixed_h:
+            bw = min(bw + 100.0, bt['width_cap'])
+            if bw >= bt['width_cap'] - 1e-6:
+                break
+        else:
+            hb += 50.0
+    # هل خرج النوع المختار بمقطع **يمرّ** أصلاً؟ الجسر المخفي بالبحور الكبيرة
+    # يبلغ حدّ العرض الكودي ولا يمرّ، فيجب أن يُقال ذلك صراحةً لا أن يُبتلَع.
+    r['ok'] = ok
+    r['fails'] = [k2 for k2, v2 in (
+        ('الانحناء', all(d['flex']['ok'] for d in r['design'])),
+        ('القصّ', all(d['shear']['ok'] for d in r['design'])),
+        ('الترخيم', all(d['defl_ok'] for d in r['design']))) if not v2]
     sup = [s for s in r['supports'] if s['flex']]
     top = max(sup, key=lambda s: s['flex']['As_req'])['flex'] if sup else r['design'][0]['flex']
     bot = max(r['design'], key=lambda d: d['flex']['As_req'])['flex']
     sh = max(r['design'], key=lambda d: d['shear']['Vu'])['shear']
     cov = DT.cover('beam', 'interior', bot['bars']['db'])
+    bt2 = BT.spec(btype, dict(span=span, slab_h=slab_h, col_b=col_b,
+                              col_h=col_h or col_b, fy=fy,
+                              clear_span_side=side, w_slab=w_slab))
+    bt2['bw0'], bt2['h0'] = bw, hb
+    bt2['bf_pos'] = bt['bf_pos'] + (bw - bt['bw0']) if bt2['flange_pos'] else bw
+    bt2['bf_neg'] = bt['bf_neg'] + (bw - bt['bw0']) if bt2['flange_neg'] else bw
+    bt2['legs'], bt2['s_tr'] = BT.stirrup_legs(bw, hb - 60.0)
+    bt2['width_ok'] = bw <= bt2['width_cap'] + 1e-6
+    bt2['deep_actual'] = (bt2['ln'] / (hb / 1000.0)) <= 4.0
     r['section'] = dict(b=bw, h=hb, span=span, nspan=nspan, trib=trib,
-                        spans=[round(L, 3) for L in lens])
+                        spans=[round(L, 3) for L in lens], btype=btype,
+                        type_name=bt2['name'], drop_below=max(0.0, hb - slab_h)
+                        if bt2['slab'] == 'top' else 0.0,
+                        rise_above=max(0.0, hb - slab_h) if bt2['slab'] == 'bottom' else 0.0,
+                        slab_at=bt2['slab'])
+    r['btype'] = bt2
     r['rebar'] = dict(bottom=bot['bars'], top=top['bars'], stirrup=dict(db=sh['db_stirrup'],
                       s=sh['s'], legs=sh['legs'], label=sh['label']), cover=cov)
+    # ---- التسليح الخاصّ بالنوع: يدخل **جدول الحديد نفسه** لا الشرح وحده ----
+    if btype == 'inverted' and w_slab > 0:
+        hg = BT.hanger(w_slab, fy)
+        av_prov = sh['legs'] * E.ab(sh['db_stirrup']) / max(1.0, sh['s']) * 1000.0
+        hg.update(Av_s_shear=sh.get('av_shear', 0.0) * 1000.0, Av_s_prov=av_prov,
+                  ok=av_prov >= hg['Av_s'] + sh.get('av_shear', 0.0) * 1000.0 - 1.0,
+                  label='الأساور نفسها تُشدّ إلى Ø%d@%d حتى تكفي القصّ **والتعليق** معاً'
+                        % (sh['db_stirrup'], int(sh['s'])))
+        r['btype']['hanger'] = hg
+        r['rebar']['hanger'] = hg
+    if btype == 'deep':
+        dw = BT.deep_web(bw, fy)
+        d_eff = hb - 60.0
+        s_web = max(100.0, min(300.0, math.floor(d_eff / 5.0 / 25.0) * 25.0))
+        db_w = 12.0
+        n_face = max(2, int(math.ceil(dw['Av_min'] * s_web / (2.0 * E.ab(db_w)))))
+        dw.update(s=s_web, db=db_w, n_face=n_face,
+                  label='Ø%d@%d بالوجهين أفقياً ورأسياً (حديد موزّع)'
+                        % (int(db_w), int(s_web)),
+                  As_prov=2.0 * n_face * E.ab(db_w) / s_web * 1000.0)
+        r['btype']['deep_web'] = dw
+        r['rebar']['web'] = dw
     return r
 
 def beam_detail(bm, col_w, fc, fy, bent=True, lap_mode='code'):
@@ -430,6 +502,11 @@ def wizard(p):
     exposure = p.get('exposure', 'interior')
     bent = p.get('bent', True) not in (False, 'false', 0, '0')
     slab_type = p.get('slab_type', 'auto')
+    # نوع الجسر: عام للاتجاهين، ويمكن تخصيص كل اتجاه. الفلات سلاب يفرض
+    # جسوراً مخفية أو محيطية فقط لأنه بلا جسور داخلية أصلاً.
+    bt_all = p.get('beam_type', 'drop')
+    bt_x = p.get('beam_type_x') or bt_all
+    bt_y = p.get('beam_type_y') or bt_all
     hordi_in = p.get('hordi') or {}
 
     # شبكة/هيكل مأخوذ من مخطط DWG/DXF إن وُجد، وإلا يُولَّد من المساحة
@@ -615,8 +692,12 @@ def wizard(p):
         ly = [s2['spans'] for s2 in (fo.get('lines') or []) if s2['dir'] == 'y']
         sx_real = max(lx, key=lambda a: (len(a), sum(a))) if lx else None
         sy_real = max(ly, key=lambda a: (len(a), sum(a))) if ly else None
-    bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb, spans=sx_real)
-    by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real)
+    bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb, spans=sx_real,
+                     btype=bt_x, slab_h=t_slab, col_h=ch, side=g['sy'],
+                     w_slab=fl['D'] * g['sy'])
+    by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real,
+                     btype=bt_y, slab_h=t_slab, col_h=ch, side=g['sx'],
+                     w_slab=fl['D'] * g['sx'])
     # --- ACI 318M-14 18.8.4: مقطع العمود يجب أن يكفي **قص العقدة** لا الحمل وحده.
     # العقدة الداخلية تستلم شدّ الحديد العلوي بإجهاد 1.25fy من الجهتين (18.8.2.1)،
     # وهي الحالة التي تُسقط الطابق كله بالزلزال إن نقصت. حين يكون المقطع مستنتَجاً
@@ -634,8 +715,12 @@ def wizard(p):
             break
         cb += 50.0; ch = max(ch, cb)
         joint_grow = 'كُبّر العمود إلى %d × %d مم ليمرّ قص العقدة (ACI 18.8.4)' % (cb, ch)
-        bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb, spans=sx_real)
-        by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real)
+        bx = design_beam(g['sx'], g['nx'], g['sy'], fl['D'], live, fc, fy, cb, spans=sx_real,
+                         btype=bt_x, slab_h=t_slab, col_h=ch, side=g['sy'],
+                         w_slab=fl['D'] * g['sy'])
+        by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real,
+                         btype=bt_y, slab_h=t_slab, col_h=ch, side=g['sx'],
+                         w_slab=fl['D'] * g['sx'])
     if joint_grow:
         col_note = (col_note + ' · ' if col_note else '') + joint_grow
         Ag = max(Ag, cb * ch)
@@ -893,7 +978,8 @@ def wizard(p):
     if ein and (ein.get('on') is not False):
         _ew = float(ein.get('w') or 1.6); _eh = float(ein.get('h') or 1.75)
         _et = float(ein.get('t') or 200.0)
-        _sec = EV.core_section(_ew, _eh, _et)
+        _en = max(1, min(2, int(ein.get('n') or 1)))      # مصعد واحد أم مصعدان
+        _sec = EV.core_section(_ew, _eh, _et, _en)
         _rig = EV.rigidity(_sec, len(loads), cb, ch)
         _V = float(seis.get('V') or 0.0)      # قص القاعدة الزلزالي الفعلي
         _Mb = sum(float(d.get('Fx') or 0.0) * float(d.get('h') or 0.0)
@@ -931,7 +1017,7 @@ def wizard(p):
                 break
         except Exception:
             pass
-        elev = EV.design(dict(ein, w=_ew, h=_eh, t=_et, story_h=hs, floors=floors,
+        elev = EV.design(dict(ein, w=_ew, h=_eh, t=_et, n=_en, story_h=hs, floors=floors,
                               fc=fc, fy=fy, slab_h=slab['h'],
                               span=min(g['sx'], g['sy']),
                               mesh_db=slab['mesh']['short']['db'],
@@ -961,12 +1047,17 @@ def wizard(p):
         floors=floors, story_h=hs, levels=[k * hs for k in range(floors + 1)],
         stock=E.BAR_STOCK, laps=laps,
         col=dict(b=cb, h=ch, shape=col_shape, D=col_D, rebar=col_rebar),
-        beams=dict(x=dict(b=bx['section']['b'], h=bx['section']['h'], rebar=bx['rebar'],
+        beams=dict(types=[dict(k=t['k'], name=t['name'], short=t['short'],
+                               desc=t['desc'], pros=t['pros'], cons=t['cons'],
+                               slab=t['slab']) for t in BT.TYPES],
+                   x=dict(b=bx['section']['b'], h=bx['section']['h'], rebar=bx['rebar'],
                           env=envelope(bx), span=g['sx'], n=g['nx'], detail=dx,
+                          btype=bx['btype'], sec=bx['section'],
                           d_long=min(d['d_long'] for d in bx['design']),
                           d_limit=bx['design'][0]['d_limit']),
                    y=dict(b=by['section']['b'], h=by['section']['h'], rebar=by['rebar'],
                           env=envelope(by), span=g['sy'], n=g['ny'], detail=dy,
+                          btype=by['btype'], sec=by['section'],
                           d_long=min(d['d_long'] for d in by['design']),
                           d_limit=by['design'][0]['d_limit'])),
         slab=dict(h=slab['h'], kind=slab['kind'], mesh=slab['mesh'], name=slab['kind_name'],
@@ -1002,6 +1093,15 @@ def wizard(p):
         "الحمل الكلي على التربة %.0f kN · أثقل عمود %.0f kN" % (total, Pmax),
         "التوصية: %s" % adv['name'],
     ]
+    for _bm, _nm in ((bx, 'X'), (by, 'Y')):
+        if not _bm.get('ok'):
+            summary.append(
+                "⚠️ نوع الجسر المختار (%s) لم يمرّ باتجاه %s: %s. عمقه مقيَّد "
+                "وعرضه بلغ الحدّ الكودي %d مم (18.6.2.1) فلا مجال لتكبيره أكثر — "
+                "إمّا تُقلّل البحر (عمود وسطي) أو تختار نوعاً آخر. التفاصيل "
+                "بتقرير المطابقة."
+                % (_bm['btype']['name'], _nm, ' و'.join(_bm['fails']),
+                   int(_bm['btype']['width_cap'])))
     _du = aci_extra['durability']
     if not _du['ok_fc']:
         summary.append(
@@ -1023,6 +1123,7 @@ def wizard(p):
                            slab_type=slab_kind, lap_mode=lap_mode, dowel_mode=dowel_mode,
                            chair_kind=chair_kind, exposure=exposure, bent=bent,
                            hordi=hordi_in, grid_override=go,
+                           beam_type=bt_all, beam_type_x=bt_x, beam_type_y=bt_y,
                            gwt=p.get('gwt'), bear_thk=float(p.get('bear_thk') or 0.0),
                            weak_below=bool(p.get('weak_below')),
                            weak_depth_in=float(p.get('weak_depth') or 0.0),
@@ -1150,14 +1251,19 @@ def aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy, wD, live, exposure, p
         need = Av_s + 2.0 * tor['At_s']
         s_new = 2.0 * E.ab(st['db']) / need if need > 0 else st['s']
         s_new = max(75.0, min(math.floor(min(s_new, tor['s_max']) / 25.0) * 25.0, tor['s_max']))
-        n_long = max(4, int(math.ceil(tor['Al'] / E.ab(max(12.0, tor['db_long'])))))
+        # ACI 9.7.5.2: قطر السيخ الطولي ≥ الأكبر من 0.042·s و10 مم. والقطر
+        # يُقرَّب **لأعلى** لأقرب قطر تجاري — التقريب لأدنى (12.4 ← 12) يُنزل
+        # السيخ تحت الحدّ الكودي، ولا يوجد بالسوق قطر 12.4 أصلاً.
+        _need = max(10.0, 0.042 * tor['s_max'], tor['db_long'])
+        db_l = next((float(d) for d in sorted(E.BARS) if d >= _need - 1e-9), 32.0)
+        n_long = max(4, int(math.ceil(tor['Al'] / E.ab(db_l))))
         tor['stirrup_new'] = dict(db=st['db'], s=s_new, was=st['s'],
                                   label='Ø%d@%d (كان Ø%d@%d)' % (st['db'], int(s_new),
                                                                  st['db'], int(st['s'])))
-        tor['long_bars'] = dict(n=n_long, db=max(12.0, round(tor['db_long'])),
-                                As=n_long * E.ab(max(12.0, tor['db_long'])),
+        tor['long_bars'] = dict(n=n_long, db=db_l, need=round(_need, 2),
+                                As=n_long * E.ab(db_l),
                                 label='%dØ%d موزّعة على محيط الكانة (سيخ بكل ركن)'
-                                      % (n_long, int(max(12.0, round(tor['db_long'])))))
+                                      % (n_long, int(db_l)))
     out['torsion'] = tor
 
     # ---------------- 18.8.4 قص العقدة جسر–عمود ----------------

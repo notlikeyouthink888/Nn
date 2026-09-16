@@ -35,6 +35,15 @@ function Viewer3D(el, M, onPick) {
   gh.position.y = ROOM ? fb - 0.2 : lv.existing - 0.02; sc.add(gh);
 
   const clip = new T.Plane(new T.Vector3(-1, 0, 0), R * 1.5);
+  /* ---- موضع الجسر عمودياً من البلاطة — وهو **جوهر نوع الجسر** لا زينة:
+     الساقط ظهره بظهر البلاطة فيتدلّى تحتها، والمخفي عمقه سماكتها فيختفي فيها،
+     والمقلوب بطنه ببطنها فيصعد فوق السقف. bRise = كم يعلو ظهر الجسر فوق ظهر
+     البلاطة (صفر لغير المقلوب). والتسليح يتبع المقطع: حديد المقلوب العلوي
+     يصعد معه فوق البلاطة، وسفليه يقف بمستوى بطنها. ---- */
+  const bRise = bm => ((((bm || {}).sec) || {}).rise_above || 0) / 1000;
+  const bSlabAt = bm => ((((bm || {}).sec) || {}).slab_at) || 'top';
+  const bOpt = bm => ({ rise: bRise(bm), slabAt: bSlabAt(bm),
+    name: (((bm || {}).sec) || {}).type_name || 'جسر ساقط (ظاهر)' });
   const GN = ['ghost', 'soil', 'stress', 'layers', 'walls', 'raft', 'isolated', 'piles', 'columns', 'beams', 'slabs',
               'canti', 'stairs', 'rebar', 'extra', 'chairs', 'moments', 'field', 'labdef', 'punch', 'defl',
               'human', 'plan', 'site'];
@@ -355,14 +364,15 @@ function Viewer3D(el, M, onPick) {
           const dx = b2.x2 - b2.x1, dy = b2.y2 - b2.y1;
           const len = Math.hypot(dx, dy), horiz = Math.abs(dx) >= Math.abs(dy);
           const bm2 = horiz ? md.beams.x : md.beams.y;
-          const hB = bm2.h / 1000, wB = bm2.b / 1000;
+          const hB = bm2.h / 1000, wB = bm2.b / 1000, rs2 = bRise(bm2);
           box(G.beams, horiz ? len - cb2 : wB, hB, horiz ? wB : len - ch2,
-            PX((b2.x1 + b2.x2) / 2), z - hB / 2, PZ((b2.y1 + b2.y2) / 2), 0x7f97b8, 1,
+            PX((b2.x1 + b2.x2) / 2), z + rs2 - hB / 2, PZ((b2.y1 + b2.y2) / 2), 0x7f97b8, 1,
             { title: 'جسر ' + (horiz ? 'X' : 'Y') + ' — طابق ' + s, kind: 'beam',
               grp: 'beams', floor: s, gk: (horiz ? 'bx|' : 'by|') + k + '|0|' + s,
               rows: [['المصدر', 'محور حقيقي من المخطط'],
                 ['البحر', len.toFixed(2) + ' م'],
                 ['المقطع', bm2.b + ' × ' + bm2.h + ' مم'],
+                ['النوع', (bm2.sec || {}).type_name || 'جسر ساقط (ظاهر)'],
                 ['سفلي', bm2.rebar.bottom.label], ['علوي', bm2.rebar.top.label],
                 ['الأساور', bm2.rebar.stirrup.label]] });
         });
@@ -634,10 +644,11 @@ function Viewer3D(el, M, onPick) {
       for (let j = 0; j <= g.ny; j++) for (let i = 0; i < g.nx; i++) {
         if (edgeOnly && j !== 0 && j !== g.ny) continue;   // فلات سلاب: جسور محيطية فقط
         box(G.beams, g.sx - cb, bxs.h / 1000, bxs.b / 1000, px((xs[i] + xs[i + 1]) / 2),
-          z - bxs.h / 2000, pz(ys[j]), 0x7f97b8, 1,
+          z + bRise(bxs) - bxs.h / 2000, pz(ys[j]), 0x7f97b8, 1,
           { title: 'جسر X — طابق ' + s, kind: 'beam', grp: 'beams', floor: s,
             gk: 'bx|' + i + '|' + j + '|' + s,
             rows: [['المقطع', bxs.b + ' × ' + bxs.h + ' مم'], ['البحر', g.sx.toFixed(2) + ' م'],
+              ['النوع', (bxs.sec || {}).type_name || 'جسر ساقط (ظاهر)'],
               ['سفلي', bxs.rebar.bottom.label], ['علوي', bxs.rebar.top.label],
               ['الأساور', bxs.rebar.stirrup.label],
               ['الهطول', Math.abs(bxs.d_long).toFixed(1) + ' / ' + bxs.d_limit.toFixed(1) + ' مم'],
@@ -645,11 +656,13 @@ function Viewer3D(el, M, onPick) {
       }
       for (let i = 0; i <= g.nx; i++) for (let j = 0; j < g.ny; j++) {
         if (edgeOnly && i !== 0 && i !== g.nx) continue;
-        box(G.beams, bys.b / 1000, bys.h / 1000, g.sy - ch, px(xs[i]), z - bys.h / 2000,
+        box(G.beams, bys.b / 1000, bys.h / 1000, g.sy - ch, px(xs[i]),
+          z + bRise(bys) - bys.h / 2000,
           pz((ys[j] + ys[j + 1]) / 2), 0x7f97b8, 1,
           { title: 'جسر Y — طابق ' + s, kind: 'beam', grp: 'beams', floor: s,
             gk: 'by|' + i + '|' + j + '|' + s,
             rows: [['المقطع', bys.b + ' × ' + bys.h + ' مم'], ['البحر', g.sy.toFixed(2) + ' م'],
+              ['النوع', (bys.sec || {}).type_name || 'جسر ساقط (ظاهر)'],
               ['سفلي', bys.rebar.bottom.label], ['علوي', bys.rebar.top.label],
               ['الأساور', bys.rebar.stirrup.label],
               ['النظام', edgeOnly ? 'جسر محيطي — لا جسور داخلية بالفلات سلاب' : 'إطار جسور كامل']] });
@@ -678,29 +691,48 @@ function Viewer3D(el, M, onPick) {
   /* ===================== نواة المصعد — جدران بكامل الارتفاع =====================
      تُرسم من قاع الحفرة (Pit) تحت منسوب التأسيس حتى أعلى البئر، لا كفتحة
      بالسقف: أربعة جدران متصلة تشكّل صندوقاً مغلقاً هو أقسى عنصر بالمبنى. */
+  /* جدران النواة بموضعها الحقيقي — وتصلح لبئر واحد ولبئرين جنباً إلى جنب:
+     جداران طوليان بطول النواة، و(n+1) جداراً عرضياً بينها هي الطرفان
+     **والفاصل بين البئرين**. والفاصل ليس زينة: هو خلية ثانية بالصندوق
+     تضيف مساحة وصلابة، ومن غيره لا يكون البئران نواةً واحدة. */
+  function liftWalls(e) {
+    const t2 = e.t / 1000, wo = e.section.wo, ho = e.section.ho;
+    const n = e.n || 1, out = [];
+    out.push({ sx: wo, sz: t2, ax: 0, az: -(ho - t2) / 2, L: wo, dir: 'x' });
+    out.push({ sx: wo, sz: t2, ax: 0, az: (ho - t2) / 2, L: wo, dir: 'x' });
+    const Lz = ho - 2 * t2;
+    for (let k = 0; k <= n; k++) {
+      const ax = -wo / 2 + t2 / 2 + k * (e.w + t2);
+      out.push({ sx: t2, sz: Lz, ax: ax, az: 0, L: Lz, dir: 'z',
+        mid: k > 0 && k < n });
+    }
+    return out;
+  }
+
   function buildLift() {
     const e = md.elevator;
     if (!e || ROOM) return;
     const t2 = e.t / 1000, X = MAPX(e.x), Z = MAPZ(e.y);
     const yBot = fb - (e.pit || 1.5);                     // قاع الحفرة
     const yTop = nf * hs + (e.over || 3.6);               // أعلى البئر
-    const rows = [['السعة', e.Q + ' كغم · ' + e.persons + ' راكب'],
+    const rows = [['النوع', e.name || 'مصعد واحد'],
+      ['السعة', e.Q + ' كغم · ' + e.persons + ' راكب للمصعد الواحد'],
       ['البئر الداخلي', e.w.toFixed(2) + ' × ' + e.h.toFixed(2) + ' م'],
+      ['النواة الخارجية', e.section.wo.toFixed(2) + ' × ' + e.section.ho.toFixed(2) + ' م'],
       ['سماكة الجدار', Math.round(e.t) + ' مم'],
       ['حصة النواة من القوة الجانبية', Math.round(e.rigidity.share * 100) + '%'],
       ['الحديد الرأسي', e.wall.vert.label], ['الحديد الأفقي', e.wall.horiz.label],
+      ['حديد عنصر الحدّ', e.wall.be.label + ' بكل طرف'],
       ['عمق الحفرة', (e.pit || 0).toFixed(2) + ' م'],
       ['الارتفاع العلوي', (e.over || 0).toFixed(2) + ' م'],
       ['الحمل على الأساس', Math.round(e.on_found) + ' kN']];
     const H = yTop - yBot;
-    [[e.w + t2, t2, 0, -(e.h + t2) / 2], [e.w + t2, t2, 0, (e.h + t2) / 2],
-     [t2, e.h + t2, -(e.w + t2) / 2, 0], [t2, e.h + t2, (e.w + t2) / 2, 0]]
-      .forEach(([ww, dd, ax, az], k) =>
-        box(G.walls, ww, H, dd, X + ax, yBot + H / 2, Z + az, 0x8fa3bd, 1,
-          k ? null : { title: 'نواة المصعد — جدران قصّ', kind: 'lift', grp: 'walls',
-            rows: rows }));
+    liftWalls(e).forEach((wl, k) =>
+      box(G.walls, wl.sx, H, wl.sz, X + wl.ax, yBot + H / 2, Z + wl.az, 0x8fa3bd, 1,
+        k ? null : { title: 'نواة المصعد — جدران قصّ', kind: 'lift', grp: 'walls',
+          rows: rows }));
     // بلاطة قاع البئر
-    box(G.walls, e.w + 2 * t2, e.pit_slab.t / 1000, e.h + 2 * t2, X,
+    box(G.walls, e.section.wo, e.pit_slab.t / 1000, e.section.ho, X,
       yBot + e.pit_slab.t / 2000, Z, 0x6f86a6, 1,
       { title: 'بلاطة قاع بئر المصعد', kind: 'lift', grp: 'walls',
         rows: [['السماكة', Math.round(e.pit_slab.t) + ' مم'],
@@ -1098,11 +1130,16 @@ function Viewer3D(el, M, onPick) {
     });
     // ---- الجسور ----
     CURG = 'beams';
-    const drawBeam = (cX, cZ, len, bw, hB, z, reb, dir, floor, ttl, det, ends) => {
+    const drawBeam = (cX, cZ, len, bw, hB, z, reb, dir, floor, ttl, det, ends, opt) => {
       const bot = [], bnt = [], top = [], stp = [];
       const nb2 = reb.bottom.n, nt = reb.top.n, sdb = reb.stirrup;
       const cv = (reb.cover || 40) / 1000;
-      const yb = z - hB + cv, yt = z - cv - th;
+      // ظهر الجسر: يعلو ظهر البلاطة بمقدار rise (المقلوب فقط)، والتسليح يتبعه.
+      const rise = (opt && opt.rise) || 0, sAt = (opt && opt.slabAt) || 'top';
+      const zT = z + rise;
+      // الحديد العلوي للجسر **الساقط** يقف تحت سماكة البلاطة لأن فرش البلاطة
+      // العلوي يمرّ فوقه؛ أما المخفي والمقلوب فظهرهما مكشوف فيقف بالغطاء مباشرة.
+      const yb = zT - hB + cv, yt = zT - cv - (sAt === 'top' ? th : 0);
       const nBent = (det && det.bent) ? (det.n_bent || 0) : 0;
       for (let i = 0; i < nb2; i++) {
         const o = nb2 === 1 ? 0 : (i / (nb2 - 1) - .5) * (bw - 2 * cv);
@@ -1115,10 +1152,11 @@ function Viewer3D(el, M, onPick) {
       const ns = Math.max(2, Math.floor(len / (sdb.s / 1000)));
       for (let i = 0; i <= ns; i++) {
         const t2 = -len / 2 + i * len / ns;
-        stp.push(dir === 'x' ? [cX + t2, z - hB / 2, cZ] : [cX, z - hB / 2, cZ + t2]);
+        stp.push(dir === 'x' ? [cX + t2, zT - hB / 2, cZ] : [cX, zT - hB / 2, cZ + t2]);
       }
       const inf = (t, more) => ({ title: t + ' — ' + ttl, kind: 'rebar', floor: floor,
         rows: [['المقطع', Math.round(bw * 1000) + ' × ' + Math.round(hB * 1000) + ' مم'],
+          ['النوع', (opt && opt.name) || 'جسر ساقط (ظاهر)'],
           ['سفلي', reb.bottom.label], ['علوي', reb.top.label], ['الأساور', sdb.label],
           ['الغطاء', Math.round(cv * 1000) + ' مم']].concat(more || []) });
       addRun(len, reb.bottom.db, dir, bot, inf('تسليح سفلي مستقيم'));
@@ -1165,9 +1203,32 @@ function Viewer3D(el, M, onPick) {
           ['العكفة', 'ثني 135° يلتفّ على سيخ طولي وامتداده **داخل** السوار ' +
             '(ACI 25.3.4) — العكفة 90° تنفتح عند انقشار الغطاء'],
           ['الأرجل', (sdb.legs || 2) + ' — ' + (bLegs > 0 ? bLegs + ' أتاري داخلية'
-            : 'سوار محيط وحده')]]),
+            : 'سوار محيط وحده')]].concat(reb.hanger ? [
+            ['وظيفة رابعة هنا', 'الجسر **مقلوب**: البلاطة تدخل من وجهه السفلي، ' +
+              'فهذه الأساور **تعلّقها** إلى منطقة الضغط العليا (R9.7.6.2.2)'],
+            ['Av/s للقصّ', Math.round(reb.hanger.Av_s_shear || 0) + ' مم²/م'],
+            ['Av/s للتعليق', Math.round(reb.hanger.Av_s) + ' مم²/م'],
+            ['المنفَّذ', Math.round(reb.hanger.Av_s_prov) + ' مم²/م — ' +
+              (reb.hanger.ok ? 'يكفي المجموع ✓' : '⚠️ لا يكفي')]] : [])),
         null, null, dir === 'x' ? 'x' : 'z', Math.max(6 * sdb.db / 1000, .075),
         { x: 0, z: Math.max(0, bLegs) });
+      // ---- الحديد الموزّع بوجهَي الجسر العميق (ACI 9.9.3.1) ----
+      // الجسر العميق لا يُصمَّم بالانحناء، وحديده الموزّع ليس تزييناً: هو ما
+      // يحصر الشقوق المائلة بنموذج الدعامة والرباط. فيُرسم فعلاً بالوجهين.
+      if (reb.web) {
+        const w = reb.web, sW = w.s / 1000, nR = Math.max(2, Math.floor((hB - 2 * cv) / sW));
+        const pts = [];
+        for (let r2 = 1; r2 < nR; r2++) {
+          const yy = zT - hB + cv + r2 * (hB - 2 * cv) / nR;
+          [-1, 1].forEach(sg => pts.push(dir === 'x'
+            ? [cX, yy, cZ + sg * (bw / 2 - cv)] : [cX + sg * (bw / 2 - cv), yy, cZ]));
+        }
+        addRun(len, w.db, dir, pts, inf('حديد أفقي موزّع — جسر عميق', [
+          ['لماذا', 'انفعال الجسر العميق **غير خطّي**، فتسقط نظرية الانحناء ' +
+            'ويُصمَّم بالدعامة والرباط (الفصل 23) — وهذا الحديد يحصر شقوقه المائلة'],
+          ['المطلوب', 'Avh ≥ 0.0025·bw·s₂ بكل وجه — ACI 9.9.3.1'],
+          ['المنفَّذ', w.label]]));
+      }
     };
     if (ROOM) {
       (md.beams || []).forEach((b, i) => {
@@ -1182,11 +1243,11 @@ function Viewer3D(el, M, onPick) {
         for (let j = 0; j <= g.ny; j++) for (let i = 0; i < g.nx; i++)
           drawBeam(px((xs[i] + xs[i + 1]) / 2), pz(ys[j]), g.sx - cb, md.beams.x.b / 1000,
             md.beams.x.h / 1000, z, md.beams.x.rebar, 'x', s, 'جسور X طابق ' + s,
-            md.beams.x.detail, [i === 0, i === g.nx - 1]);
+            md.beams.x.detail, [i === 0, i === g.nx - 1], bOpt(md.beams.x));
         for (let i = 0; i <= g.nx; i++) for (let j = 0; j < g.ny; j++)
           drawBeam(px(xs[i]), pz((ys[j] + ys[j + 1]) / 2), g.sy - ch, md.beams.y.b / 1000,
             md.beams.y.h / 1000, z, md.beams.y.rebar, 'z', s, 'جسور Y طابق ' + s,
-            md.beams.y.detail, [j === 0, j === g.ny - 1]);
+            md.beams.y.detail, [j === 0, j === g.ny - 1], bOpt(md.beams.y));
       }
     }
     // ---- السقوف ----
@@ -1319,7 +1380,130 @@ function Viewer3D(el, M, onPick) {
       }
       CURG = 'slabs';
     });
+    liftRebar();
     G.rebar.traverse(o => { if (o.isInstancedMesh) o.frustumCulled = false; });
+  }
+
+  /* ============ تسليح نواة المصعد — يُرسم مع بقية الحديد لا بمعزل ============
+     كانت النواة تُرسم جداراً مصمتاً بلا سيخ واحد، وهي **أثقل عنصر مسلَّح بالمبنى**:
+     تجذب حصة الأسد من القوة الجانبية فتحتاج أربع عائلات حديد مختلفة، لكلٍّ
+     دورها ومادّتها الكودية:
+       ١ · رأسي موزّع  (ρ ≥ 0.0012 · ACI 11.6.1) — الانكماش والحرارة والحمل المحوري
+       ٢ · أفقي موزّع  (ρ ≥ 0.0020/0.0025 · 11.6.2 و11.5.4.8) — يقاوم قصّ المستوى
+       ٣ · حديد عنصر الحدّ (18.10.6) — يقاوم **عزم القلب** كزوج قوى بطرفَي الجدار،
+           وهو ما يغيب فتظهر النواة مصمَّمة على الحدّ الأدنى وهي راسبة فعلاً
+       ٤ · تطويق عنصر الحدّ (18.10.6.4) — أساور متقاربة تمنع انبعاج تلك الأسياخ
+     ويُضاف حديد حواف الفتحة بالسقف لأن فتحة المصعد تقطع فرش البلاطة كاملاً. */
+  function liftRebar() {
+    const e = md.elevator;
+    if (!e || ROOM || !e.wall) return;
+    const prev = CURG; CURG = 'walls';
+    const t2 = e.t / 1000, X = MAPX(e.x), Z = MAPZ(e.y);
+    const yBot = fb - (e.pit || 1.5), yTop = nf * hs + (e.over || 3.6);
+    const H = yTop - yBot, cv = .025;
+    const W = e.wall, vt = W.vert, hz = W.horiz;
+    const nLay = W.two_layers ? 2 : 1;                 // 11.7.2.3
+    const Lbe = (W.L_be || 300) / 1000;
+    const walls = liftWalls(e);
+    const base = [['عدد الآبار', (e.n || 1) + ' — ' + (e.name || 'مصعد واحد')],
+      ['سماكة الجدار', Math.round(e.t) + ' مم — ' +
+        (nLay === 2 ? 'شبكتان (250 مم فأكثر · ACI 11.7.2.3)' : 'شبكة واحدة')],
+      ['طول الجدار Lw', (W.Lw || 0).toFixed(2) + ' م'],
+      ['حصة النواة من القوة الجانبية', Math.round(e.rigidity.share * 100) + '%'],
+      ['Vu / φVn', Math.round(W.Vu) + ' / ' + Math.round(W.phiVn) + ' kN'],
+      ['Mu / φMn', Math.round(W.Mu) + ' / ' + Math.round(W.phiMn) + ' kN·م']];
+    const layOff = k => nLay === 1 ? [0] : [-(t2 / 2 - cv - vt.db / 2000),
+      (t2 / 2 - cv - vt.db / 2000)];
+    let first = true;
+    walls.forEach(wl => {
+      const along = wl.dir === 'x' ? 'x' : 'z';         // اتجاه طول الجدار
+      const half = wl.L / 2 - cv;
+      // ---- ١ · الحديد الرأسي الموزّع ----
+      const nv = Math.max(2, Math.floor((wl.L - 2 * cv) / (vt.s / 1000)) + 1);
+      const pv = [];
+      for (let i = 0; i < nv; i++) {
+        const u = -half + i * (2 * half) / (nv - 1);
+        // ما وقع داخل عنصر الحدّ يُترك له — لا يُحسب مرتين
+        if (Math.abs(Math.abs(u) - half) < Lbe - 1e-6) continue;
+        layOff().forEach(o => pv.push(along === 'x'
+          ? [X + wl.ax + u, yBot + H / 2, Z + wl.az + o]
+          : [X + wl.ax + o, yBot + H / 2, Z + wl.az + u]));
+      }
+      addRun(H, vt.db, 'y', pv, first ? { title: 'حديد نواة المصعد الرأسي',
+        kind: 'rebar', grp: 'walls', rows: base.concat([
+          ['التفصيل', vt.label], ['النسبة ρℓ', (W.rho_l).toFixed(4) + ' ≥ 0.0012 (ACI 11.6.1)'],
+          ['الوظيفة', 'يحمل الحمل المحوري ويمنع شقوق الانكماش والحرارة — ' +
+            'وهو **ليس** حديد العزم، فعزم القلب يقاومه حديد عنصر الحدّ'],
+          ['الامتداد', 'من بلاطة قاع البئر إلى أعلى البئر بلا قطع — ' +
+            H.toFixed(2) + ' م بوصلات تراكب']]) } : null, STEEL, null, 90);
+      // ---- ٢ · الحديد الأفقي الموزّع ----
+      const nh = Math.max(2, Math.floor(H / (hz.s / 1000)));
+      const ph = [];
+      for (let i = 1; i < nh; i++) {
+        const y = yBot + i * H / nh;
+        layOff().forEach(o => ph.push(along === 'x'
+          ? [X + wl.ax, y, Z + wl.az + o] : [X + wl.ax + o, y, Z + wl.az]));
+      }
+      addRun(wl.L - 2 * cv, hz.db, along, ph, first ? { title: 'حديد نواة المصعد الأفقي',
+        kind: 'rebar', grp: 'walls', rows: base.concat([
+          ['التفصيل', hz.label], ['النسبة ρt', (W.rho_t).toFixed(4) +
+            (W.need_shear ? ' — **زِيدت** لمقاومة القصّ (ACI 11.5.4.8)'
+              : ' ≥ الأدنى (ACI 11.6.2)')],
+          ['الوظيفة', 'هذا هو حديد **قصّ المستوى**: يعبر الشقّ القطري ويمنع ' +
+            'انزلاق الجدار — φVs = ' + Math.round(W.phiVs) + ' kN من مقاومته'],
+          ['العكفة', 'تُعكف 90° داخل الجدار المتعامد فتصير الجدران الأربعة ' +
+            'صندوقاً واحداً — بلا ذلك ينفصل الركن وتضيع صلابة الالتواء']]) } : null,
+        STEEL, null, 90);
+      // ---- ٣ · حديد عنصر الحدّ بطرفَي الجدار + ٤ · تطويقه ----
+      // يُوضع بأركان النواة، أي بطرفَي الجدارين الطوليين: هناك يبلغ إجهاد
+      // الانحناء أقصاه، وهناك تلتقي الجدران فيكون التطويق ممكناً فعلاً.
+      // والجدران العرضية والفاصل بين البئرين تُسلَّح بالموزّع وحده.
+      if (wl.dir === 'x') [-1, 1].forEach(sg => {
+        const uc = sg * (half - Lbe / 2);
+        const nbe = Math.max(4, W.be.n), rows2 = Math.max(2, Math.round(nbe / 2));
+        const pbe = [];
+        for (let r = 0; r < rows2; r++) for (let c = 0; c < 2; c++) {
+          const u = uc + (r / (rows2 - 1) - .5) * (Lbe - 2 * cv);
+          const o = (c - .5) * (t2 - 2 * cv);
+          pbe.push(along === 'x' ? [X + wl.ax + u, yBot + H / 2, Z + wl.az + o]
+            : [X + wl.ax + o, yBot + H / 2, Z + wl.az + u]);
+        }
+        addRun(H, W.be.db, 'y', pbe, first && sg < 0 ? {
+          title: 'حديد عنصر الحدّ — نواة المصعد', kind: 'rebar', grp: 'walls',
+          rows: base.concat([
+            ['التفصيل', W.be.label + ' بكل طرف (As = ' + Math.round(W.As_be) + ' مم²)'],
+            ['طول عنصر الحدّ', Math.round(W.L_be) + ' مم من الطرف (ACI 18.10.6.4)'],
+            ['الوظيفة', 'زوج قوى بذراع 0.8·Lw يقاوم **عزم القلب**: شدّ بطرف ' +
+              'وضغط بالطرف المقابل — φMn = ' + Math.round(W.phiMn) + ' kN·م'],
+            ['لماذا لا يكفي الأدنى', 'الحديد الموزّع ρ=0.0012 وُضع للانكماش، ' +
+              'ونواة تأخذ ' + Math.round(e.rigidity.share * 100) + '% من القصّ على ' +
+              (nf * hs).toFixed(1) + ' م تولّد عزماً يتجاوزه أضعافاً'],
+            ['إجهاد الطرف', W.sigma + ' ميغا — ' + (W.need_boundary
+              ? 'يتجاوز 0.2·f\'c فالتطويق **إلزامي** (18.10.6.3)'
+              : 'دون 0.2·f\'c فالتطويق احتياطي')]]) } : null, CTOP, null, 90);
+        // أساور التطويق
+        const sTie = Math.max(50, W.be_tie_s) / 1000;
+        const nt2 = Math.max(2, Math.floor(H / sTie));
+        const pt2 = [];
+        for (let i = 0; i <= nt2; i++) {
+          const y = yBot + i * H / nt2;
+          pt2.push(along === 'x' ? [X + wl.ax + uc, y, Z + wl.az]
+            : [X + wl.ax, y, Z + wl.az + uc]);
+        }
+        addRings(along === 'x' ? Lbe - 2 * cv : t2 - 2 * cv,
+          along === 'x' ? t2 - 2 * cv : Lbe - 2 * cv, 10, pt2,
+          first && sg < 0 ? { title: 'تطويق عنصر الحدّ — نواة المصعد', kind: 'rebar',
+            grp: 'walls', rows: [
+              ['التباعد', 'Ø10 @ ' + Math.round(W.be_tie_s) + ' مم (ACI 18.10.6.4)'],
+              ['الوظيفة', 'يحصر الخرسانة ويمنع انبعاج أسياخ عنصر الحدّ بعد ' +
+                'انقشار الغطاء — بلاه ينهار الطرف المضغوط أولاً'],
+              ['التباعد الحاكم', 'الأصغر من t/3 و96 مم و150 مم'],
+              ['العدد', pt2.length]] } : null,
+          TIE, null, null, .075, null);
+      });
+      first = false;
+    });
+    CURG = prev;
   }
 
   /* ========================= العزوم وقص الثقب والهطول ========================= */
@@ -1917,32 +2101,78 @@ function Viewer3D(el, M, onPick) {
   let humanBuilt = false;
   function buildHuman() {
     if (humanBuilt) return; humanBuilt = true;
-    const H = 1.85, sk = 0xffd9a0, cl = 0x2f6fb8;
-    const mk = (geo, col, x, y, z, rz) => {
-      const m = new T.Mesh(geo, new T.MeshLambertMaterial({ color: col, clippingPlanes: [clip] }));
-      m.position.set(x, y, z); if (rz) m.rotation.z = rz;
-      G.human.add(m); return m;
-    };
+    /* مهندس بخوذة ونظارة وسترة عاكسة، **واقف داخل المبنى** على أرضية الطابق
+       الأول لا خارجه. كان يُوضع على بُعد 1.2 م خارج الركن وعلى منسوب الأرض
+       الطبيعية، فيبدو بعيداً لا يقارن بشيء — والغاية منه أن تُقاس به أبعاد
+       الفضاء الذي ستقف فيه فعلاً: ارتفاع السقف وعرض البحر ومقطع العمود. */
+    const H = 1.85;
+    const SK = 0xf2c9a0,          // البشرة
+          HAT = 0xf5b301,         // الخوذة
+          VEST = 0xff7a1a,        // السترة العاكسة
+          SHIRT = 0x2f6fb8,       // القميص
+          PANT = 0x22354f,        // البنطال
+          DARK = 0x16233a;
     const body = new T.Group();
-    const part = (geo, col, x, y, z, rz) => {
-      const m = mk(geo, col, x, y, z, rz); G.human.remove(m); body.add(m); return m;
+    const part = (geo, col, x, y, z, rx, rz) => {
+      const m = new T.Mesh(geo, new T.MeshLambertMaterial({ color: col,
+        clippingPlanes: [clip] }));
+      m.position.set(x, y, z);
+      if (rz) m.rotation.z = rz;
+      if (rx) m.rotation.x = rx;
+      body.add(m); return m;
     };
-    part(new T.SphereGeometry(H * .062, 14, 12), sk, 0, H * .935, 0);           // الرأس
-    part(new T.CylinderGeometry(H * .028, H * .034, H * .10, 10), sk, 0, H * .855, 0); // الرقبة
-    part(new T.CylinderGeometry(H * .105, H * .092, H * .30, 12), cl, 0, H * .655, 0); // الجذع
+    // ---- الرأس والخوذة والنظارة ----
+    part(new T.SphereGeometry(H * .060, 16, 14), SK, 0, H * .930, 0);
+    const hat = part(new T.SphereGeometry(H * .070, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2),
+      HAT, 0, H * .944, 0);                                  // قبّة الخوذة
+    hat.scale.set(1, .82, 1);
+    part(new T.CylinderGeometry(H * .086, H * .086, H * .006, 20), HAT,
+      0, H * .944, 0);                                       // حافة الخوذة
+    part(new T.BoxGeometry(H * .020, H * .016, H * .030), HAT,
+      0, H * .968, H * .052);                                // قمّة أمامية
+    // النظارة: عدستان وجسر — أوضح ما يميّزه مهندساً بالمجسم
+    [-1, 1].forEach(sd => part(new T.BoxGeometry(H * .028, H * .018, H * .006), DARK,
+      sd * H * .022, H * .930, H * .056));
+    part(new T.BoxGeometry(H * .018, H * .004, H * .006), DARK, 0, H * .930, H * .056);
+    [-1, 1].forEach(sd => part(new T.BoxGeometry(H * .004, H * .004, H * .034), DARK,
+      sd * H * .036, H * .932, H * .040));                   // ذراعا النظارة
+    // ---- الرقبة والجذع ----
+    part(new T.CylinderGeometry(H * .026, H * .032, H * .055, 10), SK, 0, H * .880, 0);
+    part(new T.CylinderGeometry(H * .100, H * .090, H * .300, 14), SHIRT, 0, H * .690, 0);
+    const vest = part(new T.CylinderGeometry(H * .108, H * .100, H * .215, 14), VEST,
+      0, H * .715, 0);                                       // السترة العاكسة
+    vest.scale.set(1, 1, .82);
+    [-1, 1].forEach(sd => part(new T.BoxGeometry(H * .012, H * .215, H * .004), 0xf6f6f6,
+      sd * H * .046, H * .715, H * .086));                   // شريطان عاكسان
+    // ---- الذراعان واليدان ----
     [-1, 1].forEach(sd => {
-      part(new T.CylinderGeometry(H * .028, H * .024, H * .30, 8), cl,
-        sd * H * .125, H * .655, 0, sd * .13);                                  // الذراعان
-      part(new T.CylinderGeometry(H * .046, H * .036, H * .48, 10), 0x243b57,
-        sd * H * .052, H * .255, 0);                                            // الساقان
-      part(new T.BoxGeometry(H * .055, H * .022, H * .13), 0x11203a,
-        sd * H * .052, H * .012, H * .022);                                     // القدمان
+      part(new T.CylinderGeometry(H * .026, H * .022, H * .285, 10), SHIRT,
+        sd * H * .118, H * .672, 0, 0, sd * .12);
+      part(new T.SphereGeometry(H * .022, 10, 8), SK, sd * H * .150, H * .535, 0);
     });
-    body.position.set(px(0) - L / 2 - 1.2, ROOM ? fb : (M.earth ? lv.existing : fb), pz(0) + B / 2 + 1.2);
-    body.userData = { title: 'إنسان للمقياس — طول 1.85 م', kind: 'human', grp: 'human',
-      rows: [['الطول', '1.85 م'], ['الفائدة', 'مقارنة أبعاد المبنى والعناصر بالحجم الطبيعي'],
-        ['ارتفاع الطابق', hs.toFixed(2) + ' م = ' + (hs / 1.85).toFixed(2) + ' × طول الإنسان'],
-        ['ارتفاع المبنى', (nf * hs).toFixed(2) + ' م = ' + (nf * hs / 1.85).toFixed(1) + ' × طوله']] };
+    // لفّة مخططات بيده اليمنى — علامة المهندس بالموقع
+    part(new T.CylinderGeometry(H * .016, H * .016, H * .190, 10), 0xe8e2d0,
+      H * .168, H * .545, H * .020, Math.PI / 2.6);
+    // ---- الساقان والحذاء ----
+    [-1, 1].forEach(sd => {
+      part(new T.CylinderGeometry(H * .044, H * .034, H * .470, 12), PANT,
+        sd * H * .050, H * .275, 0);
+      part(new T.BoxGeometry(H * .056, H * .026, H * .135), DARK,
+        sd * H * .050, H * .014, H * .026);
+    });
+    // ---- الموضع: **داخل المبنى** على أرضية الطابق الأول ----
+    const inX = MAPX(g.sx * .5), inZ = MAPZ(g.sy * .5);
+    body.position.set(inX, ROOM ? fb : 0, inZ);
+    body.userData = { title: 'مهندس للمقياس — طول 1.85 م', kind: 'human', grp: 'human',
+      rows: [['الطول', '1.85 م — واقف داخل المبنى بالطابق الأول'],
+        ['ارتفاع الطابق', hs.toFixed(2) + ' م = ' + (hs / 1.85).toFixed(2) + ' × طوله'],
+        ['الخلوص فوق رأسه',
+          (hs - ((md.beams.x.h || 600) / 1000 - bRise(md.beams.x)) - 1.85).toFixed(2)
+          + ' م تحت ' + (bSlabAt(md.beams.x) === 'top' ? 'الجسر' : 'السقف — الجسر لا يتدلّى')],
+        ['مقطع العمود', Math.round(cb * 1000) + ' × ' + Math.round(ch * 1000) + ' مم'],
+        ['البحر', g.sx.toFixed(2) + ' × ' + g.sy.toFixed(2) + ' م'],
+        ['ارتفاع المبنى', (nf * hs).toFixed(2) + ' م = ' + (nf * hs / 1.85).toFixed(1) + ' × طوله'],
+        ['الفائدة', 'يقف حيث ستقف فعلاً — فتُقاس به أبعاد الفضاء لا أبعاد الورق']] };
     body.children.forEach(c => { c.userData = body.userData; picks.push(c); });
     G.human.add(body);
     G.human.userData.body = body;
@@ -2424,7 +2654,8 @@ function Viewer3D(el, M, onPick) {
     for (let f2 = 1; f2 <= nf; f2++) {
       const z0 = f2 === 1 ? Math.max(gbY + gbH / 2, lv.existing) : (f2 - 1) * hs;
       const z1 = f2 * hs;
-      const hcol = z1 - z0 - md.beams.x.h / 1000;
+      // بطن الجسر من ظهر البلاطة = العمق ناقص ما صعد فوقها (المقلوب لا يتدلّى).
+      const hcol = z1 - z0 - (md.beams.x.h / 1000 - bRise(md.beams.x));
       // شدّة الأعمدة
       const gCf = coGrp('form_c' + f2), gCc = coGrp('conc_c' + f2);
       (COLS || []).forEach((l, i) => {
@@ -2444,7 +2675,14 @@ function Viewer3D(el, M, onPick) {
       });
       // جدران الطابوق بين الأعمدة — على المحيط
       const gBr = coGrp('brick' + f2);
-      const bh = hcol * .92, th2 = .24;
+      // الجدار يصل **بطن الجسر** لا 92% منه: جدار الحشو بالعراق يُبنى كاملاً
+      // ويُقفل آخره تحت الجسر، وما كان يُرسم ناقصاً هو ما ظهر كأن الطابوق
+      // «لا يكفي». ويُنزَل ارتفاعه لأقرب عدد **صحيح** من المداميك (85 مم)،
+      // والباقي هو مدماك الإغلاق نفسه.
+      const cN = Math.max(1, Math.floor(hcol / .085));
+      const bh = Math.min(hcol, cN * .085), th2 = .24;
+      // ما تبقّى بين آخر مدماك وبطن الجسر = مدماك الإغلاق، ويُمرَّر ليُرسم
+      // بسماكته الحقيقية بدل قيمة ثابتة.
       const per = [];
       for (let i = 0; i < g.nx; i++) {
         per.push({ dir: 'x', len: g.sx - cb2, x: px((xs[i] + xs[i + 1]) / 2), z: pz(ys[0]) });
@@ -2455,9 +2693,16 @@ function Viewer3D(el, M, onPick) {
         per.push({ dir: 'z', len: g.sy - ch2, x: px(xs[g.nx]), z: pz((ys[j] + ys[j + 1]) / 2) });
       }
       per.forEach((w2, i) => C.brickWall(gBr, w2.len, bh, th2, w2.x, z0 + bh / 2, w2.z,
-        w2.dir, { clip: clip, info: i ? null : { title: 'جدران الطابوق — طابق ' + f2,
+        w2.dir, { clip: clip, cap: hcol - bh,
+          info: i ? null : { title: 'جدران الطابوق — طابق ' + f2,
           kind: 'site', grp: 'site',
-          rows: [['السماكة', (th2 * 1000) + ' مم'], ['الارتفاع', bh.toFixed(2) + ' م'],
+          rows: [['السماكة', (th2 * 1000) + ' مم — طابوقة 240 مم + مونة'],
+            ['الارتفاع', bh.toFixed(2) + ' م حتى بطن الجسر'],
+            ['المداميك', cN + ' مدماك × 85 مم (طابوقة 75 + فاصل 10)'],
+            ['بالمدماك الواحد', Math.round((w2.len) / .25) + ' طابوقة (250 مم للطابوقة والفاصل)'],
+            ['الطابوق للجدار', Math.round(cN * (w2.len) / .25 * (th2 / .24)) + ' طابوقة تقريباً'],
+            ['الإغلاق', 'مدماك إغلاق بسماكة ' + Math.round((hcol - bh) * 1000) +
+              ' مم تحت بطن الجسر — طابوق مائل أو مونة، فلا يبقى فراغ'],
             ['الموضع', 'بين الأعمدة على المحيط — جدار حشو لا يحمل'],
             ['المرحلة', '١١ · بناء الطابوق بالطابق ' + f2]] } }));
       // شدّة السقف: دك + عروق + دعامات
@@ -2588,8 +2833,9 @@ function Viewer3D(el, M, onPick) {
     },
     floor: v => {
       floorSel = v; applyVis();
+      // يتبع الطابق المختار، ويقف بالطابق الأول حين تُعرض كل الطوابق
       if (G.human.visible && v !== 'all') humanTo((v - 1) * hs);
-      else if (G.human.visible) humanTo(ROOM ? fb : (M.earth ? lv.existing : fb));
+      else if (G.human.visible) humanTo(ROOM ? fb : 0);
     },
     human: v => { if (v) buildHuman(); G.human.visible = !!v; return !!v; },
     /* التربة الطبيعية تحت الحفر + الماء الجوفي + حبيبات الجلمود والسبيس */
@@ -2645,6 +2891,9 @@ function Viewer3D(el, M, onPick) {
       }));
       return out.filter(r => Math.max(...r.size) > .7).slice(0, 12);
     },
+    humanPos: () => { buildHuman();
+      const b = G.human.userData.body;
+      return b ? [b.position.x, b.position.y, b.position.z] : null; },
     labSpot: () => { const m = G.labdef.children.find(o => o.isMesh);
       return m ? [m.position.x, m.position.y, m.position.z] : null; },
     /* عدّ العناصر المرسومة بشكل تشوّهها — للتحقق */

@@ -224,7 +224,7 @@ def crack_spacing(fy, cc, fs=None, detail=False):
     fs = fs or (2.0 * fy / 3.0)
     a = 380.0 * (280.0 / fs) - 2.5 * cc
     b = 300.0 * (280.0 / fs)
-    s = max(0.0, min(a, b))
+    s = E.crack_spacing(fy, cc, fs)          # النسخة المرجعية بالمحرّك
     if not detail:
         return s
     return dict(s_max=s, a=a, b=b, fs=fs, cc=cc, clause='ACI 318M-14 24.3.2')

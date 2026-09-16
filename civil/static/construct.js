@@ -280,16 +280,29 @@
    * جدار طابوق بين عمودين — بمداميك حقيقية ومدماك أخير أفقي (الرباط).
    * يُبنى بالطول len والارتفاع h والسماكة th على المحور dir.
    */
+  /* الوحدة البنائية العراقية: طابوقة 240×115×75 مم وفاصل مونة 10 مم، فيصير
+     طول المدماك 250 مم وارتفاع المدماك 85 مم. وتايل الخامة أربع طابوقات
+     بأربعة أعمدة وثمانية مداميك ⇒ التايل الواحد = 1.00 م × 0.68 م. */
+  const BRICK_TILE_L = 1.00, BRICK_TILE_H = 0.68;
+
+  /** عدد تكرارات الخامة — **صحيح دائماً**. الكسر هو سبب «الطابوق غير المتناسق»:
+   *  تكرار 3.7 يقطع الطابوقة الأخيرة بنصفها عند حافة الجدار ويقصّ المدماك
+   *  الأعلى، فيبدو الصفّ ناقصاً. البنّاء يقصّ طابوقة واحدة (الشَّكَل) لا كل صفّ. */
+  function brickReps(size, tile) { return Math.max(1, Math.round(size / tile)); }
+
   function brickWall(parent, len, h, th, x, y, z, dir, opt) {
     opt = opt || {};
     const clip = opt.clip;
-    const m = mat('brick', { rx: Math.max(1, len / .96), ry: Math.max(1, h / .64), clip: clip });
+    const rx = brickReps(len, BRICK_TILE_L), ry = brickReps(h, BRICK_TILE_H);
+    const m = mat('brick', { rx: rx, ry: ry, clip: clip });
     const w = dir === 'x' ? len : th, d = dir === 'x' ? th : len;
     const b = slab(parent, w, h, d, x, y, z, m, opt.info);
-    // شفة المدماك العلوي — تُرى بالفيديو حين يكون الجدار غير مكتمل
-    const cap = mat('brick', { rx: Math.max(1, len / .96), ry: 1, clip: clip });
-    slab(parent, dir === 'x' ? len : th * 1.06, .02, dir === 'x' ? th * 1.06 : len,
-      x, y + h / 2 + .01, z, cap);
+    // مدماك الإغلاق تحت الجسر: بالعراق يُقفل الفراغ الأخير بطابوق مائل أو
+    // مدماك مونة سميك، فلا يبقى فراغ بين الجدار وبطن الجسر.
+    const capT = Math.max(.02, Math.min(.12, opt.cap || .045));
+    const cap = mat('brick', { rx: rx, ry: 1, clip: clip });
+    slab(parent, dir === 'x' ? len : th * 1.04, capT, dir === 'x' ? th * 1.04 : len,
+      x, y + h / 2 + capT / 2, z, cap);
     return b;
   }
 
@@ -314,7 +327,8 @@
   global.CONSTRUCT = {
     h01: h01, mat: mat, slab: slab,
     formBox: formBox, formBeam: formBeam, formDeck: formDeck,
-    brickWall: brickWall, pit: pit,
+    brickWall: brickWall, brickReps: brickReps, pit: pit,
+    BRICK: { tileL: BRICK_TILE_L, tileH: BRICK_TILE_H, len: .25, course: .085 },
     tex: { grass: grass, soil: soil, sand: sand, concrete: concrete,
            blinding: blinding, ply: ply, timber: timber, brick: brick }
   };

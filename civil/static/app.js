@@ -795,6 +795,11 @@ function addLiftPanel() {
   return `<div class="addbox" id="liftbox" hidden>
     <div class="pdec-r">
       <b style="color:var(--acc)">🛗 مصعد جديد</b>
+      <label>العدد</label>
+      <select id="lf_n" onchange="lfGhost()">
+        <option value="1" selected>مصعد واحد — بئر واحد</option>
+        <option value="2">مصعدان — بئران بنواة واحدة</option>
+      </select>
       <label>السعة</label>
       <select id="lf_q" onchange="lfGhost()">
         ${LIFT_CAPS.map(([k, t]) => `<option value="${k}"${k === 630 ? ' selected' : ''}>${t}</option>`).join('')}
@@ -822,7 +827,7 @@ function lfRead() {
   const Q = +txt('lf_q') || 630;
   const sh = { 320: [1.50, 1.60], 450: [1.50, 1.75], 630: [1.60, 1.75],
                800: [1.80, 1.90], 1000: [1.90, 2.10], 1275: [2.00, 2.30] }[Q];
-  return { Q: Q, x: +$('#lf_x').value, y: +$('#lf_y').value,
+  return { Q: Q, x: +$('#lf_x').value, y: +$('#lf_y').value, n: +txt('lf_n') || 1,
            t: +($('#lf_t') || {}).value || 200, w: sh[0], h: sh[1] };
 }
 function lfGhost() {
@@ -831,11 +836,16 @@ function lfGhost() {
   $('#lf_xv').textContent = nf(o.x, 2) + ' م';
   $('#lf_yv').textContent = nf(o.y, 2) + ' م';
   const n = $('#lf_note');
-  if (n) n.innerHTML = `بئر <b>${nf(o.w, 2)} × ${nf(o.h, 2)} م</b> داخلي، جدار
-    <b>${int(o.t)} مم</b> — النواة تُبنى بكامل الارتفاع وتنزل بحفرة (Pit) تحت
-    منسوب التأسيس. حرّك المؤشّرين لمركز البئر ثم اضغط «ثبّت المصعد».`;
-  V3.ghost({ x: o.x, y: o.y, shape: 'rect', b: (o.w + o.t / 1000) * 1000,
-             h: (o.h + o.t / 1000) * 1000, form: 'rect' });
+  const wo = o.n * o.w + (o.n + 1) * o.t / 1000, ho = o.h + 2 * o.t / 1000;
+  if (n) n.innerHTML = `${o.n === 1 ? 'بئر واحد' : '<b>بئران</b> جنباً إلى جنب يفصلهما جدار'}
+    <b>${nf(o.w, 2)} × ${nf(o.h, 2)} م</b> داخلي للبئر، جدار <b>${int(o.t)} مم</b>،
+    فالنواة <b>${nf(wo, 2)} × ${nf(ho, 2)} م</b> خارجياً. النواة تُبنى بكامل
+    الارتفاع وتنزل بحفرة (Pit) تحت منسوب التأسيس.${o.n === 2 ? ` والمصعدان
+    ليسا شكلين: العرض بالأُس الثالث بعزم القصور، فصلابة النواة باتجاه X تقفز
+    وتجذب حصة أكبر من القوة الجانبية، ويتضاعف حمل الماكينة وصدم المصدّات،
+    وتتّسع فتحة السقف فيزيد تطويقها.` : ''}
+    حرّك المؤشّرين لمركز النواة ثم اضغط «ثبّت المصعد».`;
+  V3.ghost({ x: o.x, y: o.y, shape: 'rect', b: wo * 1000, h: ho * 1000, form: 'rect' });
 }
 function toggleAddLift() {
   const bx = $('#liftbox');
@@ -848,7 +858,8 @@ function toggleAddLift() {
 async function addLiftCommit() {
   const o = lfRead();
   window.__elevator = o;
-  msgTop('🛗 أُضيف مصعد ' + o.Q + ' كغم عند (' + nf(o.x, 2) + ' , ' + nf(o.y, 2)
+  msgTop('🛗 أُضيف ' + (o.n === 2 ? 'بنك مصعدين ' : 'مصعد ') + o.Q + ' كغم عند ('
+    + nf(o.x, 2) + ' , ' + nf(o.y, 2)
     + ') — يُعاد التصميم بحمله وصلابته وفتحته…');
   await PAGES.wizard.run();
   setTimeout(() => { if (LIFT_ON) { toggleAddLift(); toggleAddLift(); } showChange(); }, 400);
@@ -880,9 +891,27 @@ function toggleSite() {
   tgl('btnSite', SITE_ON);
   const bar = $('#siteBar');
   if (bar) bar.hidden = !SITE_ON;
-  if (SITE_ON) { SITE_STEP = 0; siteStep(0); }
-  else if (bar) bar.innerHTML = '';
+  // **يُفتح على المبنى المكتمل** لا على الأرض الفارغة. كان يبدأ من المرحلة
+  // الأولى (أرض خضراء بلا شيء) فيبدو الزر معطّلاً — والمتوقّع من «وضع البناء»
+  // أن يُظهر المشهد الواقعي أولاً، ثم يُرجعك بالمراحل إن أردت.
+  if (SITE_ON) {
+    const n = V3.movieScenes().filter(x => x.site).length;
+    SITE_STEP = Math.max(0, n - 1);
+    siteStep(0);
+  } else { SITE_PLAY = 0; if (bar) bar.innerHTML = ''; }
 }
+let SITE_PLAY = 0;
+function sitePlay() {
+  if (!SITE_ON) return;
+  if (SITE_PLAY) { clearInterval(SITE_PLAY); SITE_PLAY = 0; siteStep(0); return; }
+  const n = V3.movieScenes().filter(x => x.site).length;
+  SITE_STEP = 0; siteStep(0);
+  SITE_PLAY = setInterval(() => {
+    if (!SITE_ON || SITE_STEP >= n - 1) { clearInterval(SITE_PLAY); SITE_PLAY = 0; siteStep(0); return; }
+    siteStep(1);
+  }, 1700);
+}
+function siteGo(i) { if (!SITE_ON) return; SITE_STEP = +i; siteStep(0); }
 function siteStep(d) {
   if (!V3 || !SITE_ON) return;
   const sc = V3.movieScenes().filter(x => x.site);
@@ -892,18 +921,19 @@ function siteStep(d) {
   const bar = $('#siteBar');
   if (!bar) return;
   bar.innerHTML = `
-    <button class="btn gh" onclick="siteStep(-1)" ${SITE_STEP ? '' : 'disabled'}>◀ السابق</button>
+    <button class="btn gh" onclick="siteStep(-1)" ${SITE_STEP ? '' : 'disabled'}>◀</button>
+    <button class="btn ${SITE_PLAY ? '' : 'gh'}" onclick="sitePlay()"
+      title="تشغيل مراحل البناء بالترتيب">${SITE_PLAY ? '⏸ إيقاف' : '▶ تشغيل'}</button>
     <div style="flex:1;min-width:0">
       <div style="font-size:13px;font-weight:700;color:var(--acc2)">${s.title}</div>
       <div style="font-size:11.5px;color:var(--mut)">${s.sub || ''}</div>
-      <div style="height:5px;background:rgba(255,255,255,.09);border-radius:3px;margin-top:5px">
-        <div style="height:100%;width:${((SITE_STEP + 1) / sc.length * 100).toFixed(1)}%;
-          background:var(--acc);border-radius:3px"></div></div>
+      <input type="range" min="0" max="${sc.length - 1}" value="${SITE_STEP}"
+        oninput="siteGo(this.value)" style="width:100%;margin-top:5px">
     </div>
     <span style="font-size:11px;color:var(--mut);align-self:center">
       ${SITE_STEP + 1} / ${sc.length}</span>
     <button class="btn gh" onclick="siteStep(1)"
-      ${SITE_STEP >= sc.length - 1 ? 'disabled' : ''}>التالي ▶</button>`;
+      ${SITE_STEP >= sc.length - 1 ? 'disabled' : ''}>▶</button>`;
 }
 
 function toggleSoil() {
@@ -1088,6 +1118,7 @@ function detailPanel(r) {
           ${nf(r.floor.slab_sw, 2)} kN/m².
           <button class="btn gh" style="margin-top:8px" onclick="wtab('slabs')">قارن كل الأنواع بالتفصيل</button></div></div>
       ${barMapPanel(r)}
+      ${beamTypePanel(r)}
       ${liftPanel(r)}
       ${fieldPanel(r)}
       ${extraPanel(r)}
@@ -1602,6 +1633,71 @@ function barMapPanel(r) {
       عكفتها <b>135°</b> تدخل اللبّ لا 90° تنفتح مع تقشّر الغطاء.</div></div>`;
 }
 
+/* ---------- نوع الجسر: قرار إنشائي يغيّر المقطع والحديد والأساور ---------- */
+function beamTypePanel(r) {
+  const B = r.model && r.model.beams;
+  if (!B || !B.x.btype) return '';
+  const dirs = [['X', B.x], ['Y', B.y]];
+  const one = (lab, bm) => {
+    const t = bm.btype, s = bm.sec, reb = bm.rebar;
+    const fl = t.flange;
+    const pos = t.slab === 'top' ? 'يتدلّى <b>تحت</b> البلاطة'
+      : t.slab === 'in' ? '<b>داخل</b> سماكة البلاطة — لا يبرز'
+        : 'يصعد <b>فوق</b> البلاطة';
+    return `<h4 style="margin:14px 0 6px;color:var(--mut);font-size:13px">
+        جسور المحور ${lab} — ${t.name}</h4>
+      ${table(['ما يقرّره النوع', 'هنا', 'القاعدة'], [
+        ['موضعه من البلاطة', pos + (s.drop_below ? ' بمقدار ' + int(s.drop_below) + ' مم'
+          : s.rise_above ? ' بمقدار ' + int(s.rise_above) + ' مم' : ''),
+         'يُرسم بالمجسم بموضعه هذا، والحديد يتبعه'],
+        ['المقطع', int(s.b) + ' × ' + int(s.h) + ' مم', t.h_rule],
+        ['الشفة الضاغطة', (fl.pos ? 'مع العزم <b>الموجب</b>' : fl.neg
+          ? 'مع العزم <b>السالب</b>' : 'لا شفة — مستطيل بالوجهين')
+          + (fl.pos || fl.neg ? ' — bf = ' + int(fl.bf) + ' مم' : ''),
+         fl.clause],
+        ['عرض الشفة المستعمَل', 'للموجب ' + int(t.bf_pos) + ' مم · للسالب '
+          + int(t.bf_neg) + ' مم',
+         'الانحناء يُحسب بعرض الشفة، والحديد الأدنى بعرض <b>العنق</b> (9.6.1.2)'],
+        ['أرجل الأساور', t.legs + ' أرجل', t.legs_rule],
+        ['أقصى عرض مسموح', int(t.width_cap) + ' مم '
+          + (t.width_ok ? '<span class="tag t-ok">ضمن الحدّ</span>'
+            : '<span class="tag t-bad">تجاوز</span>'),
+         'ACI 18.6.2.1 — ما زاد على عرض العمود + min(c₂, 0.75c₁) لكل جهة لا يصل حمله للعقدة'],
+        ['الحديد المنفَّذ', reb.bottom.label + ' سفلي · ' + reb.top.label + ' علوي · '
+          + reb.stirrup.label, 'هذا ما يتغيّر فعلاً بتغيّر النوع — لا الشكل وحده'],
+      ])}
+      ${(t.extras || []).length ? `<div class="note" style="border-right:3px solid #facc15">
+        <b>تفاصيل لا توجد بغير هذا النوع:</b><ul style="margin:6px 18px 0">
+        ${t.extras.map(x => '<li>' + x + '</li>').join('')}</ul></div>` : ''}
+      ${reb.hanger ? `<div class="note" style="border-right:3px solid #f87171">
+        <b>حديد التعليق (Hanger):</b> البلاطة تستند على الوجه <b>السفلي</b> للجسر
+        المقلوب، فحملها يُعلَّق ولا يُسنَد — لولا أساور تعبر كامل العمق لانفصل
+        الوجه السفلي بشقّ أفقي. المطلوب للتعليق <b>${int(reb.hanger.Av_s)} مم²/م</b>
+        و<b>${int(reb.hanger.Av_s_shear || 0)} مم²/م</b> للقصّ، وهما
+        <b>يُجمعان ولا يتقاسمان</b>؛ فشُدّ تباعد الأساور حتى صار المنفَّذ
+        <b>${int(reb.hanger.Av_s_prov)} مم²/م</b>
+        ${reb.hanger.ok ? '<span class="tag t-ok">يكفي</span>'
+          : '<span class="tag t-bad">لا يكفي</span>'}.
+        (${reb.hanger.clause})</div>` : ''}
+      ${reb.web ? `<div class="note" style="border-right:3px solid #22d3ee">
+        <b>الحديد الموزّع بالوجهين:</b> ${reb.web.label} — ${reb.web.note}
+        ${t.deep_actual ? '' : '<br>⚠️ النسبة ln/h = ' + nf(t.ln / (s.h / 1000), 2)
+          + ' تتجاوز 4، فالمقطع لم يعد جسراً عميقاً بتعريف 9.9.1.1.'}</div>` : ''}`;
+  };
+  return `<div class="card"><h3>🧱 نوع الجسر — ما الذي يتغيّر فعلاً</h3>
+    ${table(['النوع', 'موضع البلاطة', 'له', 'عليه'],
+      (B.types || []).map(t => [
+        (t.k === B.x.btype.k || t.k === B.y.btype.k)
+          ? '<b>' + t.name + '</b> <span class="tag t-ok">مستعمَل</span>' : t.name,
+        t.slab === 'top' ? 'فوقه — يتدلّى تحت السقف'
+          : t.slab === 'in' ? 'بمستواه — مخفي' : 'تحته — يصعد فوق السقف',
+        t.pros, t.cons]))}
+    ${dirs.map(([l, bm]) => one(l, bm)).join('')}
+    <div class="note">غيّر النوع من <b>المعالج ← ٣-ب نوع الجسور</b> — عاماً أو لكل
+      محور على حدة — ثم أعد التصميم. المقطع والحديد والأساور تُعاد جميعاً،
+      ويُرسم الجسر بالمجسم بموضعه الصحيح من البلاطة وحديده تابعاً له.</div></div>`;
+}
+
 /* ---------- المصعد: نواة قصّ بحملها وعزمها وتسليحها ---------- */
 function liftPanel(r) {
   const e = r.model && r.model.elevator;
@@ -1611,8 +1707,10 @@ function liftPanel(r) {
   return `
     <div class="card"><h3>🛗 المصعد — نواة قصّ لا فتحة بالسقف</h3>
       <div class="grid g4">
+        ${kpi('النوع', e.name || 'مصعد واحد')}
         ${kpi('السعة', e.Q + ' كغم · ' + e.persons + ' راكب')}
         ${kpi('البئر الداخلي', nf(e.w, 2) + ' × ' + nf(e.h, 2) + ' م')}
+        ${kpi('النواة الخارجية', nf(e.section.wo, 2) + ' × ' + nf(e.section.ho, 2) + ' م')}
         ${kpi('سماكة الجدار', int(e.t) + ' مم')}
         ${kpi('ارتفاع النواة', nf(e.H, 2) + ' م')}
         ${kpi('حصة النواة من القوة الجانبية', nf(rg.share * 100, 0) + '%',
@@ -1647,6 +1745,29 @@ function liftPanel(r) {
         ${kpi('عنصر حدّ مطوَّق', w.need_boundary ? 'مطلوب (18.10.6.3)' : 'غير مطلوب',
           w.need_boundary ? 'bad' : 'ok')}
         ${kpi('عدد الشبكات', w.two_layers ? 'شبكتان' : 'شبكة واحدة')}</div>
+
+      <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
+        ٣-ب · تسليح النواة — أربع عائلات مرسومة بالمجسم مع بقية الحديد</h4>
+      ${table(['العائلة', 'التفصيل', 'وظيفتها', 'المادة'], [
+        ['رأسي موزّع', w.vert.label,
+         'الحمل المحوري وشقوق الانكماش والحرارة — وليس حديد العزم',
+         'ACI 11.6.1 · ρℓ = ' + nf(w.rho_l, 4)],
+        ['أفقي موزّع', w.horiz.label,
+         'حديد قصّ المستوى: يعبر الشقّ القطري ويعطي φVs = ' + int(w.phiVs) + ' kN',
+         'ACI 11.6.2 و11.5.4.8 · ρt = ' + nf(w.rho_t, 4)],
+        ['عنصر الحدّ', w.be.label + ' بكل طرف (As = ' + int(w.As_be) + ' مم²)',
+         'زوج قوى بذراع 0.8·Lw يقاوم عزم القلب — φMn = ' + int(w.phiMn) + ' kN·م',
+         'ACI 18.10.6 · طوله ' + int(w.L_be) + ' مم'],
+        ['تطويق عنصر الحدّ', 'Ø10 @ ' + int(w.be_tie_s) + ' مم',
+         'يحصر الخرسانة ويمنع انبعاج أسياخ الطرف بعد انقشار الغطاء',
+         'ACI 18.10.6.4'],
+      ])}
+      <div class="note" style="border-right:3px solid var(--acc2)">الحديد الأدنى
+        <b>ρ = 0.0012</b> وُضع للانكماش والحرارة لا لمقاومة عزم القلب. نواة تأخذ
+        <b>${nf(rg.share * 100, 0)}%</b> من القوة الجانبية على ارتفاع
+        <b>${nf(e.H, 1)} م</b> تولّد عزماً يتجاوز مقاومته أضعافاً — ولهذا يُصمَّم
+        حديد <b>عنصر الحدّ</b> بالحساب ويُركَّز بطرفَي الجدار حيث ذراع الزوج أكبر
+        ما يكون. افتح <b>«التسليح»</b> بالمجسم لترى العائلات الأربع بمواضعها.</div>
 
       <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
         ٤ · فتحة البئر بكل سقف — الحديد المقطوع يُعوَّض</h4>
@@ -2863,6 +2984,17 @@ PAGES.wizard = {
         ${F('طبقة التغطية', 'w_tp', (META.hordi || {}).topping || 70, 5, 'مم')}
         ${F('وزن البلوكة', 'w_bk', (META.hordi || {}).block_kg || 12, .5, 'كغم')}</div>
       <div class="hint">الهوردي هو الأشيع بالعراق — أدخل مقاسات البلوك المتوفرة عندك.</div></div>
+    <div class="card"><h3>٣-ب · نوع الجسور</h3><div class="f">
+      ${S('النوع العام', 'w_bt', (META.beam_types || []).map(t => [t.k, t.name]), 'drop')}
+      ${S('جسور المحور X', 'w_btx', [['', 'كالنوع العام']].concat(
+        (META.beam_types || []).map(t => [t.k, t.name])), '')}
+      ${S('جسور المحور Y', 'w_bty', [['', 'كالنوع العام']].concat(
+        (META.beam_types || []).map(t => [t.k, t.name])), '')}</div>
+      <div class="hint"><b>نوع الجسر ليس شكلاً بالمجسم.</b> موضع البلاطة من
+        المقطع يقرّر لأي إشارة عزم تعمل شفةً ضاغطة، والعمق يقرّر الحديد،
+        والعرض يقرّر عدد أرجل الأساور — والمقلوب يلزمه حديد تعليق لا وجود له
+        بغيره. غيّر النوع وسترى المقطع والحديد والأساور تتغيّر بالتقرير
+        وبالمجسم معاً.</div></div>
     <div class="card"><h3>٤ · تفاصيل التنفيذ</h3><div class="f">
       ${S('شكل العمود', 'w_shape', [['auto', 'تلقائي — مستطيل أو من المخطط'],
         ['rect', 'مستطيل'], ['sq', 'مربع'], ['circ', 'دائري (O) — حلزون'],
@@ -2901,6 +3033,8 @@ PAGES.wizard = {
     weak_below: chk('w_weak'), expansive: chk('w_exsw'), gypseous: chk('w_gyp'),
     salts: chk('w_salt'), uplift: chk('w_upl'),
     Df: val('w_df'), slab_type: txt('w_slab'), exposure: txt('w_exp'), lap_mode: txt('w_lap'),
+    beam_type: txt('w_bt') || 'drop', beam_type_x: txt('w_btx') || null,
+    beam_type_y: txt('w_bty') || null,
     exposure_classes: expPick(), wcm: val('w_wcm') || null,
     cantilever: { L: val('w_cL'), parapet: val('w_cP'), h: val('w_cH') || null,
       sides: (META.canti_sides || []).map(o => o.k).filter(k => chk('w_cs_' + csid(k))) },
@@ -2984,6 +3118,7 @@ PAGES.wizard = {
              ['beams', 'جسور', 1], ['slabs', 'سقوف', 1], ['extra', 'تسليح إضافي', 1],
              ['chairs', 'كراسي', 1],
              ['canti', 'كانتيليفر (شناشيل)', (r.canti && r.canti.on) ? 1 : 0],
+             ['walls', 'نواة المصعد', (r.model && r.model.elevator) ? 1 : 0],
              ['stairs', 'الدرج وتسليحه',
                (r.stairs && (r.stairs.flights || []).length) ? 1 : 0]])}
         </div>

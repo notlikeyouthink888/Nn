@@ -180,8 +180,19 @@ def bars_per_layer(width, db, cover=40.0, ds=10.0, dagg=20.0):
     n = int(math.floor((avail + clear) / (db + clear)))
     return max(2, n), clear
 
+def crack_spacing(fy, cc, fs=None):
+    """أقصى تباعد بين أسياخ الشدّ للتحكم بالشقوق — ACI 318M-14 المادة 24.3.2:
+
+        s ≤ الأصغر من [ 380·(280/fs) − 2.5·cc  ,  300·(280/fs) ]
+
+    و fs = 2·fy/3 إن لم تُحسب (24.3.2.1) · cc = الغطاء الصافي لأقرب سطح.
+    هذه هي النسخة المرجعية، و`detail.crack_spacing` يستدعيها ويزيد التفصيل."""
+    fs = fs or (2.0 * fy / 3.0)
+    return max(0.0, min(380.0 * (280.0 / fs) - 2.5 * cc, 300.0 * (280.0 / fs)))
+
+
 def pick_bars(As_req, dbs=(12, 16, 20, 25, 32), nmin=2, nmax=24, width=None,
-              cover=40.0, ds=10.0, dagg=20.0, max_layers=3, h=None):
+              cover=40.0, ds=10.0, dagg=20.0, max_layers=3, h=None, fy=None):
     """يختار عدد وقطر الأسياخ بحيث **تتسع فعلاً** بعرض المقطع.
 
     يرجع مع الاختيار: عدد الطبقات · عدد الأسياخ بكل طبقة · الخلوص الصافي ·
@@ -194,6 +205,15 @@ def pick_bars(As_req, dbs=(12, 16, 20, 25, 32), nmin=2, nmax=24, width=None,
             continue
         if width:
             per, clear = bars_per_layer(width, db, cover, ds, dagg)
+            # **24.3.2 يقرّر عدداً أدنى للأسياخ، لا الانحناء وحده.** سيخان
+            # بمقطع عرضه 600 مم يجتازان الانحناء ويتركان تباعداً 475 مم،
+            # وحدّ التحكم بالشقوق 280 مم — فيرسب المقطع بعرض الشقّ لا بقوّته.
+            # العلاج أسياخ **أكثر وأدقّ** موزّعة على العرض، وهذا ما يُفرض هنا.
+            if fy:
+                s_cr = crack_spacing(fy, cover)
+                avail = width - 2.0 * cover - 2.0 * ds - db
+                n_sp = int(math.ceil(avail / max(1.0, s_cr))) + 1 if s_cr > 0 else 2
+                n = max(n, min(per, max(2, n_sp)))
             lay = int(math.ceil(n / float(per)))
             if lay > max_layers:
                 continue
@@ -239,13 +259,20 @@ def bar_spacing(As, dbs=(10, 12, 16, 20, 25, 32), smin=100.0, smax=300.0, target
                     label="Ø%d @ %d مم" % (db, int(smin)))
     return best
 
-def flexure(Mu, b, d, fc, fy, h=None, min_rule='beam'):
+def flexure(Mu, b, d, fc, fy, h=None, min_rule='beam', bw=None):
     """Mu kN.m ; b,d,h mm.  min_rule: 'beam' = ACI 9.6.1.2 ،
-    'slab' = حديد الانكماش 0.0018bh للبلاطات والأسس (ACI 7.6.1.1 / 13.3.2.1)."""
+    'slab' = حديد الانكماش 0.0018bh للبلاطات والأسس (ACI 7.6.1.1 / 13.3.2.1).
+
+    bw = عرض **العنق** لمقطع T. الحد الأدنى للحديد يُحسب على bw لا على عرض
+    الشفة (المادة 9.6.1.2 تنصّ على bw)، وحساب المقاومة يُحسب على b. وبدون
+    هذا التمييز يخرج الحد الأدنى لمقطع T بعرض شفة 1.5 م أكبر من الحقيقي
+    خمسة أضعاف فيبتلع أثر الشفة كله.
+    """
+    bwm = float(bw) if bw else b
     def _min(b_, d_):
         if min_rule == 'slab':
             return 0.0018 * b_ * (h if h else d_ / 0.9)
-        return as_min(fc, fy, b_, d_)
+        return as_min(fc, fy, bwm, d_)
     Mu = abs(Mu)
     r = dict(Mu=Mu, b=b, d=d, fc=fc, fy=fy)
     if Mu < 1e-9:
@@ -326,7 +353,7 @@ def lambda_s(d):
     return min(1.0, math.sqrt(2.0 / (1.0 + d / 250.0)))
 
 def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0,
-          rho_w=None, Nu=0.0, Ag=None, min_stirrups=True):
+          rho_w=None, Nu=0.0, Ag=None, min_stirrups=True, av_add=0.0):
     """قص باتجاه واحد — **الأصغر** من صيغتَي ACI 318M-14 وACI 318-19.
 
     ACI 318M-14 المعادلة 22.5.5.1:   Vc = 0.17·λ·√f'c·bw·d
@@ -384,6 +411,14 @@ def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0,
             s = min(s, smax)
     s_minreq = Av * fyt / max(0.062 * math.sqrt(fc) * bw, 0.35 * bw)
     s = min(s, s_minreq)
+    # Av/s إضافية تُطلَب من غير القصّ — حديد التعليق بالجسر المقلوب (تعليق
+    # R9.7.6.2.2) أو الالتواء (22.7.6.1). الأساور **تُجمَع** ولا تتقاسم: التباعد
+    # يُشدّ حتى تكفي المساحة الكلية، لا حتى تكفي أكبر الطلبين.
+    r['av_add'] = float(av_add)
+    if av_add > 0:
+        av_shear = (r.get('Vs', 0.0) * 1000.0) / (fyt * d) if r.get('Vs', 0.0) > 0 else 0.0
+        r['av_shear'] = av_shear
+        s = min(s, Av / max(1e-9, av_shear + float(av_add)))
     s = max(75.0, math.floor(s / 25.0) * 25.0)
     r['s'] = s; r['Av'] = Av; r['db_stirrup'] = db_stirrup; r['legs'] = legs
     r['phiVn'] = phi * (Vc + Av * fyt * d / (s * 1000.0))
@@ -1025,6 +1060,14 @@ def min_h_beam(L, cond, fy=420.0):
 
 def beam_module(p):
     sp = p['spans']; b = float(p['b']); h = float(p['h'])
+    # عرض الشفة الفعّال لكل إشارة عزم — يأتي من نوع الجسر (beamtype.spec).
+    # الساقط شفته أعلاه فتنفع الموجب، والمقلوب شفته أسفله فتنفع السالب،
+    # والمخفي بلا شفة. وبلا هذا التمييز يُصمَّم كل نوع كأنه مستطيل.
+    bf_pos = float(p.get('bf_pos') or b)
+    bf_neg = float(p.get('bf_neg') or b)
+    legs_in = int(p.get('legs') or 0)
+    # Av/s (مم²/مم) تُضاف على أساور القصّ — تعليق الجسر المقلوب أو التواء الطرفي
+    av_add = float(p.get('av_add') or 0.0)
     fc = float(p['fc']); fy = float(p['fy']); cov = float(p.get('cover', 40))
     dbs = float(p.get('db_stirrup', 10)); dbm = float(p.get('db_main', 16))
     # حالة الترخيم بجدول 24.2.2 — الافتراضي «يحمل عناصر تتضرّر بالترخيم»
@@ -1083,11 +1126,13 @@ def beam_module(p):
     for k, s in enumerate(sp):
         L = float(s['L'])
         Mpos = max(e['Mmax'] for e in env[k]); Mpos = max(Mpos, 0.0)
-        fl = flexure(Mpos, b, d, fc, fy, h)
-        fl['bars'] = pick_bars(fl['As_req'], width=b)
+        fl = flexure(Mpos, bf_pos, d, fc, fy, h, bw=b)
+        fl['bf'] = bf_pos
+        fl['bars'] = pick_bars(fl['As_req'], width=b, cover=cov, ds=dbs, fy=fy)
         i_d = min(NS, max(1, int(round(d / 1000.0 / L * NS))))
         Vu = max(abs(env[k][i_d]['Vmax']), abs(env[k][NS - i_d]['Vmax']))
-        sh = shear(Vu, b, d, fc, fy, db_stirrup=int(dbs))
+        sh = shear(Vu, b, d, fc, fy, db_stirrup=int(dbs), legs=legs_in or 2,
+                   av_add=av_add)
         Ma = max(abs(max(e['M'] for e in env[k])), 1.0)     # service moment
         Ie, Ig, Icr, Mcr = cracked_I(b, h, d, fl['bars']['As'], fc, Ma)
         dserv = span_defl[k] * (Ig / Ie if Ie > 0 else 1.0)
@@ -1110,8 +1155,9 @@ def beam_module(p):
         if k == 0 and not lf: M = min(M, 0.0)
         if abs(M) < 1e-6:
             sup.append(dict(idx=k, M=0.0, flex=None)); continue
-        _f = flexure(M, b, d, fc, fy, h)
-        _f['bars'] = pick_bars(_f['As_req'], width=b)
+        _f = flexure(M, bf_neg, d, fc, fy, h, bw=b)
+        _f['bf'] = bf_neg
+        _f['bars'] = pick_bars(_f['As_req'], width=b, cover=cov, ds=dbs, fy=fy)
         sup.append(dict(idx=k, M=M, flex=_f))
     ld = dev_length(dbm, fc, fy, top=True)
     return dict(b=b, h=h, d=d, fc=fc, fy=fy, sw=sw, env=env, defl=defl,

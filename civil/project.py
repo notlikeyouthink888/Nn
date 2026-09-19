@@ -445,26 +445,69 @@ def design_column(b, h, Pu, Mu, fc, fy, shape='rect', D=None):
                 conf_label="تطويق Ø%d @ %d مم على مسافة %d مم من كل طرف" % (dbt, int(sc), int(lo)))
     return best
 
-def chairs(Lx, Ly, h_mm, cov, db_top, db_bot, spacing=1.0, kind='z90', cov_bot=None):
-    """كراسي دعم الشبكة العلوية — النوع والزاوية والعدد والوزن (detail.chair_layout)."""
-    return DT.chair_layout(Lx, Ly, h_mm, cov, cov_bot if cov_bot is not None else cov,
-                          db_top, db_bot, kind=kind, spacing=spacing)
+def chairs(Lx, Ly, h_mm, cov, db_top, db_bot, spacing=DT.CHAIR_SP, kind='z90',
+           cov_bot=None, s_top=None, s_bot=None):
+    """كراسي دعم الشبكة العلوية — النوع والزاوية والعدد والوزن (detail.chair_layout).
 
-def chair_zones(g, top_len, spacing=1.0):
+    `s_top` و`s_bot` تباعدا الشبكتين: منهما يُطوَّل رأس الكرسي وقدماه حتى
+    يعبرا سيخاً من كلٍّ أينما وقع الكرسي — وبذلك تبقى شبكة الكراسي منتظمة
+    متراً بالضبط بلا حاجة لإزاحتها إلى خطوط الأسياخ.
+    """
+    return DT.chair_layout(Lx, Ly, h_mm, cov, cov_bot if cov_bot is not None else cov,
+                          db_top, db_bot, kind=kind, spacing=spacing,
+                          s_top=s_top, s_bot=s_bot)
+
+def chair_zones(g, top_len, margin=0.0, margin_t=None, spacing=DT.CHAIR_SP):
     """الكراسي تُوضع حيث يوجد حديد علوي فقط — شرائط فوق محاور المساند،
-    عرض الشريط = طول السيخ العلوي (2×L/4 + عرض المسند). لا كراسي بوسط البحر."""
-    zones, n = [], 0
-    rows = lambda w: max(1, DT.n_bars(w, spacing) - 1)
+    عرض الشريط = طول السيخ العلوي (2×L/4 + عرض المسند). لا كراسي بوسط البحر.
+
+    والشرائط كلها على **شبكة واحدة** خطوتها متر بالضبط مركزها مركز البلاطة،
+    فلا تختلف خطوة شريط عن آخر. والعدد يُحسب هنا بـ **اتحاد نقاط الشبكة**
+    الواقعة داخل الشرائط — بنفس خوارزمية الرسم حرفياً — لا بجمع الشرائط ثم
+    طرح تقدير للتقاطعات. فالعدد المكتوب بجدول الكميات هو العدد المرسوم
+    بالمجسّم نفسه، لا تقديراً قريباً منه.
+
+    والهامش **يختلف بالاتجاهين**: `margin` بمحاذاة العرضة (الغطاء + نصف عرض
+    الكرسي) و`margin_t` عمودياً عليها (الغطاء + نصف قطر السيخ فقط)، لأن
+    الكرسي عريض بمستواه ونحيل عمودياً عليه. والعرضة تدور 90° بين شريط وآخر
+    لتبقى عموديةً على الأسياخ التي تحملها — فينعكس الهامشان معها."""
+    L, B = g['L'], g['B']
+    mt = margin if margin_t is None else margin_t
+
+    def lat(lo, hi):
+        """أرقام نقاط الشبكة العالمية (مضاعفات الخطوة) داخل [lo,hi]."""
+        if hi < lo:
+            return []
+        return list(range(int(math.ceil(lo / spacing - 1e-9)),
+                          int(math.floor(hi / spacing + 1e-9)) + 1))
+
+    zones, pts = [], set()
     for j in range(g['ny'] + 1):
-        w = top_len['y']; nz = DT.n_bars(g['L'], spacing) * rows(w)
-        zones.append(dict(dir='x', at=j * g['sy'], w=w, length=g['L'], n=nz)); n += nz
+        # شريط محور X: العرضة باتجاه X ⇒ الهامش العريض على X والنحيل على Z
+        w = min(top_len['y'], B)
+        at = -(j * g['sy'] - B / 2.0)                 # pz بالمجسّم
+        zx = lat(-L / 2.0 + margin, L / 2.0 - margin)
+        zz = lat(max(-B / 2.0 + mt, at - w / 2.0), min(B / 2.0 - mt, at + w / 2.0))
+        nz = len(zx) * len(zz)
+        zones.append(dict(dir='x', at=j * g['sy'], w=top_len['y'], length=L, n=nz))
+        pts.update((a, b) for a in zx for b in zz)
     for i in range(g['nx'] + 1):
-        w = top_len['x']; nz = DT.n_bars(g['B'], spacing) * rows(w)
-        zones.append(dict(dir='y', at=i * g['sx'], w=w, length=g['B'], n=nz)); n += nz
-    inter = (g['nx'] + 1) * (g['ny'] + 1) * rows(top_len['x']) * rows(top_len['y'])
-    return dict(zones=zones, n=max(1, n - inter), spacing=spacing, overlap=inter,
+        # شريط محور Y: العرضة باتجاه Z ⇒ ينعكس الهامشان
+        w = min(top_len['x'], L)
+        at = i * g['sx'] - L / 2.0                    # px بالمجسّم
+        zx = lat(max(-L / 2.0 + mt, at - w / 2.0), min(L / 2.0 - mt, at + w / 2.0))
+        zz = lat(-B / 2.0 + margin, B / 2.0 - margin)
+        nz = len(zx) * len(zz)
+        zones.append(dict(dir='y', at=i * g['sx'], w=top_len['x'], length=B, n=nz))
+        pts.update((a, b) for a in zx for b in zz)
+    total = sum(z['n'] for z in zones)
+    n = max(1, len(pts))
+    return dict(zones=zones, n=n, spacing=spacing, overlap=total - n,
                 note='الكراسي تحت شرائط الحديد العلوي فوق المساند فقط — لا حاجة لها بوسط البحر '
-                     'حيث لا يوجد حديد علوي (التسليح العلوي يمتد L/4 لكل جهة من المسند)')
+                     'حيث لا يوجد حديد علوي (التسليح العلوي يمتد L/4 لكل جهة من المسند). '
+                     'والشرائط على شبكة واحدة خطوتها %.2f م، فما تكرّر بتقاطع شريطين '
+                     'عُدّ **مرة واحدة**: %d موضعاً بالشرائط مجتمعة و%d كرسياً فعلياً.'
+                     % (spacing, total, n))
 
 def envelope(bm, npts=13):
     """مغلّف العزوم والهطول لكل فضاء — مبسّط للرسم."""
@@ -928,17 +971,25 @@ def wizard(p):
                    ext=0.25)
     ch_slab = chairs(g['L'], g['B'], slab['h'], cov_s,
                      slab['mesh']['top']['db'],
-                     slab['mesh']['short']['db'] + slab['mesh']['long']['db'], kind=chair_kind)
-    cz = chair_zones(g, top_len)
+                     slab['mesh']['short']['db'] + slab['mesh']['long']['db'], kind=chair_kind,
+                     s_top=slab['mesh']['top']['s'],
+                     s_bot=max(slab['mesh']['short']['s'], slab['mesh']['long']['s']))
+    cz = chair_zones(g, top_len, margin=cov_s / 1000.0 + ch_slab['half_w'],
+                     margin_t=cov_s / 1000.0 + ch_slab['db'] / 2000.0)
     ch_slab.update(n=cz['n'], nx=None, ny=None, zones=cz['zones'], overlap=cz['overlap'],
                    note=cz['note'],
                    weight=cz['n'] * ch_slab['len_each'] * E.ab(ch_slab['db']) / 1e6 * 7850.0 / 1000.0)
     cov_ft = DT.cover('footing', 'weather'); cov_fb = DT.cover('footing', 'ground')
-    ch_found = (chairs(rf['Lx'], rf['Ly'], rf['h'], cov_ft, rf['top']['db'], rf['bottom']['db'],
-                       kind=chair_kind, cov_bot=cov_fb)
-                if rec == 'raft' else
+    # شبكتا الحصيرة **طبقتان لكلٍّ** (اتجاهان)، فالخلوص بين ظهر السفلى وبطن
+    # العلوية يطرح قطرين من كل جهة لا قطراً واحداً — وهذا ما يُرسم بالمجسّم.
+    ch_raft = chairs(rf['Lx'], rf['Ly'], rf['h'], cov_ft,
+                     2 * rf['top']['db'], 2 * rf['bottom']['db'],
+                     kind=chair_kind, cov_bot=cov_fb,
+                     s_top=rf['top']['s'], s_bot=rf['bottom']['s'])
+    ch_found = (ch_raft if rec == 'raft' else
                 chairs(math.sqrt(sum_foot_area), math.sqrt(sum_foot_area), des_i['h'], cov_ft,
-                       des_i['bar_db'], des_i['bar_db'], kind=chair_kind, cov_bot=cov_fb))
+                       2 * des_i['bar_db'], 2 * des_i['bar_db'], kind=chair_kind,
+                       cov_bot=cov_fb, s_top=des_i.get('s'), s_bot=des_i.get('s')))
     dbs_used = set([col_rebar['db'], bx['rebar']['bottom']['db'], bx['rebar']['top']['db'],
                     by['rebar']['bottom']['db'], by['rebar']['top']['db'],
                     slab['mesh']['short']['db'], slab['mesh']['long']['db'],
@@ -1067,7 +1118,8 @@ def wizard(p):
                   extra=dict(corner=dict(db=slab['mesh']['top']['db'],
                                          s=slab['mesh']['top']['s'], size=0.2),
                              integrity=dict(n=2, db=slab['mesh']['short']['db']))),
-        found=dict(mode=rec, chairs=ch_found), elevator=elev,
+        found=dict(mode=rec, chairs=ch_found, raft_chairs=ch_raft,
+                   cov_top=cov_ft, cov_bot=cov_fb), elevator=elev,
         plan=p.get('plan_view'),
         canti=canti,
         frame=(dict(fo, source='plan') if fo else None),

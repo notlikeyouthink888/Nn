@@ -467,27 +467,39 @@ def chair_zones(g, top_len, margin=0.0, margin_t=None, spacing=DT.CHAIR_SP):
     طرح تقدير للتقاطعات. فالعدد المكتوب بجدول الكميات هو العدد المرسوم
     بالمجسّم نفسه، لا تقديراً قريباً منه.
 
-    والهامش **يختلف بالاتجاهين**: `margin` بمحاذاة العرضة (الغطاء + نصف عرض
-    الكرسي) و`margin_t` عمودياً عليها (الغطاء + نصف قطر السيخ فقط)، لأن
-    الكرسي عريض بمستواه ونحيل عمودياً عليه. والعرضة تدور 90° بين شريط وآخر
-    لتبقى عموديةً على الأسياخ التي تحملها — فينعكس الهامشان معها."""
+    والهامش **يختلف بالاتجاهين**: `margin` بمحاذاة العرضة (الغطاء + نصف
+    امتداد العرضة) و`margin_t` بمحاذاة القدمين (الغطاء + امتداد القدم).
+    والكرسي مثنيّ بمستويين فامتداده بالاتجاهين مختلف، والعرضة تدور 90° بين
+    شريط وآخر لتبقى عموديةً على الأسياخ التي تحملها — فينعكس الهامشان معها."""
     L, B = g['L'], g['B']
     mt = margin if margin_t is None else margin_t
 
     def lat(lo, hi):
-        """أرقام نقاط الشبكة العالمية (مضاعفات الخطوة) داخل [lo,hi]."""
+        """إحداثيات نقاط الشبكة العالمية (مضاعفات الخطوة) داخل [lo,hi].
+
+        وإن لم تقع منها نقطة — وهذا يحصل بالشريط الطرفي فقط، لأن مركزه على
+        حافة البلاطة فنصفه خارجها — وُضع **صفّ واحد بوسط الشريط** خارج
+        الشبكة: الحديد العلوي هناك موجود ويحتاج حاملاً، وأقرب نقطة شبكة
+        يقع طرف قدم الكرسي عندها خارج الخرسانة. وهذا هو الاستثناء الوحيد
+        من قاعدة المتر، ويُقال صراحةً."""
         if hi < lo:
             return []
-        return list(range(int(math.ceil(lo / spacing - 1e-9)),
-                          int(math.floor(hi / spacing + 1e-9)) + 1))
+        i0 = int(math.ceil(lo / spacing - 1e-9))
+        i1 = int(math.floor(hi / spacing + 1e-9))
+        if i1 < i0:
+            return [round((lo + hi) / 2.0, 4)]
+        return [round(i * spacing, 4) for i in range(i0, i1 + 1)]
 
-    zones, pts = [], set()
+    zones, pts, off = [], set(), 0
     for j in range(g['ny'] + 1):
-        # شريط محور X: العرضة باتجاه X ⇒ الهامش العريض على X والنحيل على Z
+        # شريط محور X: العرضة باتجاه X ⇒ هامش العرضة على X وهامش القدمين على Z
         w = min(top_len['y'], B)
         at = -(j * g['sy'] - B / 2.0)                 # pz بالمجسّم
         zx = lat(-L / 2.0 + margin, L / 2.0 - margin)
-        zz = lat(max(-B / 2.0 + mt, at - w / 2.0), min(B / 2.0 - mt, at + w / 2.0))
+        lo, hi = max(-B / 2.0 + mt, at - w / 2.0), min(B / 2.0 - mt, at + w / 2.0)
+        zz = lat(lo, hi)
+        if zz and abs(zz[0] / spacing - round(zz[0] / spacing)) > 1e-6:
+            off += len(zx) * len(zz)                  # صفّ طرفي خارج الشبكة
         nz = len(zx) * len(zz)
         zones.append(dict(dir='x', at=j * g['sy'], w=top_len['y'], length=L, n=nz))
         pts.update((a, b) for a in zx for b in zz)
@@ -495,19 +507,27 @@ def chair_zones(g, top_len, margin=0.0, margin_t=None, spacing=DT.CHAIR_SP):
         # شريط محور Y: العرضة باتجاه Z ⇒ ينعكس الهامشان
         w = min(top_len['x'], L)
         at = i * g['sx'] - L / 2.0                    # px بالمجسّم
-        zx = lat(max(-L / 2.0 + mt, at - w / 2.0), min(L / 2.0 - mt, at + w / 2.0))
+        lo, hi = max(-L / 2.0 + mt, at - w / 2.0), min(L / 2.0 - mt, at + w / 2.0)
+        zx = lat(lo, hi)
         zz = lat(-B / 2.0 + margin, B / 2.0 - margin)
+        if zx and abs(zx[0] / spacing - round(zx[0] / spacing)) > 1e-6:
+            off += len(zx) * len(zz)
         nz = len(zx) * len(zz)
         zones.append(dict(dir='y', at=i * g['sx'], w=top_len['x'], length=B, n=nz))
         pts.update((a, b) for a in zx for b in zz)
     total = sum(z['n'] for z in zones)
     n = max(1, len(pts))
-    return dict(zones=zones, n=n, spacing=spacing, overlap=total - n,
+    return dict(zones=zones, n=n, spacing=spacing, overlap=total - n, off_grid=off,
                 note='الكراسي تحت شرائط الحديد العلوي فوق المساند فقط — لا حاجة لها بوسط البحر '
                      'حيث لا يوجد حديد علوي (التسليح العلوي يمتد L/4 لكل جهة من المسند). '
                      'والشرائط على شبكة واحدة خطوتها %.2f م، فما تكرّر بتقاطع شريطين '
-                     'عُدّ **مرة واحدة**: %d موضعاً بالشرائط مجتمعة و%d كرسياً فعلياً.'
-                     % (spacing, total, n))
+                     'عُدّ **مرة واحدة**: %d موضعاً بالشرائط مجتمعة و%d كرسياً فعلياً.%s'
+                     % (spacing, total, n,
+                        (' ومنها %d كرسياً بالشرائط الطرفية خارج الشبكة: مركز '
+                         'الشريط على حافة البلاطة فلا تقع فيه نقطة شبكة يبقى '
+                         'طرف قدم الكرسي عندها داخل الخرسانة، فيُوضع صفّ بوسط '
+                         'الشريط — وهو الاستثناء الوحيد من قاعدة المتر.' % off)
+                        if off else ''))
 
 def envelope(bm, npts=13):
     """مغلّف العزوم والهطول لكل فضاء — مبسّط للرسم."""
@@ -975,9 +995,9 @@ def wizard(p):
                      s_top=slab['mesh']['top']['s'],
                      s_bot=max(slab['mesh']['short']['s'], slab['mesh']['long']['s']))
     cz = chair_zones(g, top_len, margin=cov_s / 1000.0 + ch_slab['half_w'],
-                     margin_t=cov_s / 1000.0 + ch_slab['db'] / 2000.0)
+                     margin_t=cov_s / 1000.0 + ch_slab['half_d'])
     ch_slab.update(n=cz['n'], nx=None, ny=None, zones=cz['zones'], overlap=cz['overlap'],
-                   note=cz['note'],
+                   off_grid=cz['off_grid'], note=cz['note'],
                    weight=cz['n'] * ch_slab['len_each'] * E.ab(ch_slab['db']) / 1e6 * 7850.0 / 1000.0)
     cov_ft = DT.cover('footing', 'weather'); cov_fb = DT.cover('footing', 'ground')
     # شبكتا الحصيرة **طبقتان لكلٍّ** (اتجاهان)، فالخلوص بين ظهر السفلى وبطن

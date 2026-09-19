@@ -923,11 +923,21 @@ function Viewer3D(el, M, onPick) {
      فلا فراغ ولا تداخل بالمستويين. وبلا هذا الطرح كان محور السيخ يقع على
      مستوى الشبكة نفسه فيغوص نصف القطر داخلها من الوجهين.
 
-     الأجزاء الثلاثة كما تُصنَع بالموقع:
-       ١ · القدمان — جزءان أفقيان مثنيّان **للخارج** يستندان على الشبكة السفلى
-       ٢ · الرجلان — عموديتان (z90/ihc) أو بميل 45° (s135) ترفعان الارتفاع
-       ٣ · العرضة  — رأس أفقي يحمل الشبكة العلوية، وطوله ≥ تباعد الشبكة
-                     العلوية فيعبر سيخاً منها أينما وقع الكرسي            */
+     الشكل كما يُصنَع بالموقع — **مثنيّ بمستويين لا بمستوى واحد**:
+
+       ١ · قدم A تمتدّ باتجاه **Z** وظهرها على الشبكة السفلى، وطرفها **طافر**
+           خارج آخر سيخ تعبره (الجزء الحرّ الذي يُمسك به الحدّاد ويُربط).
+       ٢ · ثنية 90° **بمستوى Y–Z** ⇒ رجل صاعدة.
+       ٣ · ثنية 90° **بمستوى X–Y** ⇒ عرضة تمتدّ باتجاه **X** تحمل الشبكة العلوية.
+       ٤ · رجل نازلة، ثم قدم B تمتدّ باتجاه **Z المعاكس** وطرفها طافر كذلك.
+
+     فتصير القدمان عموديتين على العرضة، والشكل بالمسقط حرف **Z**. ولولا ذلك
+     لكان الكرسي مسطّحاً بمستوى واحد فينقلب على جنبه بأول وطأة قدم أو خرطوم
+     صبّ — وهذا بالضبط ما كان يُرسم قبلاً. والقدمان المتعاكستان تعملان **مزدوجاً**
+     يقاوم الدوران حول محور العرضة، والعرضة تقاوم الدوران حول محور القدمين.
+
+     وطول كل قدم ≥ تباعد الشبكة السفلى فتعبر سيخاً منها، وطول العرضة ≥ تباعد
+     الشبكة العلوية فتعبر سيخاً منها — فيُربط الكرسي بثلاثة مواضع لا بموضع.  */
   /* السيخ المدوّر يُرسم مضلّعاً، والمضلّع **داخل** الدائرة فيبتعد ظهر السيخ عن
      الشبكة بمقدار rad·(1−cos(π/n)). باثنتي عشرة ضلعاً يصير الفارق 0.17 مم على
      سيخ Ø10 — أدقّ من أي تفريد بالموقع، وكلفته صفر لأن الكراسي كلها
@@ -943,49 +953,89 @@ function Viewer3D(el, M, onPick) {
   }
   function chairGeoX(kind, H, db, tr, foot) {
     const rad = db / 2000;                          // نصف قطر سيخ الكرسي (م)
-    tr = (tr || 250) / 1000; foot = Math.max((foot || 100) / 1000, .10);
+    tr = (tr || 250) / 1000;
+    const fz = Math.max((foot || 150) / 1000, .15); // امتداد القدم باتجاه Z
     const y0 = rad;                                 // محور القدم
     const y1 = Math.max(y0 + .012, H - rad);        // محور العرضة
     const rise = y1 - y0;                           // الارتفاع بين المحورين
     const t2 = tr / 2, run = (kind === 's135') ? rise : 0;   // إزاحة الرجل المائلة
     if (kind === 'sb') {
-      // Slab Bolster: سلك مستمر زكزاك بطول متر — كل قمة تحمل الشبكة العلوية،
-      // وكل قاع يستند على الشبكة السفلى، والقدمان بالطرفين.
-      const zz = [new T.Vector3(-t2 - foot, y0, -.5)];
-      for (let o = -.5; o <= .5001; o += .25)
-        zz.push(new T.Vector3(0, y0, o), new T.Vector3(0, y1, o + .125));
-      zz.push(new T.Vector3(0, y0, .5), new T.Vector3(t2 + foot, y0, .5));
-      return new T.TubeGeometry(new T.CatmullRomCurve3(zz, false, 'catmullrom', 0),
-        zz.length * 3, rad, CH_SEG, false);
+      /* Slab Bolster: عنصر مصنَّع مستمر — سلك علوي مستقيم يحمل الأسياخ،
+         وزكزاك ينزل إلى **سلكَي قاعدة** مستمرَّين يستندان على الشبكة السفلى.
+         سلكا القاعدة هما ما يعطيه ثباته الجانبي (بديل قدمَي الكرسي المثنيّ). */
+      const zz = [];
+      for (let o = -.5; o <= .5001; o += .125)
+        zz.push(new T.Vector3(0, (Math.round((o + .5) / .125) % 2) ? y1 : y0, o));
+      const g3 = new T.TubeGeometry(new T.CatmullRomCurve3(zz, false, 'catmullrom', 0),
+        zz.length * 4, rad, CH_SEG, false);
+      // سلكا القاعدة المستمرّان بطرفَي القاعدة
+      const parts = [g3];
+      [-1, 1].forEach(sg => {
+        const c = new T.CylinderGeometry(rad, rad, 1.0, CH_SEG, 1);
+        c.rotateX(Math.PI / 2); c.translate(sg * (t2 * .6 + fz * .1), y0, 0);
+        parts.push(c);
+      });
+      // سلك علوي مستمرّ يربط القمم
+      const topw = new T.CylinderGeometry(rad, rad, 1.0, CH_SEG, 1);
+      topw.rotateX(Math.PI / 2); topw.translate(0, y1, 0);
+      parts.push(topw);
+      return mergeGeos(parts);
     }
     /* الثنيات **حادّة بنصف قطر حقيقي** لا منحنى ناعم: `CatmullRom` كان يقوّس
        الرجل كلها فيخرج الكرسي أعرض ممّا يُصنَع فعلاً ويبرز عن حافة البلاطة. */
-    const r = Math.min(2.5 * db / 1000, rise / 3, foot / 2);   // نصف قطر الثنية
-    const pts = [];
-    const push = (x, yv) => pts.push(new T.Vector3(x, yv, 0));
-    push(-t2 - run - foot, y0);                    // طرف القدم اليسرى
-    push(-t2 - run - r, y0);                       // بداية الثنية السفلى
-    push(-t2 - run + (run ? r * .7 : 0), y0 + r);  // داخل الثنية
-    push(-t2 - (run ? r * .7 : 0), y1 - r);        // أعلى الرجل
-    push(-t2 + r, y1);                             // بداية العرضة
-    push(t2 - r, y1);                              // نهاية العرضة
-    push(t2 + (run ? r * .7 : 0), y1 - r);
-    push(t2 + run - (run ? r * .7 : 0), y0 + r);
-    push(t2 + run + r, y0);
-    push(t2 + run + foot, y0);                     // طرف القدم اليمنى
-    return new T.TubeGeometry(new T.CatmullRomCurve3(pts, false, 'catmullrom', 0),
-      kind === 's135' ? 30 : 22, rad, CH_SEG, false);
+    const r = Math.min(2.5 * db / 1000, rise / 3, fz / 3);   // نصف قطر الثنية
+    const A = -t2, Bx = t2;                          // موضعا الرجلين بمحور X
+    const p = [];
+    const push = (x, yv, zv) => p.push(new T.Vector3(x, yv, zv));
+    // ---- قدم A: تمتدّ باتجاه −Z وطرفها طافر ----
+    push(A - run, y0, -fz);                          // الطرف **الطافر**
+    push(A - run, y0, -r);                           // بداية الثنية (مستوى Y–Z)
+    push(A - run + (run ? r * .5 : 0), y0 + r, 0);   // بعدها — الرجل صاعدة
+    push(A - (run ? r * .5 : 0), y1 - r, 0);         // أعلى الرجل
+    push(A + r, y1, 0);                              // ثنية بمستوى X–Y ⇒ العرضة
+    push(Bx - r, y1, 0);                             // نهاية العرضة
+    push(Bx + (run ? r * .5 : 0), y1 - r, 0);
+    push(Bx + run - (run ? r * .5 : 0), y0 + r, 0);
+    push(Bx + run, y0, r);                           // ثنية بمستوى Y–Z
+    push(Bx + run, y0, fz);                          // الطرف **الطافر** لقدم B
+    return new T.TubeGeometry(new T.CatmullRomCurve3(p, false, 'catmullrom', 0),
+      kind === 's135' ? 40 : 32, rad, CH_SEG, false);
   }
 
-  /* رباط السلك عند تقاطع العرضة مع السيخ العلوي — هو ما يمسك السيخ فعلاً
-     ويمنعه من الانزلاق عن الكرسي. حلقة سلك 1.5 مم تلتفّ على السيخين معاً،
-     ومستواها مائل 45° لأنها تجمع سيخاً بالاتجاه X وآخر بالاتجاه Z. */
-  function chairTieGeo(H, db, capD) {
+  /* دمج مجسّمات بسيطة بمجسّم واحد — بلا BufferGeometryUtils (غير محمَّلة). */
+  function mergeGeos(list) {
+    let nv = 0, ni = 0;
+    list.forEach(g => { nv += g.attributes.position.count;
+      ni += g.index ? g.index.count : g.attributes.position.count; });
+    const pos = new Float32Array(nv * 3), nor = new Float32Array(nv * 3);
+    const idx = new Uint32Array(ni);
+    let vo = 0, io = 0;
+    list.forEach(g => {
+      const pa = g.attributes.position.array, na = g.attributes.normal.array;
+      pos.set(pa, vo * 3); nor.set(na, vo * 3);
+      const n2 = g.attributes.position.count;
+      if (g.index) { const ia = g.index.array;
+        for (let i = 0; i < ia.length; i++) idx[io + i] = ia[i] + vo; io += ia.length; }
+      else { for (let i = 0; i < n2; i++) idx[io + i] = i + vo; io += n2; }
+      vo += n2;
+      g.dispose();
+    });
+    const out = new T.BufferGeometry();
+    out.setAttribute('position', new T.BufferAttribute(pos, 3));
+    out.setAttribute('normal', new T.BufferAttribute(nor, 3));
+    out.setIndex(new T.BufferAttribute(idx, 1));
+    return out;
+  }
+
+  /* رباط السلك: حلقة تلتفّ على سيخين متقاطعين معاً. تُستعمل بثلاثة مواضع
+     بكل كرسي — تحت العرضة حيث تعبر السيخ العلوي، وتحت كل قدم حيث تعبر
+     سيخاً من الشبكة السفلى. وهذا هو **الربط** الذي يمنع زحف الكرسي:
+     كرسي غير مربوط يُزاح بأول وطأة قدم فيختلّ الغطاء والعمق الفعّال معاً. */
+  function chairTieGeo(db, capD) {
     const rad = db / 2000, cap = (capD || 12) / 2000;
-    const R = rad + cap + .002;
-    const g2 = new T.TorusGeometry(R, .00075, 5, 16);
-    g2.rotateY(Math.PI / 4);
-    g2.translate(0, Math.max(0, H - rad), 0);       // مركزها محور العرضة
+    const R = rad + cap + .0025;
+    const g2 = new T.TorusGeometry(R, .0013, 6, 18);
+    g2.rotateY(Math.PI / 4);                          // تجمع سيخ X وسيخ Z
     return g2;
   }
 
@@ -1006,24 +1056,37 @@ function Viewer3D(el, M, onPick) {
   function chairInfo(title, ch, H, grp, floor, sTop, sBot, capD, extra) {
     const db = ch.db || 10;
     return { title: title, kind: 'rebar', grp: grp, floor: floor,
-      rows: [['النوع', ch.name || ch.label], ['الزاوية', (ch.angle || 90) + '°'],
+      rows: [['النوع', ch.name || ch.label],
+        ['الشكل', 'مثنيّ **بمستويين** لا بمستوى واحد: القدمان باتجاه وعرضتهما ' +
+          'باتجاه عمودي عليه — المسقط حرف Z. والكرسي المسطّح بمستوى واحد ' +
+          'ينقلب على جنبه بأول وطأة قدم أو خرطوم صبّ'],
+        ['عدد الثنيات', (ch.bends || 6) + ' ثنيات بزاوية ' + (ch.angle || 90) + '°'],
         ['الارتفاع الصافي', Math.round(H * 1000) + ' مم — من **ظهر** الشبكة ' +
           'السفلى إلى **بطن** العلوية، وهو ما يحدّد العمق الفعّال d'],
-        ['القدمان', 'مثنيّتان للخارج ' + Math.round(ch.foot || 100) + ' مم لكل ' +
-          'جهة · ظهرهما يستند على الشبكة السفلى تماماً (محورهما يعلوها ' +
-          Math.round(db / 2) + ' مم = نصف القطر)'],
+        ['القدمان', Math.round(ch.foot || 150) + ' مم لكل قدم، **متعاكستان** ' +
+          'فتعملان مزدوجاً يقاوم الدوران · ظهرهما على الشبكة السفلى تماماً ' +
+          '(محورهما يعلوها ' + Math.round(db / 2) + ' مم = نصف القطر)' +
+          (sBot ? ' · وطول القدم ≥ تباعد الشبكة السفلى ' + Math.round(sBot) +
+            ' مم فتعبر سيخاً منها' : '')],
+        ['الطرف الطافر', Math.round(ch.tail || 60) + ' مم يبرز خارج آخر سيخ ' +
+          'تعبره القدم — هو ما يُمسَك به ويُربَط، وبدونه يقف طرف السيخ على ' +
+          'السيخ نفسه فينزلق'],
         ['الرجلان', (ch.kind === 's135' ? 'بميل 45°' : 'عموديتان') + ' بارتفاع ' +
           Math.round((ch.rise || (H * 1000 - db))) + ' مم بين محورَي القدم والعرضة'],
         ['العرضة العلوية', Math.round(ch.top_run || 250) + ' مم · ظهرها يلامس ' +
           'بطن الشبكة العلوية بلا فراغ وبلا تداخل' +
           (sTop ? ' — وطولها ≥ تباعد الشبكة العلوية ' + Math.round(sTop) +
             ' مم فتعبر سيخاً منها أينما وقعت' : '')],
-        ['الرباط', 'سلك 1.5 مم يلفّ العرضة والسيخ العلوي معاً — هو ما يمسك ' +
-          'السيخ من الجهتين ويمنعه من الانزلاق عن الكرسي'],
+        ['الرباط', '**ثلاثة مواضع** بكل كرسي: تحت العرضة حيث تعبر السيخ ' +
+          'العلوي، وتحت كل قدم حيث تعبر سيخاً سفلياً. كرسي غير مربوط يزحف ' +
+          'بأول وطأة قدم فيختلّ الغطاء والعمق الفعّال معاً'],
         ['التوزيع', 'شبكة منتظمة خطوتها **' + sp2m(ch.spacing) + ' م بالضبط** ' +
           'بالاتجاهين X وY، أصلها مركز المبنى — فكل الكراسي على شبكة واحدة'],
-        ['العدد الكلي', ch.n], ['طول القطعة', (ch.len_each || 0).toFixed(2) + ' م'],
-        ['الوزن', (ch.weight || 0).toFixed(2) + ' طن']].concat(extra || []) };
+        ['العدد الكلي', ch.n]].concat(ch.off_grid ? [['خارج الشبكة',
+          ch.off_grid + ' كرسياً بالشرائط الطرفية: مركز الشريط على حافة ' +
+          'البلاطة فلا تقع فيه نقطة شبكة يبقى طرف القدم عندها داخل الخرسانة']] : [])
+        .concat([['طول القطعة', (ch.len_each || 0).toFixed(2) + ' م'],
+          ['الوزن', (ch.weight || 0).toFixed(2) + ' طن']]).concat(extra || []) };
   }
   const sp2m = v => (v === undefined || v === null ? 1 : +v).toFixed(2);
 
@@ -1060,9 +1123,25 @@ function Viewer3D(el, M, onPick) {
     const each = (ch && ch.len_each) || (2 * H + .3);
     const im = inst(geo, CHAIR, pos, info,
       G.chairs, pos.length * each * Math.PI * Math.pow(db / 2000, 2) * 7850);
-    // رباط السلك — مجموعة ثانية بنفس المواضع، بلا وزن يُحسب على الحديد
-    inst(chairTieGeo(H, db, capD), 0xd9dde3, pos, null, G.chairs, 0,
-      { grp: (info && info.grp) || CURG, floor: info && info.floor });
+    /* ---- الرباط: **ثلاثة مواضع** بكل كرسي لا موضع واحد ----
+       واحد تحت العرضة حيث تعبر السيخ العلوي، واثنان تحت القدمين حيث تعبر
+       كلٌّ منهما سيخاً من الشبكة السفلى. والقدمان متعاكستان فموضعاهما
+       متقابلان على جانبَي العرضة — وهذا ما يمنع زحف الكرسي فعلياً. */
+    if (ch) {
+      const rad = db / 2000;
+      const t2 = ((ch.top_run || 250) / 1000) / 2;
+      const run = ch.kind === 's135' ? Math.max(0, H - 2 * rad) : 0;
+      const fz = Math.max((ch.foot || 150) / 1000, .15);
+      const zc = Math.max(.05, fz - (ch.tail || 60) / 1000);   // موضع آخر سيخ تعبره القدم
+      const loc = [[0, H - rad, 0],                            // تحت العرضة
+        [-(t2 + run), rad, -zc], [t2 + run, rad, zc]];         // تحت القدمين
+      const tp = [];
+      pos.forEach(p2 => loc.forEach(o => tp.push(axis === 'z'
+        ? [p2[0] + o[2], p2[1] + o[1], p2[2] - o[0]]           // مُدار 90°
+        : [p2[0] + o[0], p2[1] + o[1], p2[2] + o[2]])));
+      inst(chairTieGeo(db, capD), 0xe5e9ef, tp, null, G.chairs, 0,
+        { grp: (info && info.grp) || CURG, floor: info && info.floor });
+    }
     return im;
   }
   /* سيخ سفلي مثني 45° عند ln/7 من كل مسند */
@@ -3117,7 +3196,10 @@ function Viewer3D(el, M, onPick) {
           yHead: +(Math.min(...ys) + g0.max.y).toFixed(4),   // ظهر العرضة
           height: +(g0.max.y - g0.min.y).toFixed(4),
           spX: gaps(xs), spZ: gaps(zs),
-          width: +(g0.max.x - g0.min.x).toFixed(3) });
+          width: +(g0.max.x - g0.min.x).toFixed(3),
+          depth: +(g0.max.z - g0.min.z).toFixed(3),
+          // طرفا القدمين: أدنى Z وأقصاه — إن تساويا فالكرسي مسطّح بمستوى واحد
+          zMin: +g0.min.z.toFixed(3), zMax: +g0.max.z.toFixed(3) });
       });
       return out;
     },

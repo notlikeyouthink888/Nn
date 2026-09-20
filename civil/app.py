@@ -15,6 +15,7 @@ import slabs as SL
 import plan as PL
 import aci as ACI
 import beamtype as BT
+import mnl66 as MN
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, 'static')
@@ -48,6 +49,7 @@ def meta():
                 canti_sides=[dict(k=a, name=b) for a, b in PJ.CANTI_SIDES],
                 joint_conf=[dict(k=a, name=b, gamma=c) for a, b, c in E.JOINT_CONF],
                 cover_table=[dict(name=a, v=b, ref=c) for a, b, c in DT.COVER_TABLE],
+                bend_types=MN.BEND_TYPES,
                 beam_types=[dict(k=t['k'], name=t['name'], short=t['short'],
                                  slab=t['slab'], torsion=t['torsion'],
                                  desc=t['desc'], pros=t['pros'], cons=t['cons'])
@@ -83,6 +85,8 @@ ROUTES = {
     'room': RM.room,
     'bbs': lambda p: BBS.schedule(p if 'model' in p else PJ.wizard(p)),
     'aci': lambda p: ACI.report(p if 'model' in p else PJ.wizard(p)),
+    # طبقة التفصيل حسب ACI Detailing Manual MNL-66(20) — مستقلّة عن الأصل
+    'mnl66': lambda p: MN.pack(p if 'model' in p else PJ.wizard(p)),
     # --- التفاصيل والتجربة وأنواع السقوف ---
     'lab': PJ.lab,
     'plan/parse': PL.analyze,

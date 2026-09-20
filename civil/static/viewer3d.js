@@ -55,6 +55,7 @@ function Viewer3D(el, M, onPick) {
   const on = {}; GN.forEach(k => on[k] = 1);
   /* ---- حالة التسليح وألوانه: تُعرَّف مبكراً لأن بناء الكانتيليفر
      يستدعي inst و addRings قبل الوصول لقسم التسليح ---- */
+  const LAPC = 0xfde047;                 // كمّ الوصلة — أصفر شفاف يُرى فوق الحديد
   const STEEL = 0xe8443a, TIE = 0xff9f1c, EXTRA = 0x22d3ee, CHAIR = 0x86efac,
     DOWEL = 0xc084fc, CTOP = 0xfacc15, CBOT = 0x60a5fa;
   let built = false, S = { bars: 0, meshes: 0, weight: 0, byGrp: {} }, CURG = 'rebar';
@@ -771,9 +772,26 @@ function Viewer3D(el, M, onPick) {
     return p;
   }
 
+  /* **إسقاط العكفة** على محور السيخ: كم تزحف العكفة بامتداد السيخ نفسه.
+     لعكفة 90° = نصف قطر محور الثنية (الامتداد يهبط عمودياً فلا يضيف طولاً
+     أفقياً)، ولعكفة 180° يرتدّ الامتداد للخلف فالإسقاط صفر. وهذا المقدار
+     يُطرَح من الجزء المستقيم ولا يُضاف عليه. */
+  function hookProj(db, ang, tie) {
+    const R = (bendDia(db, tie) / 2 + db / 2) / 1000;
+    const e = hookExt(db, ang, tie) / 1000, a = ang * Math.PI / 180;
+    return Math.max(0, R * Math.sin(a) + e * Math.cos(a));
+  }
+
   /* سيخ مستقيم **بعكفاته الحقيقية** بالطرفين — لا أسطوانة عارية.
      hk = {a:زاوية بداية, b:زاوية نهاية, tie:أسوار؟, up:اتجاه العكفة (+1 لأعلى)}
-     الصفر أو null يعني طرفاً مقطوعاً بلا عكفة (وسط الوصلة مثلاً). */
+     الصفر أو null يعني طرفاً مقطوعاً بلا عكفة (وسط الوصلة مثلاً).
+
+     **`len` هو الطول من الطرف للطرف (out-to-out)** كما يُفصَّل بجدول التفريد:
+     ACI Detailing Manual MNL-66(20) المادة 4.4.5.5 — «تُظهَر أبعاد السيخ كلها
+     من الطرف للطرف، وطوله مجموع أبعاده الأولية **شاملةً عكفتَي A وG**».
+     فالعكفة **تُقتطع من** الجزء المستقيم لا تُضاف عليه: سيخ مفصَّل 3.00 م
+     بعكفتين يبقى امتداده 3.00 م لا 3.08 م. وكان الرسم يمدّ العكفة خارج
+     الطول فيبرز السيخ عن الخرسانة بلا داعٍ — وهذا هو الخطأ المُصلَح. */
   function barGeo(len, db, dir, hk) {
     if (!hk || (!hk.a && !hk.b)) {
       const gm = new T.CylinderGeometry(db / 2000, db / 2000, len, 6, 1);
@@ -782,13 +800,23 @@ function Viewer3D(el, M, onPick) {
       return gm;
     }
     const up = hk.up === undefined ? 1 : hk.up, tie = !!hk.tie, h = len / 2, pts = [];
+    // بداية الجزء المستقيم ونهايته بعد اقتطاع إسقاط العكفتين
+    const pA = hk.a ? hookProj(db, hk.a, tie) : 0;
+    const pB = hk.b ? hookProj(db, hk.b, tie) : 0;
+    const sA = -h + pA, sB = h - pB;
+    if (sB - sA < 4 * db / 1000) {                 // سيخ أقصر من عكفتيه — يُرسم مستقيماً
+      const gm = new T.CylinderGeometry(db / 2000, db / 2000, len, 6, 1);
+      if (dir === 'x') gm.rotateZ(Math.PI / 2);
+      if (dir === 'z') gm.rotateX(Math.PI / 2);
+      return gm;
+    }
     if (hk.a) {                                    // عكفة البداية (مرآة على −u)
       const q = hookPts(db, hk.a, tie, up);
-      for (let i = q.length - 1; i >= 0; i--) pts.push([-h - q[i][0], q[i][1]]);
-    } else pts.push([-h, 0]);
-    pts.push([-h + 0.001, 0], [h - 0.001, 0]);
-    if (hk.b) hookPts(db, hk.b, tie, up).forEach(q => pts.push([h + q[0], q[1]]));
-    else pts.push([h, 0]);
+      for (let i = q.length - 1; i >= 0; i--) pts.push([sA - q[i][0], q[i][1]]);
+    } else pts.push([sA, 0]);
+    pts.push([sA + 0.001, 0], [sB - 0.001, 0]);
+    if (hk.b) hookPts(db, hk.b, tie, up).forEach(q => pts.push([sB + q[0], q[1]]));
+    else pts.push([sB, 0]);
     const v = pts.map(q => dir === 'x' ? new T.Vector3(q[0], q[1], 0)
       : dir === 'z' ? new T.Vector3(0, q[1], q[0])
         : new T.Vector3(q[1], q[0], 0));           // dir 'y' = عمودي (أسياخ العمود)
@@ -834,6 +862,44 @@ function Viewer3D(el, M, onPick) {
          ['الوصلات', (n - 1) + ' وصلة × ' + lap.toFixed(2) + ' م (1.3·ld)']]).concat(ex) }) : null;
       const meta = { grp: (info && info.grp) || CURG, floor: info && info.floor };
       inst(barGeo(piece, db, dir, hk), col || STEEL, pp, inf, grp, w1 * pp.length, meta);
+    }
+    /* ---- الوصلة تُرى بالعين: كمّ حول منطقة التراكب ----
+       MNL-66(20) المادة 4.4.5.1 توصي بإظهار مواضع الوصلات وأطوالها **رسماً**
+       لا جدولاً وحده، لأن موضع الوصلة قرار تصميمي (18.6.3.3 يمنعها عند وجه
+       العمود) والمنفّذ لا يقرؤه من جدول. فتُرسم هنا كمّاً شفافاً بلون مميّز
+       طوله طول التراكب بالضبط، وبطاقته تقول الطول والمادة وسبب الموضع. */
+    if (n > 1) {
+      const lp = [];
+      for (let i = 1; i < n; i++) {
+        const c = i * (piece - lap) + piece / 2 - len / 2 - (piece - lap) / 2;
+        pos.forEach(p => lp.push(dir === 'x' ? [p[0] + c, p[1], p[2] + db / 2000]
+          : dir === 'z' ? [p[0] + db / 2000, p[1], p[2] + c]
+            : [p[0] + db / 2000, p[1] + c, p[2]]));
+      }
+      const g2 = new T.CylinderGeometry(db / 1000 * 1.25, db / 1000 * 1.25, lap, 8, 1, true);
+      if (dir === 'x') g2.rotateZ(Math.PI / 2);
+      if (dir === 'z') g2.rotateX(Math.PI / 2);
+      const im2 = new T.InstancedMesh(g2, new T.MeshLambertMaterial({ color: LAPC,
+        transparent: true, opacity: .42, side: T.DoubleSide, depthWrite: false,
+        clippingPlanes: [clip] }), lp.length);
+      const m4 = new T.Matrix4();
+      lp.forEach((p, i) => { m4.makeTranslation(p[0], p[1], p[2]); im2.setMatrixAt(i, m4); });
+      im2.instanceMatrix.needsUpdate = true; im2.frustumCulled = false;
+      im2.userData = info ? { title: 'منطقة وصلة التراكب — ' + (info.title || ''),
+        kind: 'rebar', grp: (info.grp || CURG), floor: info.floor,
+        rows: [['طول التراكب', Math.round(lap * 1000) + ' مم = ' +
+            (lap / (db / 1000)).toFixed(0) + '·db'],
+          ['عدد الوصلات بالسيخ', (n - 1) + ' وصلة'],
+          ['المجموع بهذه العائلة', lp.length + ' وصلة'],
+          ['لماذا تُرسم', 'موضع الوصلة قرار تصميمي لا تفصيل تنفيذ: المادة ' +
+            '18.6.3.3 تمنعها عند وجه العمود وتوجبها قرب وسط البحر، و9.7.7.5(ب) ' +
+            'كذلك لحديد العزم السالب. والمنفّذ لا يقرأ ذلك من جدول'],
+          ['المرجع', 'ACI 318M-14 المادة 25.5.2 (صنف B = 1.3·ld) · ' +
+            'MNL-66(20) المادة 4.4.5.1 (إظهار الوصلات رسماً)'],
+          ['ملاحظة', 'القطعتان مزاحتان قطر سيخ ليُرى التراكب — وبالتنفيذ ' +
+            'تُربطان متلاصقتين بالسلك']] } : { grp: (info && info.grp) || CURG };
+      if (info) picks.push(im2);
+      (grp || G.rebar).add(im2);
     }
     return n;
   }
@@ -1153,14 +1219,24 @@ function Viewer3D(el, M, onPick) {
     return new T.TubeGeometry(new T.CatmullRomCurve3(v, false, 'catmullrom', 0),
       24, db / 2000, 5, false);
   }
-  function meshGrid(x0, z0, lx, lz, s, db, y, info, col, grp) {
-    const n1 = Math.max(2, Math.floor(lz / (s / 1000)) + 1);
-    const n2 = Math.max(2, Math.floor(lx / (s / 1000)) + 1);
+  /* شبكة سفلى/علوية — `cv` الغطاء الجانبي (م). طول السيخ يُقصّ عليه:
+     السيخ لا يصل حافة الخرسانة بل يقف عندها ناقصاً الغطاء، وعكفته تنثني
+     **للداخل**. وكان يُرسم بطول العنصر كاملاً فيخرج طرفه من الحافة. */
+  function meshGrid(x0, z0, lx, lz, s, db, y, info, col, grp, cv) {
+    const c2 = cv === undefined ? .05 : cv;
+    const n1 = Math.max(2, Math.floor((lz - 2 * c2) / (s / 1000)) + 1);
+    const n2 = Math.max(2, Math.floor((lx - 2 * c2) / (s / 1000)) + 1);
     const a = [], b2 = [];
-    for (let i = 0; i < n1; i++) a.push([x0 + lx / 2, y, z0 + i * lz / (n1 - 1)]);
-    for (let i = 0; i < n2; i++) b2.push([x0 + i * lx / (n2 - 1), y + db / 1000, z0 + lz / 2]);
-    addRun(lx, db, 'x', a, info, col, grp);
-    addRun(lz, db, 'z', b2, info, col, grp);
+    const zz = lz - 2 * c2, xx = lx - 2 * c2;
+    for (let i = 0; i < n1; i++) a.push([x0 + lx / 2, y, z0 + c2 + i * zz / (n1 - 1)]);
+    for (let i = 0; i < n2; i++) b2.push([x0 + c2 + i * xx / (n2 - 1), y + db / 1000, z0 + lz / 2]);
+    const add = info ? Object.assign({}, info, { rows: (info.rows || []).concat(
+      [['طول السيخ من الطرف للطرف', xx.toFixed(2) + ' × ' + zz.toFixed(2) + ' م — ' +
+        'العنصر ناقص غطاءين ' + Math.round(c2 * 2000) + ' مم'],
+       ['العدد', n2 + ' × ' + n1 + ' سيخ'],
+       ['المرجع', 'MNL-66(20) 4.4.5.5 — الطول من الطرف للطرف والعكفة تنثني للداخل']]) }) : null;
+    addRun(xx, db, 'x', a, add, col, grp);
+    addRun(zz, db, 'z', b2, null, col, grp);
   }
 
   function buildRebar() {
@@ -1180,10 +1256,12 @@ function Viewer3D(el, M, onPick) {
       // على الغطاء تماماً.
       meshGrid(-rf.Lx / 2, -rf.Ly / 2, rf.Lx, rf.Ly, rf.bottom.s, rf.bottom.db,
         fb + cvB + rf.bottom.db / 2000,
-        { title: 'تسليح الحصيرة السفلي', kind: 'rebar', rows: [['التفصيل', rf.bottom.label]] });
+        { title: 'تسليح الحصيرة السفلي', kind: 'rebar', rows: [['التفصيل', rf.bottom.label]] },
+        null, null, cvB);
       meshGrid(-rf.Lx / 2, -rf.Ly / 2, rf.Lx, rf.Ly, rf.top.s, rf.top.db,
         fb + t - cvT - 1.5 * rf.top.db / 1000,
-        { title: 'تسليح الحصيرة العلوي', kind: 'rebar', rows: [['التفصيل', rf.top.label]] });
+        { title: 'تسليح الحصيرة العلوي', kind: 'rebar', rows: [['التفصيل', rf.top.label]] },
+        null, null, cvB);
       const fc2 = (md.found && (md.found.raft_chairs || md.found.chairs));
       if (fc2) {
         // ظهر الشبكة السفلى = الغطاء + قطرا طبقتيها
@@ -1206,11 +1284,13 @@ function Viewer3D(el, M, onPick) {
     if (ROOM && M.foot) {
       COLS.forEach((l, k) => meshGrid(px(l.x) - M.foot.B / 2, pz(l.y) - M.foot.B / 2,
         M.foot.B, M.foot.B, M.foot.s, M.foot.db, fb + .075,
-        { title: 'تسليح الأساس F' + (k + 1), kind: 'rebar', rows: [['التفصيل', M.foot.label]] }));
+        { title: 'تسليح الأساس F' + (k + 1), kind: 'rebar', rows: [['التفصيل', M.foot.label]] },
+        null, null, .075));
     } else if (iso && iso.sizes) {
       iso.sizes.forEach((sz, k) => meshGrid(px(M.loads[k].x) - sz.B / 2, pz(M.loads[k].y) - sz.B / 2,
         sz.B, sz.B, iso.typical.spacing, iso.typical.bar_db, fb + .075,
-        { title: 'تسليح الأساس F' + (k + 1), kind: 'rebar', rows: [['التفصيل', iso.typical.bars_label]] }));
+        { title: 'تسليح الأساس F' + (k + 1), kind: 'rebar', rows: [['التفصيل', iso.typical.bars_label]] },
+        null, null, .075));
     }
     CURG = 'piles';
     if (pil) {
@@ -1218,7 +1298,8 @@ function Viewer3D(el, M, onPick) {
       M.loads.forEach((l) => {
         const X = px(l.x), Z = pz(l.y);
         meshGrid(X - cp.B / 2, Z - cp.L / 2, cp.B, cp.L, pil.cap_rebar.s, pil.cap_rebar.db, fb + .075,
-          { title: 'تسليح هامة الركائز', kind: 'rebar', rows: [['التفصيل', pil.cap_rebar.label]] });
+          { title: 'تسليح هامة الركائز', kind: 'rebar', rows: [['التفصيل', pil.cap_rebar.label]] },
+          null, null, .075);
         let n = 0;
         for (let rr = 0; rr < pil.rows; rr++) for (let cc = 0; cc < pil.cols; cc++) {
           if (n >= pil.n) break;
@@ -1442,16 +1523,27 @@ function Viewer3D(el, M, onPick) {
       // ---- الفرش (الاتجاه القصير) ثم الغطاء (الطويل) فوقه بقطر سيخ واحد ----
       const yF = z - th + cvS + mS.db / 2000, yG = yF + (mS.db + mLg.db) / 2000;
       const lay = (run, across, dirC, s2, db2, y2, ttl, ord, dd) => {
-        const n2 = Math.max(2, Math.ceil(across / (s2 / 1000)) + 1), p = [];
+        // السيخ الأول والأخير يقفان على **الغطاء الجانبي** لا على حافة
+        // البلاطة: كانت مواضعهما تمتد ±across/2 بالضبط فيقع وجه السيخ
+        // بمستوى وجه الخرسانة بغطاء صفر.
+        const a0 = Math.max(s2 / 1000, across - 2 * cvS);
+        const n2 = Math.max(2, Math.ceil(a0 / (s2 / 1000)) + 1), p = [];
         for (let i = 0; i < n2; i++) {
-          const o = -across / 2 + Math.min(i * s2 / 1000, across);
+          const o = -a0 / 2 + Math.min(i * s2 / 1000, a0);
           p.push(dirC === 'x' ? [0, y2, o] : [o, y2, 0]);
         }
-        addRun(run - 2 * cvS + .4, db2, dirC, p,
+        // طول السيخ = البحر الصافي ناقص الغطاءين، **من الطرف للطرف**. وكان
+        // يُضاف عليه 0.40 م بلا سند فيبرز السيخ 20 سم خارج البلاطة من كل
+        // جهة. والعكفة تهبط **داخل** السماكة ولا تزيد الطول (MNL-66 4.4.5.5).
+        const Lbar = run - 2 * cvS;
+        addRun(Lbar, db2, dirC, p,
           { title: ttl + ' — طابق ' + s, kind: 'rebar', floor: s,
             rows: [['التفصيل', (dd && dd.label) || ''], ['الترتيب بالتنفيذ', ord],
               ['العدد', n2 + ' سيخ = ⌈' + across.toFixed(2) + ' ÷ ' + (s2 / 1000).toFixed(2) + '⌉ + 1'],
-              ['طول السيخ', (run - 2 * cvS + .4).toFixed(2) + ' م'],
+              ['طول السيخ من الطرف للطرف', Lbar.toFixed(2) + ' م = البحر ' +
+                run.toFixed(2) + ' − غطاءان ' + Math.round(cvS * 2000) + ' مم'],
+              ['العكفة', 'عكفة 90° بالطرفين **داخل** السماكة — لا تزيد الطول ' +
+                '(MNL-66 4.4.5.5: الطول من الطرف للطرف شاملاً A وG)'],
               ['العمق الفعّال d', Math.round((dd && dd.d) || 0) + ' مم']] });
       };
       lay(shortIsX ? L : B, shortIsX ? B : L, shortIsX ? 'x' : 'z', mS.s, mS.db, yF,
@@ -1502,7 +1594,7 @@ function Viewer3D(el, M, onPick) {
       if (ROOM) {
         meshGrid(-L / 2, -B / 2, L, B, mt.s, mt.db, z - .025,
           { title: 'تسليح السقف العلوي', kind: 'rebar', floor: s,
-            rows: [['التفصيل', mt.label]] });
+            rows: [['التفصيل', mt.label]] }, null, null, cvS);
       } else {
         const tl = md.slab.top_len || { x: g.sx / 2, y: g.sy / 2, ext: .25 };
         const yT = z - cvS - mt.db / 2000;
@@ -1510,9 +1602,14 @@ function Viewer3D(el, M, onPick) {
         // المحور الطرفي: نصف السيخ للداخل فقط حتى لا يبرز خارج البلاطة
         for (let j = 0; j <= g.ny; j++) {
           const edge = (j === 0 || j === g.ny), into = j === 0 ? -1 : 1;
-          const Lb = edge ? tl.y / 2 : tl.y, off = edge ? into * tl.y / 4 : 0;
+          // المحور الطرفي: نصف السيخ للداخل، وطرفه يقف عند **خط الغطاء** لا
+          // عند حافة البلاطة — وإلا غاص نصف قطره بالغطاء.
+          const Lb = edge ? tl.y / 2 : tl.y;
+          const off = edge ? into * (tl.y / 4 + cvS + mt.db / 2000) : 0;
           const p = [], n2 = Math.max(2, Math.ceil(L / (mt.s / 1000)) + 1);
-          for (let i = 0; i < n2; i++) p.push([-L / 2 + Math.min(i * mt.s / 1000, L), yT, pz(ys[j]) + off]);
+          // مواضع الأسياخ تُقصّ على الغطاء الجانبي كالفرش والغطاء
+          const aX = Math.max(mt.s / 1000, L - 2 * cvS);
+          for (let i = 0; i < n2; i++) p.push([-aX / 2 + Math.min(i * mt.s / 1000, aX), yT, pz(ys[j]) + off]);
           addRun(Lb, mt.db, 'z', p, j === 1 || (g.ny === 1 && !j) ? null :
             { title: 'تسليح علوي فوق محاور جسور X', kind: 'rebar', floor: s,
               rows: [['التفصيل', mt.label], ['طول السيخ', Lb.toFixed(2) + ' م'],
@@ -1523,9 +1620,11 @@ function Viewer3D(el, M, onPick) {
         }
         for (let i = 0; i <= g.nx; i++) {
           const edge = (i === 0 || i === g.nx), into = i === 0 ? 1 : -1;
-          const Lb = edge ? tl.x / 2 : tl.x, off = edge ? into * tl.x / 4 : 0;
+          const Lb = edge ? tl.x / 2 : tl.x;
+          const off = edge ? into * (tl.x / 4 + cvS + mt.db / 2000) : 0;
           const p = [], n2 = Math.max(2, Math.ceil(B / (mt.s / 1000)) + 1);
-          for (let k2 = 0; k2 < n2; k2++) p.push([px(xs[i]) + off, yT, -B / 2 + Math.min(k2 * mt.s / 1000, B)]);
+          const aZ = Math.max(mt.s / 1000, B - 2 * cvS);
+          for (let k2 = 0; k2 < n2; k2++) p.push([px(xs[i]) + off, yT, -aZ / 2 + Math.min(k2 * mt.s / 1000, aZ)]);
           addRun(Lb, mt.db, 'x', p, i === 1 || (g.nx === 1 && !i) ? null :
             { title: 'تسليح علوي فوق محاور جسور Y', kind: 'rebar', floor: s,
               rows: [['التفصيل', mt.label], ['طول السيخ', Lb.toFixed(2) + ' م'],
@@ -1543,7 +1642,7 @@ function Viewer3D(el, M, onPick) {
             meshGrid(c[0], c[1], sz, sz, ex.corner.s, ex.corner.db, z - .03,
               { title: 'تسليح أركان البلاطة (علوي)', kind: 'extra', floor: s,
                 rows: [['المرجع', 'ACI 8.7.3.1'], ['التفصيل', 'شبكة ' + sz.toFixed(2) + ' م بالركن'],
-                  ['السبب', 'مقاومة عزوم اللي عند الأركان']] }, EXTRA, G.extra);
+                  ['السبب', 'مقاومة عزوم اللي عند الأركان']] }, EXTRA, G.extra, cvS);
           });
         COLS.forEach(l => {
           const p1 = [], p2 = [];
@@ -3202,6 +3301,51 @@ function Viewer3D(el, M, onPick) {
           zMin: +g0.min.z.toFixed(3), zMax: +g0.max.z.toFixed(3) });
       });
       return out;
+    },
+    /* فحص الانطباق: هل يخرج حديد عنصر عن **خرسانة ذلك العنصر** نفسه؟
+       يُقاس صندوق الحديد مقابل صندوق الخرسانة أفقياً، والفائض بالمليمتر.
+       الفائض السالب = الحديد داخل الغطاء كما يجب. */
+    fit: () => {
+      const bb = new T.Box3(), gb = new T.Box3(), m4 = new T.Matrix4();
+      const boxOf = o => {
+        o.geometry.computeBoundingBox();
+        const g0 = o.geometry.boundingBox;
+        bb.makeEmpty();
+        if (o.isInstancedMesh) {
+          for (let i = 0; i < o.count; i++) {
+            o.getMatrixAt(i, m4); gb.copy(g0).applyMatrix4(m4); bb.union(gb);
+          }
+          bb.applyMatrix4(o.matrixWorld);
+        } else bb.copy(g0).applyMatrix4(o.matrixWorld);
+        return bb.clone();
+      };
+      // خرسانة كل مجموعة
+      const conc = {};
+      [['slabs', G.slabs], ['raft', G.raft], ['isolated', G.isolated]].forEach(([k, gp]) => {
+        const acc = new T.Box3(); acc.makeEmpty();
+        gp.children.forEach(o => { if (o.geometry && o.isMesh) acc.union(boxOf(o)); });
+        if (isFinite(acc.min.x)) conc[k] = acc;
+      });
+      const out = [];
+      const seen = {};
+      [G.rebar, G.extra].forEach(gp => gp.children.forEach(o => {
+        if (!o.geometry || !o.userData || !o.userData.grp) return;
+        const c = conc[o.userData.grp];
+        if (!c) return;
+        const b = boxOf(o);
+        const over = Math.max(b.max.x - c.max.x, c.min.x - b.min.x,
+          b.max.z - c.max.z, c.min.z - b.min.z) * 1000;
+        const key = o.userData.grp + '|' + (o.userData.title || '—');
+        if (seen[key] !== undefined && seen[key] >= over) return;
+        seen[key] = over;
+        const i = out.findIndex(r => r.key === key);
+        const row = { key: key, what: o.userData.title || o.userData.grp,
+          box: (c.max.x - c.min.x).toFixed(2) + '×' + (c.max.z - c.min.z).toFixed(2),
+          bar: (b.max.x - b.min.x).toFixed(2) + '×' + (b.max.z - b.min.z).toFixed(2),
+          over: Math.round(over) };
+        if (i >= 0) out[i] = row; else out.push(row);
+      }));
+      return out.sort((a, b2) => b2.over - a.over).slice(0, 14);
     },
     debug: () => ({ picks: picks.length, vis: picks.filter(o => o.visible && o.parent && o.parent.visible).length,
       groups: Object.fromEntries(Object.entries(G).map(([k, v2]) => [k, v2.children.length + '/' + v2.visible])) }),

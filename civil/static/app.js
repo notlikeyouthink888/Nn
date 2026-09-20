@@ -3476,7 +3476,7 @@ PAGES.projects = {
 
 /* ------------------------- الترتيب والمجموعات ---------------------------- */
 const ORDER = [
-  ['المشروع', ['wizard', 'room', 'bbs', 'projects']],
+  ['المشروع', ['wizard', 'room', 'bbs', 'detail66', 'projects']],
   ['ما تحت الصفر', ['survey', 'earth', 'soil']],
   ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],
   ['مرجع', ['ref', 'home']],
@@ -3630,3 +3630,138 @@ PAGES.bbs = {
   },
   init: () => PAGES.bbs.run()
 };
+
+/* ==========================================================================
+   صفحة التفصيل حسب ACI Detailing Manual MNL-66(20)
+   --------------------------------------------------------------------------
+   صفحة **مستقلّة** لا تمسّ المعالج ولا لوحته ثلاثية الأبعاد بشيء: تقرأ ناتج
+   المعالج نفسه وتعيد تقديمه بلغة **التفصيل** لا بلغة التصميم — رقم نوع الثني،
+   وأبعاده بالحروف، والطول من الطرف للطرف، وطول القطع بعد خصم الثنيات، وقوائم
+   فحص أشكال الدليل. وعارض المجسّم هنا عارضٌ ثانٍ خاصّ بها (`bar3d.js`).
+   ========================================================================== */
+let M66 = null, B3D = null, M66SEL = 0;
+
+PAGES.detail66 = {
+  ic: '📐', name: 'تفصيل الحديد MNL-66', grp: 'المشروع',
+  ttl: 'تفصيل حديد التسليح — ACI Detailing Manual MNL-66(20)',
+  sub: 'نوع الثني وأبعاده بالحروف · الطول من الطرف للطرف · طول القطع بعد خصم الثنيات · قوائم أشكال الدليل',
+  desc: 'طبقة التفصيل: ما يُرسَم ويُطلَب، لا ما يُحسَب',
+  html: () => `<div class="card">
+    <h3>المرجعان معاً — لا بديلاً عن الآخر</h3>
+    <div class="grid g2">
+      <div class="note" style="border-right:3px solid var(--acc2)"><b>ACI 318M-14</b> يقول
+        <b>كم</b> حديداً يلزم: المساحة والقطر والتباعد وطول النشر. وهو مطبَّق كما هو
+        بصفحة المعالج وتقرير المطابقة — <b>لم يتغيّر منه شيء</b>.</div>
+      <div class="note" style="border-right:3px solid #facc15"><b>MNL-66(20)</b> يقول
+        <b>كيف</b> يُفصَّل ويُطلَب ويُرسَم: رقم نوع الثني وأبعاده بالحروف، والطول من
+        الطرف للطرف، وطول القطع بعد خصم الثنيات، وما يجب أن يظهر بالمخطط ليقرأه
+        الحدّاد بلا سؤال.</div></div>
+    <div class="row"><button class="btn" onclick="PAGES.detail66.run()">🔄 تحديث من المعالج</button>
+      <button class="btn gh" onclick="go('wizard')">↩︎ المعالج</button>
+      <button class="btn gh" onclick="go('bbs')">📊 جدول التقطيع</button>
+      <button class="btn gh" onclick="window.print()">🖨️ طباعة</button></div></div>
+    <div id="m66" style="margin-top:16px"><div class="hint">…يُحسب</div></div>`,
+  payload: () => (WZ ? WZ : (document.getElementById('w_area')
+    ? PAGES.wizard.payload()
+    : { area: 200, floors: 2, soil: 'طين قاسي', fc: 25, fy: 420 })),
+  run: async () => {
+    M66 = await post('mnl66', PAGES.detail66.payload());
+    m66Render();
+  },
+  init: () => PAGES.detail66.run()
+};
+
+function m66Render() {
+  const r = M66; if (!r) return;
+  const B = r.bars, C = r.checks;
+  const st = s => s === 'ok' ? '<span class="tag t-ok">مطابق</span>'
+    : s === 'fail' ? '<span class="tag t-bad">مخالف</span>'
+      : '<span class="tag t-warn">للمراجعة</span>';
+  $('#m66').innerHTML = `
+  <div class="grid g4">
+    ${kpi('عائلات الحديد', B.rows.length)}
+    ${kpi('الوزن الكلي', nf(B.total_t, 2) + ' طن')}
+    ${kpi('بنود التفصيل', C.total)}
+    ${kpi('مخالف', C.counts.fail || 0, (C.counts.fail || 0) ? 'bad' : 'ok')}
+    ${kpi('تصنيع خاصّ', B.special.length ? B.special.join(' · ') : 'لا شيء',
+      B.special.length ? 'warn' : 'ok')}</div>
+
+  <div class="card" style="margin-top:16px"><h3>١ · جدول التفصيل — كل سيخ بأبعاده بالحروف</h3>
+    <div style="max-height:520px;overflow:auto">${table(
+      ['الرمز', 'العنصر', 'Ø', 'نوع الثني', 'الأبعاد من الطرف للطرف (مم)', 'ثنيات',
+       'الطول المفصَّل (م)', 'خصم الثنيات (مم)', 'طول القطع (م)', 'العدد', 'الوزن (كغم)', ''],
+      B.rows.map((b, i) => [
+        `<b>${b.mark}</b>`, b.elem, 'Ø' + b.db,
+        b.type_no ? `<b>${b.type_name}</b>` : 'مستقيم',
+        b.dims.map(d => `<b>${d.k}</b>=${d.mm}`).join(' + '),
+        b.bends, nf(b.detailed, 3), int(b.deduct), `<b>${nf(b.cut, 3)}</b>`,
+        int(b.count), int(b.total_kg),
+        `<button class="btn gh" style="padding:3px 9px;font-size:11px"
+           onclick="m66Pick(${i})">عرض</button>`]))}</div>
+    <div class="note">${B.note}</div>
+    <div class="note" style="border-right:3px solid #facc15">${B.scope}
+      <button class="btn gh" style="margin-right:8px;padding:3px 9px;font-size:11px"
+        onclick="go('bbs')">افتح جدول التقطيع</button></div></div>
+
+  <div class="card" style="margin-top:16px"><h3>٢ · شكل السيخ المحدَّد بأبعاده</h3>
+    <div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:8px">${B.rows.map((b, i) =>
+      `<button class="btn ${i === M66SEL ? '' : 'gh'}" style="padding:4px 10px;font-size:11.5px"
+        onclick="m66Pick(${i})">${b.mark}</button>`).join('')}</div>
+    <div id="m66d" style="height:320px;background:var(--bg2);border-radius:12px"></div>
+    <div id="m66i" class="note"></div></div>
+
+  <div class="card" style="margin-top:16px"><h3>٣ · أنواع الثني وأبعادها بالحروف</h3>
+    ${table(['النوع', 'الأبعاد', 'ثنيات', 'مستويات', 'ما هو', 'أين يُستعمل'],
+      r.types.map(t => [t.no ? `<b>النوع ${t.no}</b>` : 'مستقيم',
+        t.dims.join(' · '), t.bends, t.planes > 1
+          ? `<span class="tag t-warn">${t.planes} — تصنيع خاصّ</span>` : t.planes,
+        t.what, t.use]))}</div>
+
+  <div class="card" style="margin-top:16px"><h3>٤ · خصم انحناء الثنية — المعادلة مقابل الجدول المرجعي</h3>
+    <div class="note">السيخ يُقصّ <b>أقصر</b> من مجموع أبعاده المفصَّلة لأن قوس الثنية
+      أقصر من مماسَّيه. والمقدار <b dir="ltr">${r.deduct.formula}</b> — ${r.deduct.note}</div>
+    ${table(['Ø', 'قطر الثني (مم)', 'خصم 45° مرجع', 'محسوب', 'الفرق',
+      'خصم 90° مرجع', 'محسوب', 'الفرق', ''],
+      r.deduct.rows.map(x => ['Ø' + x.db, int(x.dia), int(x.ref45), nf(x.calc45, 1), nf(x.d45, 1),
+        int(x.ref90), nf(x.calc90, 1), nf(x.d90, 1), st(x.ok ? 'ok' : 'fail')]))}
+    <div class="note">الفروق ضمن تقريب الجدول المرجعي نفسه (يُقرَّب لأقرب ربع إنش).</div></div>
+
+  <div class="card" style="margin-top:16px"><h3>٥ · قواعد التفصيل المطبَّقة</h3>
+    ${table(['المادة', 'القاعدة', 'ماذا تعني عملياً'],
+      r.rules.map(x => [x.c, `<b>${x.t}</b>`, x.w.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')]))}</div>
+
+  ${C.sections.map(s => `<div class="card" style="margin-top:16px">
+    <h3>${s.name} — الشكل <span style="color:var(--acc2)">${s.fig}</span></h3>
+    ${table(['البند', 'الفحص', 'المحسوب', 'المطلوب', 'الحالة', 'لماذا'],
+      s.rows.map(x => [x.clause, x.title, x.value, x.need, st(x.state),
+        (x.why || '').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>') || '—']))}</div>`).join('')}
+
+  <div class="note" style="margin-top:14px">${C.ref}</div>`;
+  m66Pick(Math.min(M66SEL, B.rows.length - 1));
+}
+
+function m66Pick(i) {
+  if (!M66) return;
+  M66SEL = i;
+  const b = M66.bars.rows[i]; if (!b) return;
+  const host = $('#m66d');
+  if (host && window.BAR3D) {
+    // إعادة رسم الصفحة تُتلف العنصر القديم، فيُتخلَّص من عارضه ولا يُترك
+    // يدور بالخلفية — وإلا تراكمت عارضات WebGL بكل تحديث.
+    if (!B3D || B3D.host !== host) {
+      if (B3D) B3D.dispose();
+      B3D = window.BAR3D.make(host);
+      if (B3D) B3D.host = host;
+    }
+    if (B3D) B3D.show(b);
+  }
+  const inf = $('#m66i');
+  if (inf) inf.innerHTML = `<b>${b.mark}</b> — ${b.elem} · Ø${b.db} ·
+    ${b.type_no ? 'نوع الثني <b>' + b.type_name + '</b>' : 'مستقيم بلا ثنيات'} ·
+    ${b.bends} ثنية بقطر ثني <b>${int(b.bend_dia)} مم</b><br>
+    الأبعاد: ${b.dims.map(d => `<b>${d.k}</b> = ${d.mm} مم`).join(' · ')}<br>
+    الطول المفصَّل <b>${nf(b.detailed, 3)} م</b> ناقص خصم الثنيات <b>${int(b.deduct)} مم</b>
+    = طول القطع <b>${nf(b.cut, 3)} م</b> (سماحية ±${int(b.tol)} مم)<br>
+    ${b.why ? '<span style="color:var(--mut)">' + b.why.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>') + '</span>' : ''}
+    ${b.note ? '<br><span class="tag t-warn">' + b.note + '</span>' : ''}`;
+}

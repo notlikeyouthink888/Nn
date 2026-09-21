@@ -90,8 +90,15 @@
       + cbx('تشوّه القصّ Timoshenko', 'f_sh', true) + '</div>'
       + '<div class="f" style="margin-top:8px">'
       + fld('معامل المنطقة الصلبة', 'f_rz', 0, .1, '0 – 1', 0) + '</div>'
-      + '<div style="font-size:11px;color:var(--mut);margin-top:6px">'
-      + 'صفر = صلابة على المحاور (افتراضي ETABS). القراءة تبقى عند وجه الركيزة وفق ACI §6.3.2.'
+      + '<div class="bar" style="margin-top:6px">'
+      + '<span style="font-size:11.5px;color:var(--mut)">قيَم جاهزة</span>'
+      + "<button onclick=\"FEM3D.page.rz(0)\">0 — افتراضي ETABS</button>"
+      + "<button onclick=\"FEM3D.page.rz(0.5)\">0.5 — شائع بالتصميم</button>"
+      + "<button onclick=\"FEM3D.page.rz(1)\">1.0 — صلب كامل</button></div>"
+      + '<div style="font-size:11px;color:var(--mut);margin-top:6px;line-height:1.7">'
+      + 'صفر = الصلابة تُحسب على المحاور (افتراضي ETABS) · 1.0 = المنطقة داخل الوصلة صلبة '
+      + 'تماماً فيقصر البحر الفعّال وتزيد الصلابة الجانبية. '
+      + 'وفي كل الأحوال تُقرأ قوى التصميم عند وجه الركيزة وفق ACI 318M §6.3.2.'
       + '</div></div>'
 
       + '<div class="card"><h3>الأحمال</h3><div class="f">'
@@ -138,7 +145,20 @@
       + '<div class="fp" data-p="res"><div id="f_res"></div></div>'
       + '<div class="fp" data-p="fnd"><div id="f_fndp"></div></div>'
       + '<div class="fp" data-p="prf"><div id="f_prf"></div></div>'
-      + '<div class="fp" data-p="ver"><div id="f_ver"></div></div>'
+      + '<div class="fp" data-p="ver">'
+      + '<div class="card" style="margin-bottom:13px"><h3>التحقّق المتبادل مع OpenSees</h3>'
+      + '<p style="font-size:12.5px;color:var(--mut);line-height:1.9;margin:0 0 10px">'
+      + '<b>OpenSees</b> محرّك العناصر المحدّدة المفتوح المصدر من مركز <b>PEER</b> بجامعة '
+      + 'كاليفورنيا – بيركلي، وهو المرجع المعتمَد في أبحاث الهندسة الزلزالية المحكَّمة. '
+      + 'يُبنى هنا <b>نفس المنشأ</b> في المحرّكين — نفس العقد والمقاطع والأحمال والاستناد — '
+      + 'ثم تُقارَن الإزاحات وقوى الأطراف وردود الأفعال حدّاً بحدّ. '
+      + 'الحسابُ يجري على الخادم بـ OpenSeesPy لحظةَ الضغط، لا من نتائج مخزونة.</p>'
+      + '<div class="bar"><button onclick="FEM3D.page.xcheck()" '
+      + 'style="background:var(--acc);color:#04121f;font-weight:700;border:0;padding:8px 18px;'
+      + 'border-radius:9px;cursor:pointer;font-size:12.5px">⟲ قارن مع OpenSees الآن</button>'
+      + '<span id="f_xst" style="font-size:12px;color:var(--mut)"></span></div>'
+      + '<div id="f_xout" style="margin-top:12px"></div></div>'
+      + '<div id="f_ver"></div></div>'
       + '</div>';
   }
 
@@ -742,6 +762,67 @@
       if (!fromView) tab('vw');
     },
     goProof: function () { tab('prf'); },
+
+    rz: function (v) {
+      var e = $id('f_rz'); if (e) e.value = v;
+      page.run();
+    },
+
+    /** يشغّل المقارنة مع OpenSees على الخادم ويعرض النتيجة. */
+    xcheck: function () {
+      var st = $id('f_xst'), out = $id('f_xout');
+      if (!global.FEM3DX) { if (st) st.textContent = 'وحدة المقارنة غير محمَّلة'; return; }
+      if (st) { st.textContent = 'جارٍ البناء في OpenSees…'; st.style.color = 'var(--mut)'; }
+      if (out) out.innerHTML = '';
+      var t0 = Date.now();
+      global.FEM3DX.run(cfg(), function (i, nm) {
+        if (st) st.textContent = 'جارٍ الحلّ (' + i + ') — ' + nm;
+      }).then(function (res) {
+        var okAll = res.length && res.every(function (r) {
+          return !r.error && r.eD < 1e-9 && r.eF < 1e-9 && r.eR < 1e-9; });
+        var ver = (res.find(function (r) { return r.ver; }) || {}).ver || '—';
+        var rows = res.map(function (r) {
+          if (r.error) return ['<b>' + esc(r.name) + '</b>', esc(r.cs || '—'), '—', '—', '—',
+            '<span class="bad">✗ ' + esc(r.error).slice(0, 90) + '</span>'];
+          var ok = r.eD < 1e-9 && r.eF < 1e-9 && r.eR < 1e-9;
+          return ['<b>' + esc(r.name) + '</b>', esc(r.cs),
+            r.eD.toExponential(2), r.eF.toExponential(2), r.eR.toExponential(2),
+            ok ? '<span class="ok">✓ مطابق</span>'
+               : '<span class="bad">✗ ' + (r.worst ? esc(r.worst.tag) + ' q'
+                   + r.worst.q + ': ' + nf(r.worst.mine, 3) + ' مقابل '
+                   + nf(r.worst.os, 3) : '') + '</span>'];
+        });
+        var notes = [];
+        res.forEach(function (r) {
+          if (r.why && notes.indexOf(r.why) < 0) notes.push(r.why);
+          if (r.note && notes.indexOf(r.note) < 0) notes.push(r.note);
+        });
+        if (st) { st.innerHTML = '<span class="' + (okAll ? 'ok' : 'bad') + '">'
+          + (okAll ? '✓ مطابق تماماً' : '✗ راجع') + ' — OpenSees ' + esc(ver)
+          + ' · ' + ((Date.now() - t0) / 1000).toFixed(1) + ' ث</span>'; }
+        if (!out) return;
+        var m0 = res.find(function (r) { return r.nodes; }) || {};
+        out.innerHTML = '<div class="grid g4" style="margin-bottom:12px">'
+          + kpi('OpenSees', esc(ver), 'ok')
+          + kpi('مقارنات', res.length)
+          + kpi('أقصى انحراف',
+              res.filter(function (r) { return !r.error; })
+                 .reduce(function (a, r) { return Math.max(a, r.eD, r.eF, r.eR); }, 0)
+                 .toExponential(1), 'ok')
+          + kpi('الحكم', okAll ? '✓ مطابق' : '✗ راجع', okAll ? 'ok' : 'bad')
+          + '</div>'
+          + tbl(['المقارنة', 'الحالة', 'خطأ الإزاحات', 'خطأ قوى الأطراف',
+                 'خطأ ردود الأفعال', 'الحكم'], rows, '')
+          + '<div style="margin-top:12px;padding:11px 13px;background:#0a1020;border:1px solid '
+          + 'var(--line);border-radius:9px;font-size:12px;color:var(--mut);line-height:1.85">'
+          + '<b style="color:#e6edf7">فروق اصطلاحية جرت مراعاتها</b><br>'
+          + notes.map(function (n) { return '• ' + esc(n); }).join('<br>')
+          + '<br>• الانحراف بحدود 10⁻¹³ هو تراكم التقريب العشري في محرّكين مستقلّين، '
+          + 'لا اختلاف في المعادلات.</div>';
+      }).catch(function (e) {
+        if (st) { st.textContent = '✗ ' + e; st.style.color = 'var(--bad)'; }
+      });
+    },
     frame: function () { return FR; },
     footings: function () { return FTS; },
     combos: function () { return COMBOS; }

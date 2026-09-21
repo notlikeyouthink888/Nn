@@ -122,8 +122,25 @@
         'يُضاف للحالة DEAD بمعامل 1.0 — مطابق ETABS Self Weight Multiplier']
     ];
 
-    /* ---- توزيع حمل اللوح على الجسور المحيطة به ---- */
+    /* ---- توزيع حمل اللوح على الجسور المحيطة به ----
+       الوضع الافتراضي `tributary45` هو التوزيع الحقيقي بخطوط 45° (مثلثي
+       وشبه منحرف). والوضع `uniform` يوزّع نفس الحمل الكلّي منتظماً — وهو
+       لازم للمقارنة مع محرّكات لا تقبل إلا الحمل المنتظم على العنصر. */
     function spread(cs, w) {
+      if (c.loadDist === 'uniform') {
+        for (var ku = 1; ku <= ns; ku++)
+          for (var ju = 0; ju < ny; ju++) for (var iu = 0; iu < nx; iu++) {
+            var S0 = Math.min(sx, sy), pk0 = w * S0 / 2;
+            // نفس الحمل الكلّي للوح، موزّعاً منتظماً على الجسور الأربعة
+            var wX = pk0 * (Math.max(sx, sy) === sx ? (sx - S0 / 2) / sx : (S0 / 2) / sx);
+            var wY = pk0 * (Math.max(sx, sy) === sy ? (sy - S0 / 2) / sy : (S0 / 2) / sy);
+            [ju, ju + 1].forEach(function (jl) {
+              f.udl(bx[(ku - 1) * (ny + 1) * nx + jl * nx + iu], cs, { gz: -wX }); });
+            [iu, iu + 1].forEach(function (il) {
+              f.udl(by[(ku - 1) * ny * (nx + 1) + ju * (nx + 1) + il], cs, { gz: -wY }); });
+          }
+        return;
+      }
       for (var kk = 1; kk <= ns; kk++)
         for (var jj = 0; jj < ny; jj++) for (var ii = 0; ii < nx; ii++) {
           var P = panelLoads(sx, sy, w);

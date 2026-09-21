@@ -16,6 +16,10 @@ import plan as PL
 import aci as ACI
 import beamtype as BT
 import mnl66 as MN
+try:
+    import opensees_check as OSC          # تحقّق متبادل مع OpenSees (اختياري)
+except Exception:                          # noqa: BLE001
+    OSC = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC = os.path.join(HERE, 'static')
@@ -87,6 +91,9 @@ ROUTES = {
     'aci': lambda p: ACI.report(p if 'model' in p else PJ.wizard(p)),
     # طبقة التفصيل حسب ACI Detailing Manual MNL-66(20) — مستقلّة عن الأصل
     'mnl66': lambda p: MN.pack(p if 'model' in p else PJ.wizard(p)),
+    # تحقّق متبادل: نفس النموذج يُحلّ في OpenSees (PEER/بيركلي) وتُقارن النتائج
+    'opensees': (lambda p: OSC.run(p)) if OSC else
+                (lambda p: dict(ok=False, error='OpenSeesPy غير منصَّب على الخادم')),
     # --- التفاصيل والتجربة وأنواع السقوف ---
     'lab': PJ.lab,
     'plan/parse': PL.analyze,

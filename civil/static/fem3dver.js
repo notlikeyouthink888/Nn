@@ -177,6 +177,31 @@
       got: (1 - Math.abs(fc.i.M33) / Math.abs(sc[0].M33)) * 100, unit: '%',
       note: 'ما يوفّره التصميم عند الوجه بدل المحور', src: 'ACI 318M §6.3.2' });
 
+    /* إزاحة صلبة عند الطرفين **مع** تشوّه القصّ — الحالة التي ينحرف فيها
+       ElasticTimoshenkoBeam في OpenSees عن الحلّ المغلق (يهمل -jntOffset)،
+       فتُثبَّت هنا بالحلّ التحليلي: ذراع صلب + كابولي Timoshenko مرن.
+         الذراع ينقل للطرف المرن قوةً P وعزماً M = P·d
+         δ_طرف مرن = PLc³/3EI + MLc²/2EI + PLc/GAs
+         θ_طرف مرن = PLc²/2EI + MLc/EI      (دوران المقطع، لا الميل)
+         δ_العقدة  = δ_طرف مرن + θ·d */
+    var d2 = 0.5, Pr = 50, Lc2 = L - 2 * d2, Mr = Pr * d2;
+    [false, true].forEach(function (sh) {
+      var PP = sh ? PT : PB;
+      var fr = new Frame({ cases: ['DEAD'], gamma: 0 });
+      var r0 = fr.node(0, 0, 0), r1 = fr.node(L, 0, 0);
+      var pr2 = {}; for (var qq2 in PP) pr2[qq2] = PP[qq2];
+      pr2.offI = d2; pr2.offJ = d2; pr2.rz = 1;
+      fr.member(r0, r1, pr2); fr.support(r0, FIX);
+      fr.load('DEAD', r1, [0, 0, -Pr, 0, 0, 0]); fr.run();
+      var dF = Pr * Math.pow(Lc2, 3) / (3 * E * I33) + Mr * Lc2 * Lc2 / (2 * E * I33)
+             + (sh ? Pr * Lc2 / (G * As) : 0);
+      var tF = Pr * Lc2 * Lc2 / (2 * E * I33) + Mr * Lc2 / (E * I33);
+      add(g5, 'إزاحة صلبة بالطرفين ' + (sh ? '+ تشوّه القصّ' : '(انحناء فقط)'),
+        'إزاحة العقدة الحرّة δ', 'δ_مرن + θ·d',
+        dF + tF * d2, Math.abs(fr.nodeDisp(r1, 'DEAD')[2]),
+        'ذراع صلب + كابولي مرن');
+    });
+
     /* ─── المجموعة ٦: الوزن الذاتي ─── */
     var g6 = 'الوزن الذاتي — Self Weight';
     var gam = 24;

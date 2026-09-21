@@ -883,6 +883,50 @@
     return out;
   };
 
+  /** يصدّر النموذج بصيغة موحّدة تُبنى منها نسخةٌ مطابقة في **OpenSees**.
+
+      الغرض تحقّقٌ متبادل: يُبنى نفس المنشأ بنفس الخواصّ والأحمال في محرّك
+      مستقلّ ثم تُقارَن النتائج حدّاً بحدّ. وأدقّ ما في التصدير هو **اصطلاح
+      المحاور**: OpenSees يبني المحور y المحلّي بـ (vecxz × المحور x)، فتمرير
+      vecxz = محورنا 3 يجعل y عنده = محورنا 2 و z عنده = محورنا 3، وعندها:
+          Iz(OpenSees) = I₃₃   ·   Iy(OpenSees) = I₂₂
+          Avy(OpenSees) = As2  ·   Avz(OpenSees) = As3
+      ولولا هذا التطابق لتبادلت العزوم وخرجت المقارنة بلا معنى.
+
+      الحمل الموزّع يُصدَّر بمحصّلته المنتظمة المكافئة بالمحاور المحلّية،
+      لأن `eleLoad -beamUniform` في OpenSees لا يقبل إلا المنتظم. ولذلك
+      تُستعمل هذه المقارنة على نماذج بأحمال منتظمة (والأشكال المثلثية
+      وشبه المنحرفة لها حالاتها المغلقة في تبويب التحقّق). */
+  Frame.prototype.spec = function (cs) {
+    cs = cs || this.cases[0];
+    var self = this, nodes = this.nodes.map(function (n) { return [n.x, n.y, n.z]; });
+    var members = [], eleLoads = [];
+    this.members.forEach(function (m, k) {
+      var c = self.cache[k];
+      members.push({ i: m.i, j: m.j, E: m.E, G: m.G, A: m.A,
+        Iy: m.I22, Iz: m.I33, J: m.J,
+        Av2: m.As2, Av3: m.As3, shear: !!(m.shear && c.phi2 + c.phi3 > 0),
+        ra: c.ra, rb: c.rb,
+        vecxz: [c.R[2][0], c.R[2][1], c.R[2][2]] });
+      var segs = self.locLoad(m, c.L, c.R, cs), w1 = 0, w2 = 0, w3 = 0;
+      segs.forEach(function (g) {
+        var d = (g.b - g.a) / c.L;                 // متوسّط موزون بالطول
+        w1 += ((g.w1a || 0) + (g.w1b || 0)) / 2 * d;
+        w2 += ((g.w2a || 0) + (g.w2b || 0)) / 2 * d;
+        w3 += ((g.w3a || 0) + (g.w3b || 0)) / 2 * d;
+      });
+      if (w1 || w2 || w3) eleLoads.push({ k: k, wx: w1, wy: w2, wz: w3 });
+    });
+    var sup = {}, sn;
+    for (sn in this.sup) sup[sn] = this.sup[sn];
+    var nl = {}, nd, src = this.nl[cs] || {};
+    for (nd in src) nl[nd] = src[nd];
+    return { nodes: nodes, members: members, supports: sup, nodalLoads: nl,
+             eleLoads: eleLoads,
+             diaphragms: this.diaph.map(function (d) { return d.nodes.slice(); }),
+             case: cs };
+  };
+
   /* تراكيب ACI 318M-14 §5.3.1 — W و E بإشارتين لأن الاتجاه انعكاسي */
   function aciCombos(has) {
     has = has || {};

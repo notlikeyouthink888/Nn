@@ -43,7 +43,7 @@
 
   /* ════════ ٢) بناء نموذج المبنى ════════ */
   function buildModel(c) {
-    var E = Ec(c.fc);                                     // ACI 318M §19.2.2.1
+    var E = Ec(c.fc);                                   // ACI 318-19 §19.2.2.1
     var cases = ['DEAD', 'LIVE'];
     if (c.eqX) cases.push('EQX');
     if (c.eqY) cases.push('EQY');
@@ -73,8 +73,8 @@
       }
     }
 
-    /* المقاطع — معاملات التشقّق ACI 318M-19 جدول 6.6.3.1.1(a) */
-    var cb = c.cracked ? 0.35 : 1.0, cc = c.cracked ? 0.70 : 1.0;
+    /* المقاطع — معاملات التشقّق ACI 318-19 جدول 6.6.3.1.1(a) */
+    var cb = c.cracked ? 0.35 : 1.0, cc = c.cracked ? 0.70 : 1.0;   // جدول 6.6.3.1.1(a)
     function sec(b, h, mod, kind) {
       var A = b * h;
       return { E: E, A: A, As2: F.KAPPA_RECT * A, As3: F.KAPPA_RECT * A,
@@ -218,14 +218,15 @@
     return f;
   }
 
-  /* ════════ ٣) تصميم أساس منفرد وفق ACI 318M ════════
-     كل خطوة ببندها. لا معامل تجريبي ولا «تقريب مقبول». */
+  /* ════════ ٣) تصميم أساس منفرد وفق **ACI 318-19** ════════
+     كل خطوة ببندها. لا معامل تجريبي ولا «تقريب مقبول».
+     نسخة 2019 أشدّ من 318M-14 على الأساسات تحديداً: انظر شرح الخطوة (٣). */
   function footing(P) {
     // P = {Ps, Pu, Mux, Muy, c1, c2, fc, fy, qa, pos, gamma, cover}
     var fc = P.fc, fy = P.fy, qa = P.qa;                  // MPa · MPa · kPa
     var c1 = P.c1 * 1000, c2 = P.c2 * 1000;               // مم
-    var cov = P.cover === undefined ? 75 : P.cover;       // ACI 20.5.1.3.1 صبّ على التربة
-    var db = 16, phiV = 0.75, phiM = 0.90;                // ACI 21.2.1
+    var cov = P.cover === undefined ? 75 : P.cover;   // ACI 318-19 §20.5.1.3 صبّ على التربة
+    var db = 16, phiV = 0.75, phiM = 0.90;            // ACI 318-19 جدول 21.2.1
     var steps = [];
 
     /* (١) المساحة المطلوبة من ضغط التربة المسموح — بحمل الخدمة */
@@ -241,7 +242,7 @@
     while (grew < 60 && P.Ps / (B * B) * (1 + 6 * ePs / B) > qa * 1.0005) {
       B += 0.05; grew++;
     }
-    steps.push(['١', 'المساحة المطلوبة', 'A = Ps / q_net = ' + P.Ps.toFixed(1) + ' / ' + qNet.toFixed(1), Areq.toFixed(3) + ' m²', 'ACI 318M §13.3.1.1']);
+    steps.push(['١', 'المساحة المطلوبة', 'A = Ps / q_net = ' + P.Ps.toFixed(1) + ' / ' + qNet.toFixed(1), Areq.toFixed(3) + ' m²', 'ACI 318-19 §13.3.1.1']);
     steps.push(['٢', 'البُعد المربّع', 'B = sqrt(A), rounded up to 50 mm'
       + (grew ? '  +  enlarged for e = ' + ePs.toFixed(3) + ' m' : ''),
       B.toFixed(2) + ' m', grew ? 'حكَمَت اللامركزية' : 'حكَمَت المساحة']);
@@ -250,68 +251,95 @@
     var qu = P.Pu / (B * B);                               // kPa
     steps.push(['٣', 'ضغط التربة المُعامَل', 'qu = Pu / B^2 = ' + P.Pu.toFixed(1) + ' / ' + (B * B).toFixed(2), qu.toFixed(1) + ' kPa', 'اتزان']);
 
-    /* (٣) العمق من فحصَي القصّ — يُزاد حتى يمرّا معاً */
-    var h = 300, d, ok1, ok2, vu2, vc2, Vu1, phVc1, bo, it;
+    /* (٣) العمق من فحصَي القصّ وفق **ACI 318-19** — وهي أشدّ من 318M-14 بكثير
+       على الأساسات، لسببين أضافتهما نسخة 2019:
+
+         • **معامل أثر الحجم** λs = √(2/(1 + d/250)) ≤ 1.0 — §22.5.5.1.3
+           يُنقص المقاومة كلما عمُق المقطع، لأن التجارب أظهرت أن المقاطع
+           السميكة بلا أساور تنهار بإجهاد أقلّ مما تعطيه صيغة 2014.
+
+         • **نسبة التسليح الطولي ρw** تدخل صيغة القصّ للمقاطع بلا أساور —
+           جدول 22.5.5.1:  Vc = 0.66·λs·λ·ρw^⅓·√f′c·bw·d ≤ 0.42·λ·√f′c·bw·d
+           والأساس قليل التسليح، فمقاومته تنزل إلى نحو نصف ما تعطيه 2014.
+
+       ولأن ρw تعتمد على As وهي تعتمد على d، يُحسب **الانحناء داخل الحلقة**
+       لا بعدها — وإلا حُسب القصّ بنسبة تسليح لم تُحدَّد بعد.
+
+       و αs = 40 دائماً هنا: الأساس المنفرد عمودُه في وسطه، فمحيط القصّ الحرج
+       متّصل من جهاته الأربع مهما كان موقع العمود بالمبنى. (قِيَم 30 و20 تخصّ
+       عموداً عند حافّة بلاطة أو ركنها حيث يُبتر المحيط.) */
+    var h = 300, d, ok1, ok2, vu2, vc2, Vu1, phVc1, bo, it, lamS, rhoW;
     var Bmm = B * 1000, quN = qu / 1000;                   // N/mm²
     var beta = Math.max(c1, c2) / Math.min(c1, c2);
-    var alphaS = P.pos === 'corner' ? 20 : (P.pos === 'edge' ? 30 : 40);
-    for (it = 0; it < 80; it++) {
+    var alphaS = 40;
+    var lC = 0, Mu = 0, As = 0, AsMin = 0, AsUse = 0, Vc1 = 0;
+    for (it = 0; it < 120; it++) {
       d = h - cov - db;                                    // مم
       if (d < 50) { h += 50; continue; }
-      /* قصّ ثاقب (ثنائي الاتجاه) على محيط d/2 من وجه العمود — ACI §22.6 */
+      /* (أ) الانحناء عند وجه العمود — يسبق القصّ لأن ρw تدخل فيه */
+      lC = (Bmm - c1) / 2;                                 // ذراع الكابولي
+      Mu = quN * Bmm * lC * lC / 2;                        // N·mm
+      var Rn = Mu / (phiM * Bmm * d * d);
+      var rho = 0.85 * fc / fy * (1 - Math.sqrt(Math.max(0, 1 - 2 * Rn / (0.85 * fc))));
+      As = rho * Bmm * d;
+      AsMin = 0.0018 * Bmm * h;                            // ACI 318-19 جدول 24.4.3.2
+      AsUse = Math.max(As, AsMin);
+      rhoW = Math.min(0.02, AsUse / (Bmm * d));            // §22.5.5.1
+      lamS = Math.min(1.0, Math.sqrt(2.0 / (1.0 + d / 250.0)));   // §22.5.5.1.3
+      /* (ب) قصّ ثاقب على محيط d/2 من وجه العمود — ACI 318-19 جدول 22.6.5.2 */
       bo = 2 * (c1 + d) + 2 * (c2 + d);
       var Ap = (c1 + d) * (c2 + d);
       var Vu2 = quN * (Bmm * Bmm - Ap);                    // N
       vu2 = Vu2 / (bo * d);                                // MPa
-      vc2 = Math.min(0.33 * Math.sqrt(fc),
-                     0.17 * (1 + 2 / beta) * Math.sqrt(fc),
-                     0.083 * (2 + alphaS * d / bo) * Math.sqrt(fc));   // §22.6.5.2
+      vc2 = lamS * Math.min(0.33 * Math.sqrt(fc),
+                            0.17 * (1 + 2 / beta) * Math.sqrt(fc),
+                            0.083 * (2 + alphaS * d / bo) * Math.sqrt(fc));
       ok2 = vu2 <= phiV * vc2;
-      /* قصّ أحادي الاتجاه على مسافة d من وجه العمود — ACI §22.5 */
+      /* (ج) قصّ أحادي الاتجاه على مسافة d من وجه العمود — جدول 22.5.5.1
+             (Av < Av,min فالأساس بلا أساور قصّ) */
       var lOv = (Bmm - c1) / 2;
       Vu1 = quN * Bmm * Math.max(0, lOv - d);
-      phVc1 = phiV * 0.17 * Math.sqrt(fc) * Bmm * d;
+      var vc1 = Math.min(0.66 * lamS * Math.pow(rhoW, 1 / 3) * Math.sqrt(fc),
+                         0.42 * Math.sqrt(fc));            // §22.5.5.1.1 السقف
+      Vc1 = vc1 * Bmm * d;
+      phVc1 = phiV * Vc1;
       ok1 = Vu1 <= phVc1;
       if (ok1 && ok2) break;
       h += 50;
     }
-    steps.push(['٤', 'قصّ ثاقب (ثنائي الاتجاه)',
+    steps.push(['٤', 'معاملا نسخة 2019',
+      'lambda_s = sqrt(2/(1+d/250)) = ' + lamS.toFixed(4)
+      + '   ·   rho_w = As/(B*d) = ' + rhoW.toFixed(5),
+      lamS < 0.999 ? 'يُنقص المقاومة' : 'لا أثر (d صغير)',
+      'ACI 318-19 §22.5.5.1.3 — غير موجودَين في 318M-14']);
+    steps.push(['٥', 'قصّ ثاقب (ثنائي الاتجاه)',
       'vu = ' + vu2.toFixed(3) + ' <= phi*vc = ' + (phiV * vc2).toFixed(3) + ' MPa',
-      ok2 ? '✓ يمرّ' : '✗', 'ACI 318M §22.6.5.2 · φ = 0.75']);
-    steps.push(['٥', 'قصّ أحادي الاتجاه',
+      ok2 ? '✓ يمرّ' : '✗', 'ACI 318-19 جدول 22.6.5.2 · alpha_s = 40 · phi = 0.75']);
+    steps.push(['٦', 'قصّ أحادي الاتجاه (بلا أساور)',
       'Vu = ' + (Vu1 / 1000).toFixed(1) + ' <= phi*Vc = ' + (phVc1 / 1000).toFixed(1) + ' kN',
-      ok1 ? '✓ يمرّ' : '✗', 'ACI 318M §22.5.5.1']);
-    steps.push(['٦', 'السماكة المعتمَدة', 'h from both shear checks',
+      ok1 ? '✓ يمرّ' : '✗',
+      'ACI 318-19 جدول 22.5.5.1: Vc = 0.66·lambda_s·rho_w^(1/3)·sqrt(fc)·b·d']);
+    steps.push(['٧', 'السماكة المعتمَدة', 'h from both shear checks',
       h + ' mm  ·  d = ' + d.toFixed(0) + ' mm', 'تُزاد 50 مم حتى يمرّ الفحصان']);
-
-    /* (٤) الانحناء عند وجه العمود */
-    var lC = (Bmm - c1) / 2;                                // ذراع الكابولي
-    var Mu = quN * Bmm * lC * lC / 2;                       // N·mm
-    // حلّ As من Mu = φ·As·fy·(d − a/2) و a = As·fy/(0.85 f'c B)
-    var Rn = Mu / (phiM * Bmm * d * d);
-    var rho = 0.85 * fc / fy * (1 - Math.sqrt(Math.max(0, 1 - 2 * Rn / (0.85 * fc))));
-    var As = rho * Bmm * d;
-    var AsMin = 0.0018 * Bmm * h;                           // ACI §24.4.3.2 (fy 420)
-    var AsUse = Math.max(As, AsMin);
     var nBar = Math.max(4, Math.ceil(AsUse / (Math.PI * db * db / 4)));
     var spac = Math.min(450, Math.floor((Bmm - 2 * cov) / (nBar - 1)));
-    steps.push(['٧', 'عزم الانحناء عند وجه العمود',
+    steps.push(['٨', 'عزم الانحناء عند وجه العمود',
       'Mu = qu*B*l^2/2,  l = (B-c)/2 = ' + (lC / 1000).toFixed(3) + ' m',
-      (Mu / 1e6).toFixed(1) + ' kN·m', 'ACI 318M §13.3.2.1']);
-    steps.push(['٨', 'حديد الانحناء المطلوب', 'rho from Mu = phi*As*fy*(d - a/2)',
-      As.toFixed(0) + ' mm²', 'ACI 318M §22.2']);
-    steps.push(['٩', 'الحدّ الأدنى للحديد', 'As,min = 0.0018*B*h',
-      AsMin.toFixed(0) + ' mm²', 'ACI 318M §24.4.3.2']);
-    steps.push(['١٠', 'التسليح المعتمَد', nBar + 'D' + db + ' each way @ ' + spac + ' mm',
+      (Mu / 1e6).toFixed(1) + ' kN·m', 'ACI 318-19 §13.3.2.1']);
+    steps.push(['٩', 'حديد الانحناء المطلوب', 'rho from Mu = phi*As*fy*(d - a/2)',
+      As.toFixed(0) + ' mm²', 'ACI 318-19 §22.2 · phi = 0.90 (جدول 21.2.1)']);
+    steps.push(['١٠', 'الحدّ الأدنى للحديد', 'As,min = 0.0018*B*h',
+      AsMin.toFixed(0) + ' mm²', 'ACI 318-19 جدول 24.4.3.2 (fy = 420 MPa)']);
+    steps.push(['١١', 'التسليح المعتمَد', nBar + 'D' + db + ' each way @ ' + spac + ' mm',
       AsUse.toFixed(0) + ' mm²', AsMin > As ? 'حكَمَ الحدّ الأدنى' : 'حكَمَ الانحناء']);
 
     /* (٥) فحص ضغط التربة الفعلي بحمل الخدمة + اللامركزية */
     var e = P.Ps > 0 ? Math.sqrt(P.Mux * P.Mux + P.Muy * P.Muy) / P.Ps : 0;
     var qAct = P.Ps / (B * B) * (1 + 6 * e / B);
-    steps.push(['١١', 'ضغط التربة الفعلي الأقصى',
+    steps.push(['١٢', 'ضغط التربة الفعلي الأقصى',
       'q = P/B^2 * (1 + 6e/B),  e = ' + e.toFixed(3) + ' m',
       qAct.toFixed(1) + ' / ' + qa.toFixed(0) + ' kPa',
-      qAct <= qa * 1.001 ? '✓ يمرّ — ACI §13.3.1.1' : '✗ يتجاوز المسموح']);
+      qAct <= qa * 1.001 ? '✓ يمرّ — ACI 318-19 §13.3.1.1' : '✗ يتجاوز المسموح']);
 
     return { B: B, h: h, d: d, As: AsUse, AsMin: AsMin, nBar: nBar, db: db,
              spac: spac, qu: qu, qAct: qAct, e: e, vu2: vu2, vc2: phiV * vc2,

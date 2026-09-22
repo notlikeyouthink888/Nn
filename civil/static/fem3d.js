@@ -143,7 +143,10 @@
       shear: p.shear === undefined ? true : !!p.shear,
       w: {},                              // w[case] = {gx,gy,gz,w2,w3}
       kind: p.kind || 'beam', b: p.b || 0, h: p.h || 0,
-      mod: p.mod === undefined ? 1 : p.mod, tag: p.tag || '', sec: p.sec || ''
+      mod: p.mod === undefined ? 1 : p.mod, tag: p.tag || '', sec: p.sec || '',
+      // وسوم البنّاء (الاتجاه · خطّا الشبكة · الطابق) تُمرَّر كما هي ليصنّف
+      // بها العرضُ والتصميم لاحقاً؛ إسقاطها يفقد ربط العنصر بموقعه بالمبنى.
+      dir: p.dir || '', gi: p.gi, gj: p.gj, gk: p.gk
     };
     this.members.push(m); return this.members.length - 1;
   };

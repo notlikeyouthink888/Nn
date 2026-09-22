@@ -50,10 +50,19 @@
     var f = new Frame({ nu: c.nu || 0.2, cases: cases, gamma: c.gamma,
                         swCase: 'DEAD', swMult: 1.0 });
 
-    var nx = c.nx, ny = c.ny, ns = c.ns, sx = c.sx, sy = c.sy, hs = c.hs;
-    var i, j, k, Xs = [], Ys = [], Zs = [];
-    for (i = 0; i <= nx; i++) Xs.push(i * sx);
-    for (j = 0; j <= ny; j++) Ys.push(j * sy);
+    /* البحور: تُقبل قائمةً صريحة (spansX/spansY) وإلا فمتساوية nx×sx.
+       القائمة الصريحة هي ما يأتي من مخطط المستخدم، وبحورُه نادراً ما تتساوى. */
+    var SX = (c.spansX && c.spansX.length) ? c.spansX.slice() : null;
+    var SY = (c.spansY && c.spansY.length) ? c.spansY.slice() : null;
+    var nx = SX ? SX.length : c.nx, ny = SY ? SY.length : c.ny;
+    var ns = c.ns, sx = c.sx, sy = c.sy, hs = c.hs;
+    var i, j, k, Xs = [0], Ys = [0], Zs = [];
+    if (SX) for (i = 0; i < nx; i++) Xs.push(Xs[i] + SX[i]);
+    else { Xs = []; for (i = 0; i <= nx; i++) Xs.push(i * sx); SX = []; 
+           for (i = 0; i < nx; i++) SX.push(sx); }
+    if (SY) for (j = 0; j < ny; j++) Ys.push(Ys[j] + SY[j]);
+    else { Ys = []; for (j = 0; j <= ny; j++) Ys.push(j * sy); SY = [];
+           for (j = 0; j < ny; j++) SY.push(sy); }
     for (k = 0; k <= ns; k++) Zs.push(k * hs);
     var id = [];
     for (k = 0; k <= ns; k++) {
@@ -74,7 +83,10 @@
         rho: c.gamma, shear: c.shear !== false,
         sec: (kind === 'col' ? 'C' : 'B') + Math.round(b * 1000) + 'x' + Math.round(h * 1000) };
     }
-    var SB = sec(c.bb, c.bh, cb, 'beam'), SC = sec(c.cb, c.ch, cc, 'col');
+    // مقطعا الجسور قد يختلفان باتجاهَي X و Y (وهو الشائع بالتصميم الحقيقي)
+    var SBX = sec(c.bbX || c.bb, c.bhX || c.bh, cb, 'beam');
+    var SBY = sec(c.bbY || c.bb, c.bhY || c.bh, cb, 'beam');
+    var SB = SBX, SC = sec(c.cb, c.ch, cc, 'col');
     var rz = c.rz || 0;
     function mk(a, b2, S, extra) {
       var p = {}; for (var q in S) p[q] = S[q];
@@ -84,7 +96,7 @@
     }
 
     /* الأعمدة — الإزاحة الصلبة عند الطرفين = نصف عمق الجسر */
-    var offCol = c.bh / 2, offBeam = c.ch / 2;
+    var offCol = Math.max(c.bhX || c.bh, c.bhY || c.bh) / 2, offBeam = c.ch / 2;
     var cols = [];
     for (k = 0; k < ns; k++) for (j = 0; j <= ny; j++) for (i = 0; i <= nx; i++)
       cols.push(mk(id[k][j][i], id[k + 1][j][i], SC,
@@ -96,12 +108,12 @@
     var bx = [], by = [];
     for (k = 1; k <= ns; k++) {
       for (j = 0; j <= ny; j++) for (i = 0; i < nx; i++)
-        bx.push(mk(id[k][j][i], id[k][j][i + 1], SB,
+        bx.push(mk(id[k][j][i], id[k][j][i + 1], SBX,
           { offI: offBeam, offJ: offBeam,
             tag: 'B' + gridX(i) + gridY(j) + '–' + gridX(i + 1) + gridY(j) + ' · ط' + k,
             gi: i, gj: j, gk: k, dir: 'x' }));
       for (j = 0; j < ny; j++) for (i = 0; i <= nx; i++)
-        by.push(mk(id[k][j][i], id[k][j + 1][i], SB,
+        by.push(mk(id[k][j][i], id[k][j + 1][i], SBY,
           { offI: offBeam, offJ: offBeam,
             tag: 'B' + gridX(i) + gridY(j) + '–' + gridX(i) + gridY(j + 1) + ' · ط' + k,
             gi: i, gj: j, gk: k, dir: 'y' }));
@@ -130,10 +142,11 @@
       if (c.loadDist === 'uniform') {
         for (var ku = 1; ku <= ns; ku++)
           for (var ju = 0; ju < ny; ju++) for (var iu = 0; iu < nx; iu++) {
-            var S0 = Math.min(sx, sy), pk0 = w * S0 / 2;
+            var lxu = SX[iu], lyu = SY[ju];
+            var S0 = Math.min(lxu, lyu), pk0 = w * S0 / 2;
             // نفس الحمل الكلّي للوح، موزّعاً منتظماً على الجسور الأربعة
-            var wX = pk0 * (Math.max(sx, sy) === sx ? (sx - S0 / 2) / sx : (S0 / 2) / sx);
-            var wY = pk0 * (Math.max(sx, sy) === sy ? (sy - S0 / 2) / sy : (S0 / 2) / sy);
+            var wX = pk0 * (lxu >= lyu ? (lxu - S0 / 2) / lxu : (S0 / 2) / lxu);
+            var wY = pk0 * (lyu >= lxu ? (lyu - S0 / 2) / lyu : (S0 / 2) / lyu);
             [ju, ju + 1].forEach(function (jl) {
               f.udl(bx[(ku - 1) * (ny + 1) * nx + jl * nx + iu], cs, { gz: -wX }); });
             [iu, iu + 1].forEach(function (il) {
@@ -143,18 +156,19 @@
       }
       for (var kk = 1; kk <= ns; kk++)
         for (var jj = 0; jj < ny; jj++) for (var ii = 0; ii < nx; ii++) {
-          var P = panelLoads(sx, sy, w);
-          // الجسران باتجاه X على الخطين jj و jj+1 (طولهما sx)
+          var lx = SX[ii], ly = SY[jj];
+          var P = panelLoads(lx, ly, w);
+          // الجسران باتجاه X على الخطين jj و jj+1 (طولهما lx)
           [jj, jj + 1].forEach(function (jl) {
             var mi = bx[(kk - 1) * (ny + 1) * nx + jl * nx + ii];
-            P.onLen(sx).forEach(function (g) {
+            P.onLen(lx).forEach(function (g) {
               f.vdl(mi, cs, { a: g.a, b: g.b, gza: -g.wa, gzb: -g.wb });
             });
           });
-          // الجسران باتجاه Y على الخطين ii و ii+1 (طولهما sy)
+          // الجسران باتجاه Y على الخطين ii و ii+1 (طولهما ly)
           [ii, ii + 1].forEach(function (il) {
             var mi = by[(kk - 1) * ny * (nx + 1) + jj * (nx + 1) + il];
-            P.onLen(sy).forEach(function (g) {
+            P.onLen(ly).forEach(function (g) {
               f.vdl(mi, cs, { a: g.a, b: g.b, gza: -g.wa, gzb: -g.wb });
             });
           });
@@ -196,7 +210,8 @@
     if (c.eqX) lateral('EQX', c.eqX, 'x');
     if (c.eqY) lateral('EQY', c.eqY, 'y');
 
-    f.meta = { id: id, Xs: Xs, Ys: Ys, Zs: Zs, cfg: c, cols: cols, bx: bx, by: by,
+    f.meta = { id: id, Xs: Xs, Ys: Ys, Zs: Zs, SX: SX, SY: SY, nx: nx, ny: ny,
+               cfg: c, cols: cols, bx: bx, by: by, SBX: SBX, SBY: SBY,
                story: story, base: base, SB: SB, SC: SC, E: E,
                wDead: wDead, wLive: wLive, wSlab: wSlab, deriv: deriv,
                gridX: gridX, gridY: gridY };

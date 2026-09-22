@@ -85,10 +85,21 @@
     rn.setSize(w, h); host.appendChild(rn.domElement);
     var sc = new T.Scene(); sc.fog = new T.Fog(0x0a1020, 45, 220);
     var cam = new T.PerspectiveCamera(45, w / h, .1, 600);
+    // النموذج الإنشائي شاقوله Z، فيجب ضبط `up` **قبل** إنشاء OrbitControls:
+    // التحكّم يحسب رباعيّ الدوران من `object.up` مرّةً واحدةً عند الإنشاء، فلو
+    // ضُبط بعده لظلّ يدور حول Y بينما يُرسم المشهد حول Z — فيبدو الدوران
+    // مقيَّداً ومقلوباً ولا تستطيع تحريك الكاميرا بحرّية.
+    cam.up.set(0, 0, 1);
     sc.add(new T.HemisphereLight(0xcfe4ff, 0x1a2338, 1.1));
     var dl = new T.DirectionalLight(0xffffff, .6); dl.position.set(14, -18, 26); sc.add(dl);
     var ctl = null;
-    try { ctl = new T.OrbitControls(cam, rn.domElement); ctl.enableDamping = true; } catch (e) {}
+    try {
+      ctl = new T.OrbitControls(cam, rn.domElement);
+      ctl.enableDamping = true; ctl.dampingFactor = .08;
+      ctl.rotateSpeed = .85; ctl.zoomSpeed = .9; ctl.panSpeed = .8;
+      ctl.screenSpacePanning = true;     // السحب يزيح بمستوى الشاشة لا بمستوى الأرض
+      ctl.minDistance = .5;
+    } catch (e) {}
     var G = {}, gn = ['frame', 'diag', 'def', 'slab', 'axes', 'sup', 'lab', 'found'];
     gn.forEach(function (n) { G[n] = new T.Group(); sc.add(G[n]); });
     var picks = [], raf = 0, FR = null, rad = 10, R = 10, sel = -1, touched = false, dead = false;
@@ -189,8 +200,12 @@
       var fh = 2 * Math.atan(Math.tan(fv / 2) * cam.aspect);
       var d = rad / Math.sin(Math.min(fv, fh) / 2);
       cam.position.copy(new T.Vector3(.86, -1, .58).normalize().multiplyScalar(d));
-      cam.up.set(0, 0, 1); cam.lookAt(0, 0, 0);
-      if (ctl) { ctl.target.set(0, 0, 0); ctl.update(); }
+      cam.lookAt(0, 0, 0);
+      if (ctl) {
+        ctl.target.set(0, 0, 0);
+        ctl.maxDistance = d * 6;          // حدٌّ بعيد يمنع ضياع المجسّم بالتصغير
+        ctl.update();
+      }
     }
 
     /* المخطط: يُرسم بمقياس **مُعلَن** (وحدة لكل متر) لا بمعامل مجهول. */

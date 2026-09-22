@@ -10,6 +10,19 @@
 
   var VP = null, FR = null, FTS = null, COMBOS = null, SEL = -1;
   var DK = 'M33', SRC = 'env', SOLID = true, USCALE = 0;
+  // وضع المصدر: 'manual' مدخلات حرّة · 'project' مشتقّ من معالج المشروع.
+  // الصفحتان تتشاركان نفس البنية والمعرّفات، ولا تُركَّب إلا واحدة في كل وقت.
+  var MODE = 'manual', PROJ = null;
+
+  /** نتيجة معالج المشروع. معرَّفة في app.js بـ `let`، و`let` على مستوى
+      السكربت الكلاسيكي **لا تصير خاصيّةً على window** بل تسكن البيئةَ
+      المعجميّة العامّة — فـ `window.WZ` غير معرَّف بينما `WZ` المجرّدة تُحلّ
+      عبر سلسلة النطاقات. و`typeof` قد ترمي داخل المنطقة الميتة قبل تنفيذ
+      app.js، فيلزم الحارس. */
+  function wiz() {
+    try { return (typeof WZ !== 'undefined' && WZ) ? WZ : null; }
+    catch (e) { return null; }
+  }
 
   function $id(i) { return document.getElementById(i); }
   function num(i) { var e = $id(i); return e ? parseFloat(e.value) : 0; }
@@ -32,6 +45,9 @@
       + (tone === 'ok' ? 'var(--ok)' : tone === 'bad' ? 'var(--bad)'
         : tone === 'warn' ? 'var(--warn)' : '#fff') + '">' + v + '</div></div>';
   }
+  /** قيمة مركّبة مثل «300×600 مم»: يجب تثبيتها LTR وإلا عكسها اتجاه الصفحة
+      فقُرئت 600×300 — وهو خطأ يقرأه المهندس رقماً لا تنسيقاً. */
+  function ltr(v) { return '<span dir="ltr" style="display:inline-block">' + v + '</span>'; }
   function tbl(head, rows, cls) {
     return '<div class="' + (cls || 'sc-wrap') + '"><table class="dt"><thead><tr>'
       + head.map(function (h) { return '<th>' + h + '</th>'; }).join('')
@@ -43,6 +59,16 @@
 
   /* ─────────────── المدخلات ─────────────── */
   function cfg() {
+    if (MODE === 'project') {
+      // البنية والأحمال من المعالج، وخيارات **التحليل** وحدها من المستخدم
+      var b = global.FEM3DBRIDGE && global.FEM3DBRIDGE.fromWizard(wiz(), {
+        cracked: chk('f_cr'), shear: chk('f_sh'), diaph: chk('f_di'),
+        base: chk('f_pin') ? 'pin' : 'fix', rz: num('f_rz')
+      });
+      PROJ = b;
+      if (!b) throw new Error('شغّل معالج المشروع أولاً ثم عُد لهذه الصفحة');
+      return b.cfg;
+    }
     var fc = num('f_fc') || 28;
     return {
       nx: Math.max(1, Math.min(8, Math.round(num('f_nx')))),
@@ -60,10 +86,51 @@
     };
   }
 
+  /* لوحة تبويب ① بوضع المشروع: بنيةٌ مقروءة من المعالج + خيارات التحليل. */
+  function projPanel() {
+    var ok = !!(wiz() && wiz().grid);
+    return '<div class="grid g2">'
+      + '<div class="card" style="grid-column:1/-1"><h3>مصدر النموذج — معالج المشروع</h3>'
+      + (ok
+        ? '<div id="f_psum" style="font-size:12.5px;color:var(--mut)">جارٍ القراءة…</div>'
+        : '<p style="font-size:13px;color:var(--warn);line-height:1.9;margin:0 0 10px">'
+          + '⚠️ لم يُشغَّل معالج المشروع بعد. هذه الصفحة تقرأ منه البنية والأحمال '
+          + 'ولا تغيّر فيه شيئاً — شغّله أولاً ثم عُد.</p>'
+          + '<button class="btn" onclick="FEM3D.page.viaWizard()" style="background:var(--acc);'
+          + 'color:#04121f;font-weight:700;border:0;padding:8px 18px;border-radius:9px;'
+          + 'cursor:pointer">↗ شغّل المعالج ثم عُد تلقائياً</button>')
+      + '</div>'
+      + '<div class="card"><h3>خيارات التحليل</h3>'
+      + '<p style="font-size:12px;color:var(--mut);margin:0 0 10px;line-height:1.75">'
+      + 'هذه خيارات <b>النمذجة</b> لا بيانات المشروع — البنية والمقاطع والأحمال '
+      + 'تأتي من المعالج كما هي.</p>'
+      + '<div class="bar">' + cbx('تشقّق ACI §6.6.3.1.1', 'f_cr', true)
+      + cbx('تشوّه القصّ Timoshenko', 'f_sh', true) + '</div>'
+      + '<div class="bar">' + cbx('ديافرام صلب', 'f_di', true)
+      + cbx('قاعدة مفصلية', 'f_pin', false) + '</div>'
+      + '<div class="f" style="margin-top:8px">'
+      + fld('معامل المنطقة الصلبة', 'f_rz', 0, .1, '0 – 1', 0) + '</div>'
+      + '<div class="bar" style="margin-top:4px">'
+      + "<button onclick=\"FEM3D.page.rz(0)\">0</button>"
+      + "<button onclick=\"FEM3D.page.rz(0.5)\">0.5</button>"
+      + "<button onclick=\"FEM3D.page.rz(1)\">1.0</button></div>"
+      + '<div class="bar" style="margin-top:12px">'
+      + '<button onclick="FEM3D.page.run()" style="background:var(--acc);color:#04121f;'
+      + 'font-weight:700;border:0;padding:9px 20px;border-radius:9px;cursor:pointer;'
+      + 'font-size:13px">▶ حلّل المشروع</button>'
+      + '<span id="f_stat" style="font-size:12px;color:var(--mut)"></span></div></div>'
+      + '<div class="card" id="f_der" style="grid-column:1/-1"><h3>سلسلة اشتقاق الأحمال</h3>'
+      + '<div style="color:var(--mut);font-size:12px">تظهر بعد الحلّ.</div></div>'
+      + '<div class="card" id="f_cmp" style="grid-column:1/-1"><h3>مقارنة العزوم</h3>'
+      + '<div style="color:var(--mut);font-size:12px">تظهر بعد الحلّ.</div></div>'
+      + '</div>';
+  }
+
   function html() {
     return '<div id="fem">'
       + '<div class="ft">'
-      + '<button data-t="mdl" class="on">① النموذج والأحمال</button>'
+      + '<button data-t="mdl" class="on">'
+      + (MODE === 'project' ? '① المشروع وخيارات التحليل' : '① النموذج والأحمال') + '</button>'
       + '<button data-t="vw">② المجسّم والمخططات</button>'
       + '<button data-t="res">③ النتائج</button>'
       + '<button data-t="fnd">④ الأساسات</button>'
@@ -71,7 +138,9 @@
       + '<button data-t="ver">⑥ التحقّق العلمي</button></div>'
 
       /* ① */
-      + '<div class="fp on" data-p="mdl"><div class="grid g2">'
+      + (MODE === 'project'
+        ? '<div class="fp on" data-p="mdl">' + projPanel() + '</div>'
+        : '<div class="fp on" data-p="mdl"><div class="grid g2">'
       + '<div class="card"><h3>الشبكة والطوابق</h3><div class="f">'
       + fld('بحور X', 'f_nx', 3, 1, '', 1) + fld('المسافة X', 'f_sx', 6.0, .25, 'م')
       + fld('بحور Y', 'f_ny', 2, 1, '', 1) + fld('المسافة Y', 'f_sy', 5.0, .25, 'م')
@@ -117,7 +186,7 @@
       + '<div class="card" id="f_der"><h3>سلسلة اشتقاق الأحمال</h3>'
       + '<div style="color:var(--mut);font-size:12px">تظهر بعد الحلّ — كل حمل يصل جسراً '
       + 'مع الخطوة التي أنتجته.</div></div>'
-      + '</div></div>'
+      + '</div></div>')
 
       /* ② */
       + '<div class="fp" data-p="vw">'
@@ -263,7 +332,7 @@
     });
     return '<h3>' + esc(m.tag || ('#' + k)) + '</h3>'
       + '<div class="sel">' + (m.kind === 'col' ? 'عمود' : 'جسر') + ' · مقطع '
-      + Math.round(m.b * 1000) + '×' + Math.round(m.h * 1000) + ' مم · الطول '
+      + ltr(Math.round(m.b * 1000) + '×' + Math.round(m.h * 1000)) + ' مم · الطول '
       + nf(c.L, 3) + ' م · البحر الصافي ' + nf(xj - xi, 3) + ' م · '
       + 'Φ₂ = ' + nf(c.phi2, 4) + ' (تشوّه القصّ) · معامل التشقّق ' + nf(m.mod, 2) + '</div>'
       + '<div class="grid g4" style="margin-bottom:11px">'
@@ -397,9 +466,9 @@
         d.pos === 'corner' ? 'ركني' : d.pos === 'edge' ? 'طرفي' : 'داخلي',
         nf(d.Ps, 0), nf(d.Pu, 0),
         '<span style="font-size:10.5px;color:var(--mut)">' + esc(d.combo) + '</span>',
-        nf(d.B, 2) + ' × ' + nf(d.B, 2), d.h + ' مم',
-        nf(d.qAct, 1) + ' / ' + nf(c.qa, 0),
-        d.nBar + 'Ø' + d.db + ' @ ' + d.spac,
+        ltr(nf(d.B, 2) + ' × ' + nf(d.B, 2)), d.h + ' مم',
+        ltr(nf(d.qAct, 1) + ' / ' + nf(c.qa, 0)),
+        ltr(d.nBar + 'Ø' + d.db + ' @ ' + d.spac),
         d.ok ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'];
     });
     var tot = FTS.reduce(function (a, d) { return a + d.vol; }, 0);
@@ -459,8 +528,9 @@
     var pk = FR.peak(k, 'M33', cs);
 
     H.push('<div class="sel">📐 <b>' + esc(m.tag || ('#' + k)) + '</b> — '
-      + (m.kind === 'col' ? 'عمود' : 'جسر') + ' · مقطع ' + Math.round(m.b * 1000) + '×'
-      + Math.round(m.h * 1000) + ' مم · L = ' + nf(L, 3) + ' م · العقدتان ' + m.i + ' و ' + m.j
+      + (m.kind === 'col' ? 'عمود' : 'جسر') + ' · مقطع '
+      + ltr(Math.round(m.b * 1000) + '×' + Math.round(m.h * 1000))
+      + ' مم · L = ' + nf(L, 3) + ' م · العقدتان ' + m.i + ' و ' + m.j
       + ' · الحالة المعروضة: <b>' + cs + '</b></div>');
 
     H.push('<div class="stp"><h4>الخطوة ١ — خواصّ المقطع والمادة</h4>'
@@ -658,8 +728,112 @@
       + 'والصفوف المعلَّمة <b>ℹ</b> ليست اختباراً بل قياساً لأثر كل ظاهرة على النتيجة.</p></div>';
   }
 
+  /* ملخّص ما قُرئ من المعالج — بأرقامه، ليطابقه المستخدم بنفسه */
+  function projSummary() {
+    if (!PROJ) return '';
+    var c = PROJ.cfg, sq = PROJ.seismic || {};
+    var src = PROJ.source === 'frame' || PROJ.source === 'plan';
+    return '<div class="grid g4" style="margin-bottom:11px">'
+      + kpi('مصدر الشبكة', src ? 'مخطط المستخدم' : 'تلقائية', src ? 'ok' : 'warn')
+      + kpi('البحور', ltr(c.nx + ' × ' + c.ny))
+      + kpi('الطوابق', ltr(c.ns + ' × ' + nf(c.hs, 2)) + ' م')
+      + kpi('مساحة الطابق', nf((PROJ.wz.footprint || 0), 1) + ' م²')
+      + kpi('جسر X', ltr(Math.round(c.bbX * 1000) + '×' + Math.round(c.bhX * 1000)) + ' مم')
+      + kpi('جسر Y', ltr(Math.round(c.bbY * 1000) + '×' + Math.round(c.bhY * 1000)) + ' مم')
+      + kpi('العمود', ltr(Math.round(c.cb * 1000) + '×' + Math.round(c.ch * 1000)) + ' مم')
+      + kpi('قصّ القاعدة V', nf(c.eqX, 1) + ' kN')
+      + '</div>'
+      + '<div style="font-size:12px;color:var(--mut);line-height:1.8">'
+      + 'بحور X: <b style="color:#e6edf7">'
+      + (c.spansX || []).map(function (v) { return nf(v, 2); }).join(' · ') + '</b> م<br>'
+      + 'بحور Y: <b style="color:#e6edf7">'
+      + (c.spansY || []).map(function (v) { return nf(v, 2); }).join(' · ') + '</b> م<br>'
+      + 'f′c = ' + nf(c.fc, 0) + ' MPa · fy = ' + nf(c.fy, 0) + ' MPa · '
+      + 'تربة ' + nf(c.qa, 0) + ' kPa · ' + esc(sq.city || '') + '</div>';
+  }
+
+  /* مقارنة عزوم المحرّك المصفوفي بعزوم المعالج المبسّطة — وهي جوهر الدمج:
+     تُظهر بالأرقام ما الذي يضيفه التحليل الفراغي الكامل. */
+  function cmpHTML() {
+    if (!PROJ || !global.FEM3DBRIDGE || !FR) return '';
+    var r = global.FEM3DBRIDGE.compareMoments(PROJ.wz, FR, COMBOS);
+    if (!r || !r.length) return '';
+    var rows = r.map(function (x) {
+      var wz = Math.max(Math.abs(x.wzMax), Math.abs(x.wzMin));
+      var dFace = x.cMax > 1e-6 ? (1 - x.fMax / x.cMax) * 100 : 0;
+      var dd = wz > 1e-6 ? (x.fMax / wz - 1) * 100 : 0;
+      return ['جسور ' + x.dir.toUpperCase() + ' — ' + ltr(x.b + '×' + x.h) + ' مم'
+        + ' <span style="color:var(--mut);font-size:11px">(' + x.nb + ' عنصر)</span>',
+        nf(wz, 1), nf(x.cMax, 1), nf(x.fMax, 1),
+        '<span style="color:var(--mut)">−' + nf(dFace, 1) + '%</span>',
+        '<b style="color:' + (dd > 0 ? 'var(--warn)' : 'var(--ok)') + '">'
+          + (dd > 0 ? '+' : '') + nf(dd, 1) + '%</b>',
+        '<span style="font-size:11px;color:var(--mut)">' + esc(x.tag) + '</span>'];
+    });
+    // فحص حفظ الحمل: مجموع ما نُقل للجسور = حمل البلاطة الكلّي
+    var A = 0, SX = FR.meta.SX, SY = FR.meta.SY, i, j;
+    for (i = 0; i < SX.length; i++) for (j = 0; j < SY.length; j++) A += SX[i] * SY[j];
+    var expect = (PROJ.cfg.sdl + PROJ.cfg.ll) * A * PROJ.cfg.ns;
+    var got = 0;
+    ['DEAD', 'LIVE'].forEach(function (cs) {
+      FR.members.forEach(function (m, k) {
+        if (m.kind !== 'beam') return;
+        (FR.wloc[cs][k] || []).forEach(function (g) {
+          got += (Math.abs(g.w2a || 0) + Math.abs(g.w2b || 0)) / 2 * (g.b - g.a); });
+      });
+    });
+    // وزن الجسور الذاتي داخل got، فيُطرح للمقارنة مع حمل البلاطة وحده
+    var swB = 0;
+    FR.members.forEach(function (m, k) {
+      if (m.kind === 'beam') swB += m.rho * m.A * FR.cache[k].L; });
+    var net = got - swB, err = expect > 0 ? Math.abs(net - expect) / expect : 0;
+
+    return '<h3>مقارنة العزوم — المعالج مقابل التحليل الفراغي</h3>'
+      + '<p style="font-size:12.5px;color:var(--mut);line-height:1.9;margin:0 0 10px">'
+      + 'معالج المشروع يصمّم بـ<b> معاملات ACI التقريبية</b> للجائز المستمر، وهي '
+      + 'تُحمِّل الجسر <b>شريحةً كاملة</b> من البلاطة وتفترض أن الأعمدة لا تشارك '
+      + 'بالمقاومة — وهذا مقصودٌ للتصميم السريع وللجانب الآمن. '
+      + 'والتحليل هنا يحلّ الإطار الفراغي بما فيه.</p>'
+      + tbl(['المجموعة', 'المعالج (kN·m)', 'التحليل عند المحور', 'التحليل عند الوجه',
+             'أثر قراءة الوجه', 'الفرق النهائي', 'العنصر الحاكم'], rows, '')
+      + '<div style="margin-top:12px;padding:11px 13px;background:#0a1020;border:1px solid '
+      + 'var(--line);border-radius:9px;font-size:12px;color:var(--mut);line-height:1.9">'
+      + '<b style="color:#e6edf7">الفرق ليس رقماً واحداً بل ثلاثة أسباب معلومة:</b><br>'
+      + '<b>١) توزيع الحمل.</b> البلاطة تنقل حملها بخطوط 45°، فالجسر الطويل يأخذ '
+      + 'شبه منحرف والقصير مثلثاً — لا شريحةً مستطيلة كاملة. مجموع ما نُقل هنا '
+      + '<b style="color:' + (err < 1e-9 ? 'var(--ok)' : 'var(--bad)') + '">'
+      + nf(net, 1) + ' kN</b> مقابل حمل البلاطة الكلّي ' + nf(expect, 1) + ' kN '
+      + '(خطأ ' + err.toExponential(1) + ') — <b>فلا حمل ضاع</b>، وإنما وُزّع كما '
+      + 'ينتقل فعلاً.<br>'
+      + '<b>٢) إطاريّة الوصلة.</b> الأعمدة تقاوم مع الجسور فتتقاسم العزم، '
+      + 'بينما معاملات ACI تعطي الجسر كل شيء.<br>'
+      + '<b>٣) القراءة عند وجه الركيزة</b> بدل محورها — <b>ACI 318M §6.3.2</b> '
+      + '(العمود المستقلّ بالجدول أعلاه).<br><br>'
+      + '<b style="color:#fbbf24">كيف تقرأ هذا؟</b> المعالج <b>أكثر تحفّظاً</b>، '
+      + 'وتصميمُه يبقى صالحاً وآمناً. وهذه الصفحة تُريك أين يقع التحفّظ وبكم، '
+      + 'ليكون القرار بيدك لا بيد افتراضٍ مخفيّ. ولا تُعتمد النتيجة الأقلّ إلا '
+      + 'بتدقيق مهندس مُجاز.</div>';
+  }
+
   function derivHTML() {
     if (!FR) return '';
+    if (MODE === 'project' && PROJ) {
+      return '<h3>سلسلة اشتقاق الأحمال — من المعالج إلى النموذج</h3>'
+        + tbl(['البند', 'المصدر والمعادلة', 'القيمة', 'الوحدة', 'الملاحظة'],
+            PROJ.deriv.map(function (r) {
+              return ['<b>' + esc(r[0]) + '</b>',
+                '<span dir="auto" style="font-size:11.5px;color:#7dd3fc">' + esc(r[1]) + '</span>',
+                '<b>' + esc(r[2]) + '</b>', esc(r[3]),
+                '<span style="font-size:11px;color:var(--mut)">' + esc(r[4]) + '</span>'];
+            }), '')
+        + '<div style="margin-top:12px;padding:11px 13px;background:#0a1020;border:1px solid '
+        + 'var(--line);border-radius:9px;font-size:12px;color:var(--mut);line-height:1.85">'
+        + '<b style="color:#e6edf7">لماذا سماكة البلاطة صفر هنا؟</b><br>'
+        + 'لأن وزنها الذاتي محسوبٌ في المعالج <b>لنوعها الحقيقي</b> ومُدرَجٌ في '
+        + '«الحمل الميت على البلاطة». إعادةُ حسابه من γ·t تضاعفه، وتخطئ أصلاً مع '
+        + 'البلاطة المفرّغة بالبلوك. وكذلك طُرح بدلُ الجسور التقديري لأن المحرّك '
+        + 'يحسب وزن كل جسر وعمود من مقطعه الفعلي.</div>';
+    }
     var d = FR.meta.deriv, c = FR.meta.cfg;
     var S = Math.min(c.sx, c.sy);
     return '<h3>سلسلة اشتقاق الأحمال</h3>'
@@ -731,6 +905,10 @@
         $id('f_res').innerHTML = resHTML();
         $id('f_fndp').innerHTML = fndHTML();
         $id('f_der').innerHTML = derivHTML();
+        if (MODE === 'project') {
+          var ps = $id('f_psum'); if (ps) ps.innerHTML = projSummary();
+          var cp = $id('f_cmp'); if (cp) cp.innerHTML = cmpHTML();
+        }
         $id('f_prf').innerHTML = proofHTML(-1);
         if (st) st.innerHTML = '<span class="ok">✓ ' + FR.members.length + ' عنصر · '
           + FR.neq + ' DOF · ' + FR.cases.length + ' حالة · ' + COMBOS.length + ' تركيب · '
@@ -762,6 +940,18 @@
       if (!fromView) tab('vw');
     },
     goProof: function () { tab('prf'); },
+
+    /** يفتح معالج المشروع (وهو يُشغّل نفسه عند فتحه) ثم يعود إلى هنا ما إن
+        تجهز نتيجتُه. مجرّد تنقّل — لا يكتب في المعالج شيئاً. */
+    viaWizard: function () {
+      if (typeof global.go !== 'function') return;
+      global.go('wizard');
+      var t0 = Date.now();
+      var iv = setInterval(function () {
+        if (wiz()) { clearInterval(iv); global.go('femproj'); }
+        else if (Date.now() - t0 > 90000) clearInterval(iv);
+      }, 300);
+    },
 
     rz: function (v) {
       var e = $id('f_rz'); if (e) e.value = v;
@@ -829,4 +1019,14 @@
   };
 
   F.page = page;
+
+  /* الصفحة الثانية: نفس التبويبات والمحرّك، لكن مصدرها معالج المشروع.
+     تتشارك مع الأولى الحالةَ والمعرّفات — ولا تُركَّب إلا واحدة في كل وقت. */
+  F.projPage = {
+    html: function () { MODE = 'project'; return html(); },
+    init: function () { MODE = 'project'; page.init(); },
+    frame: page.frame
+  };
+  var _mh = page.html;
+  page.html = function () { MODE = 'manual'; return _mh(); };
 })(typeof window !== 'undefined' ? window : globalThis);

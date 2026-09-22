@@ -3484,9 +3484,19 @@ PAGES.fem = {
   init: () => { if (window.FEM3D) FEM3D.page.init(); }
 };
 
+/* --- تحليل المشروع: نفس محرّك fem3d لكن بنيتُه من معالج المشروع (قراءةً فقط) --- */
+PAGES.femproj = {
+  ic: '🏗️', name: 'تحليل المشروع', ttl: 'التحليل الإنشائي لمشروعك',
+  sub: 'الإطار الفراغي لمشروعك كما بناه المعالج — ببحوره ومقاطعه وأحماله الحقيقية · عزوم كاملة وتراكيب ACI وأساسات',
+  desc: 'يحلّل مشروع المعالج بالمصفوفة الكاملة بدل المعاملات التقريبية',
+  html: () => (window.FEM3D && FEM3D.projPage ? FEM3D.projPage.html()
+    : `<div class="card">وحدة التحليل غير محمَّلة.</div>`),
+  init: () => { if (window.FEM3D && FEM3D.projPage) FEM3D.projPage.init(); }
+};
+
 /* ------------------------- الترتيب والمجموعات ---------------------------- */
 const ORDER = [
-  ['المشروع', ['wizard', 'room', 'bbs', 'detail66', 'projects']],
+  ['المشروع', ['wizard', 'femproj', 'room', 'bbs', 'detail66', 'projects']],
   ['التحليل الإنشائي', ['fem']],
   ['ما تحت الصفر', ['survey', 'earth', 'soil']],
   ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],

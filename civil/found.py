@@ -647,7 +647,7 @@ def pile_case(p):
                 bear_thk=bear_thk, weak_below=weak_below,
                 sulfate_note=('الماء والأملاح يوجبان خلطة مقاومة للكبريتات: '
                               'صنف تعرّض S2 على الأقل — f\'c لا تقل عن 31 ميغا و w/cm لا تزيد على 0.45 '
-                              'وإسمنت مقاوم نوع V (جدول ACI 318M-14 رقم 19.3.2.1)')
+                              'وإسمنت مقاوم نوع V (جدول ACI 318-19 رقم 19.3.2.1)')
                              if sulfate else '',
                 verdict=('الركائز لازمة: ' + ' · '.join(trig)) if need
                         else ('لا شرط من شروط الركائز الستة مشتعل — الأساس السطحي '
@@ -670,12 +670,15 @@ def raft(p):
     A = Lx * Ly
     q_serv = total / A
     q_u = 1.45 * q_serv                            # ≈ 1.2D+1.6L مكافئ
-    h = 400.0; cov = 75.0
+    h = 400.0; cov = 75.0; ls = 1.0
     for _ in range(80):
         d = h - cov - 20.0
+        ls = E.lambda_s(d)                     # ACI 318-19 §22.5.5.1.3 — أثر الحجم
         b0 = 2 * (cx + d) + 2 * (cy + d)
         beta = max(cx, cy) / min(cx, cy)
-        vc = min(0.33, 0.17 * (1 + 2 / beta), 0.083 * (2 + 40 * d / b0)) * math.sqrt(fc)
+        # جدول 22.6.5.2 — و αs = 40 للعمود الداخلي (المحيط مغلق من جهاته الأربع)
+        vc = ls * min(0.33, 0.17 * (1 + 2 / beta),
+                      0.083 * (2 + 40 * d / b0)) * math.sqrt(fc)
         phiVc = 0.75 * vc * b0 * d / 1000.0
         Vu = Pmax - q_u * (cx + d) * (cy + d) / 1e6
         if phiVc >= Vu and h >= 300:
@@ -693,6 +696,7 @@ def raft(p):
         return dict(As=As, db=b['db'], s=b['s'], label=b['label'])
     return dict(h=h, d=d, A=A, Lx=Lx, Ly=Ly, q_serv=q_serv, q_u=q_u, qa=qa,
                 ok_press=q_serv <= qa, punch_ok=phiVc >= Vu, phiVc=phiVc, Vu=Vu,
+                lambda_s=ls, cover=cov, clause='ACI 318-19 جدول 22.6.5.2 · §22.5.5.1.3',
                 Mu_top=Mu, top=bars(top['As_req']), bottom=bars(bot['As_req']),
                 As_min=As_min, sw=sw, conc=A * h / 1000.0,
                 steel=A * h / 1000.0 * 110.0 / 1000.0,

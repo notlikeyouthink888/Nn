@@ -31,7 +31,7 @@ const S = (l, id, opts, v) =>
 const C = (l, id, v) => `<div style="align-self:end"><label>&nbsp;</label>
    <label style="color:var(--tx);font-size:13px"><input type="checkbox" id="${id}" ${v ? 'checked' : ''}
    style="width:auto;margin-left:6px">${l}</label></div>`;
-// أصناف التعرّض الأربعة بجدول ACI 318M-14 رقم 19.3.1.1 — فئة لكل قائمة.
+// أصناف التعرّض الأربعة بجدول ACI 318-19 رقم 19.3.1.1 — فئة لكل قائمة.
 const EXP_CATS = [['F', 'التجمّد والذوبان'], ['S', 'الكبريتات بالتربة والماء'],
                   ['W', 'ملامسة الماء'], ['C', 'حماية حديد التسليح']];
 const expSelects = () => EXP_CATS.map(([p, nm], i) => {
@@ -126,16 +126,16 @@ const PAGES = {};
 
 PAGES.home = {
   ic: '🏠', name: 'الرئيسية', ttl: 'منصة التحليل والتصميم الإنشائي',
-  sub: 'حسابات مطابقة لـ ACI 318M-14 والكود العراقي للأحمال والقوى — تحليل مصفوفي كامل',
+  sub: 'حسابات مطابقة لـ ACI 318-19 والكود العراقي للأحمال والقوى — تحليل مصفوفي كامل',
   html: () => `<div class="hero"><h2>مكتب هندسي رقمي متكامل 🏗️</h2>
     <p>تحليل إنشائي بطريقة الصلابة المباشرة (Direct Stiffness) للجسور والإطارات، وتصميم خرساني مسلح
-    وفق <b>ACI 318M-14</b>، وأحمال حية وزلزالية ورياح وفق <b>الكود العراقي للأحمال والقوى</b>،
+    وفق <b>ACI 318-19</b>، وأحمال حية وزلزالية ورياح وفق <b>الكود العراقي للأحمال والقوى</b>،
     مع فحص شعاعي (X-Ray) لكامل الهيكل يُظهر نسبة الإجهاد في كل عنصر.</p></div>
   <div class="grid g3" style="margin-top:16px">${Object.entries(PAGES).filter(([k]) => k !== 'home')
     .map(([k, p]) => `<div class="feat" onclick="go('${k}')"><div class="ic">${p.ic}</div>
       <div><b>${p.name}</b><span>${p.desc || p.sub}</span></div></div>`).join('')}</div>
   <div class="grid g4" style="margin-top:16px">
-    ${kpi('طريقة التحليل', 'Stiffness')}${kpi('كود التصميم', 'ACI 318M-14')}
+    ${kpi('طريقة التحليل', 'Stiffness')}${kpi('كود التصميم', 'ACI 318-19')}
     ${kpi('كود الأحمال', 'العراقي')}${kpi('الوحدات', 'SI · kN·m')}</div>`,
   init: () => {}
 };
@@ -158,7 +158,7 @@ PAGES.loads = {
       ${table(['نوع الإشغال', 'kN/m²'], META.live.map(x => [x.name, nf(x.v, 1)]))}</div>
     <div class="card"><h3>كثافات المواد</h3>
       ${table(['المادة', 'kN/m³'], META.dens.map(x => [x.name, nf(x.v, 1)]))}</div>
-    <div class="card"><h3>تراكيب الأحمال — ACI 318M-14 / ASCE 7</h3>
+    <div class="card"><h3>تراكيب الأحمال — ACI 318-19 / ASCE 7</h3>
       ${table(['#', 'التركيب'], [[1, 'U = 1.4D'], [2, 'U = 1.2D + 1.6L + 0.5(Lr أو S)'],
         [3, 'U = 1.2D + 1.6(Lr أو S) + (1.0L أو 0.5W)'], [4, 'U = 1.2D + 1.0W + 1.0L + 0.5Lr'],
         [5, 'U = 1.2D + 1.0E + 1.0L'], [6, 'U = 0.9D + 1.0W'], [7, 'U = 0.9D + 1.0E']])}
@@ -272,7 +272,7 @@ function beamElevation(r) {
 }
 PAGES.beam = {
   ic: '📏', name: 'تحليل وتصميم الجسور', ttl: 'الجسور الخرسانية — تحليل وتصميم',
-  sub: 'تحليل مصفوفي للجسور المستمرة مع تحميل نمطي (Pattern Loading) وتصميم ACI 318M-14',
+  sub: 'تحليل مصفوفي للجسور المستمرة مع تحميل نمطي (Pattern Loading) وتصميم ACI 318-19',
   desc: 'عزوم وقصّ وهطول + تسليح كامل',
   html: () => `<div class="grid g2">
     <div class="card"><h3>الفضاءات والأحمال</h3>
@@ -335,7 +335,7 @@ PAGES.beam = {
 /* ------------------------------- الأعمدة -------------------------------- */
 PAGES.column = {
   ic: '🏛️', name: 'تصميم الأعمدة', ttl: 'الأعمدة الخرسانية — منحني التفاعل',
-  sub: 'منحني تفاعل بالتوافق الانفعالي (Strain Compatibility) + فحص النحافة ACI 318M-14',
+  sub: 'منحني تفاعل بالتوافق الانفعالي (Strain Compatibility) + فحص النحافة ACI 318-19',
   desc: 'منحني P–M وفحص النحافة والتطويق',
   html: () => `<div class="grid g2"><div class="card"><h3>المقطع والتسليح</h3><div class="f">
       ${F('العرض b', 'c_b', 400, 10, 'مم')}${F('العمق h', 'c_h', 500, 10, 'مم')}
@@ -396,7 +396,7 @@ PAGES.column = {
 /* -------------------------------- الأسس --------------------------------- */
 PAGES.footing = {
   ic: '🧱', name: 'تصميم الأسس', ttl: 'الأساس المنفرد تحت العمود',
-  sub: 'الأبعاد وقص الثقب (Punching) والقص الأحادي والانحناء — ACI 318M-14 الفصل 13',
+  sub: 'الأبعاد وقص الثقب (Punching) والقص الأحادي والانحناء — ACI 318-19 الفصل 13',
   desc: 'أبعاد + قص ثقب + تسليح',
   html: () => `<div class="grid g2"><div class="card"><h3>الأحمال والتربة</h3><div class="f">
       ${F('الحمل الميت PD', 'f_pd', 900, 10, 'kN')}${F('الحمل الحي PL', 'f_pl', 450, 10, 'kN')}
@@ -496,7 +496,7 @@ PAGES.ref = {
       <li>جسر بسيط الإسناد: M=wL²/8 و δ=5wL⁴/384EI ✓</li>
       <li>جسر مثبت الطرفين: ∓wL²/12 و +wL²/24 ✓</li>
       <li>كابولي ومسنود-مثبت (wL²/8) ومستمر بفضاءين (wL²/8، R=1.25wL) ✓</li></ul></div>
-    <div class="card ref"><h3>تصميم الخرسانة — ACI 318M-14</h3><ul>
+    <div class="card ref"><h3>تصميم الخرسانة — ACI 318-19</h3><ul>
       <li>β1 = 0.85 لـ f'c ≤ 28 MPa، ثم <code>0.85−0.05(f'c−28)/7 ≥ 0.65</code> (22.2.2.4.3).</li>
       <li>φ الانحناء 0.90 للمقاطع المشدودة، ويتدرّج إلى 0.65 حسب εt (21.2.2).</li>
       <li>As,min = <code>max(0.25√f'c/fy , 1.4/fy)·b·d</code> (9.6.1.2).</li>
@@ -526,7 +526,7 @@ PAGES.ref = {
     <div class="card ref"><h3>الأحمال — الكود العراقي</h3><ul>
       <li>جدول الأحمال الحية حسب الإشغال (سكني 2.0 · مكاتب 2.5 · مدارس 3.0 · أدراج 4.0 kN/m²…).</li>
       <li>كثافات المواد المحلية (خرسانة مسلحة 24 · طابوق 18 · ثرمستون 8 kN/m³…).</li>
-      <li>تراكيب الأحمال وفق ASCE 7 المعتمدة في ACI 318M-14 الفصل 5.</li>
+      <li>تراكيب الأحمال وفق ASCE 7 المعتمدة في ACI 318-19 الفصل 5.</li>
       <li>الزلازل: طريقة القوة الجانبية المكافئة — <code>V = Cs·W</code>، <code>Cs = SDS/(R/Ie)</code>
         مع الحدين الأعلى <code>SD1/(T·R/Ie)</code> والأدنى <code>0.044·SDS·Ie ≥ 0.01</code>،
         <code>Ta = Ct·hn^x</code>، والتوزيع <code>Fx = V·wx·hx^k/Σ</code>.</li>
@@ -1062,7 +1062,7 @@ function detailPanel(r) {
           ['الأعمدة (للأتاري)', int(r.detail.covers.column)],
           ['الأساس — الوجه السفلي على التربة', int(r.detail.covers.footing_bottom)],
           ['الأساس — الوجه العلوي', int(r.detail.covers.footing_top)]])}
-        ${table(['جدول ACI 318M-14 (20.5.1.3)', 'مم', 'المرجع'],
+        ${table(['جدول ACI 318-19 (20.5.1.3)', 'مم', 'المرجع'],
           r.detail.covers.table.map(c => [c.name, int(c.v), c.ref]))}
         <div class="note">القاعدة العملية بالموقع: البوتوم 5–7.5 سم (على التربة) والتوب 3–5 سم —
           وهي مطابقة لجدول الكود أعلاه.</div></div>
@@ -1571,45 +1571,45 @@ function barMapPanel(r) {
       ${decCards([
         { title: 'علوي — الطبقة المستمرة · 2Ø' + int(o.top_db), on: true, tag: 'مستمر',
           lines: [['أين', 'يمشي على طول الجسر كله ويمرّ خلال كل عمود — لا يُقطع أبداً'],
-            ['البند', 'ACI 318M-14 18.6.3.1']] },
+            ['البند', 'ACI 318-19 18.6.3.1']] },
         { title: 'علوي — الطبقة الأولى المقطوعة · ' + Math.max(0, o.top_n - 2) + 'Ø' + int(o.top_db),
           on: o.top_n > 2, bad: true, tag: 'ينقطع',
           lines: [['أين ينتهي', 'على L/3 = ' + nf(o.top1, 2) + ' م من وجه المسند لكل جهة'],
-            ['البند', 'ACI 318M-14 9.7.3.8.4']] },
+            ['البند', 'ACI 318-19 9.7.3.8.4']] },
         { title: 'علوي — الطبقة الثانية', on: o.top_n > 3, bad: true, tag: 'ينقطع',
           lines: [['أين ينتهي', o.top_n > 3 ? 'تُقطع أبكر عند L/5 = ' + nf(o.top2, 2) + ' م'
-            : 'غير مطلوبة بهذا المقطع'], ['البند', 'ACI 318M-14 9.7.3.8.4']] },
+            : 'غير مطلوبة بهذا المقطع'], ['البند', 'ACI 318-19 9.7.3.8.4']] },
         { title: 'امتداد ثلث الحديد العلوي بعد نقطة الانقلاب', on: true, tag: 'إلزامي',
           lines: [['المقدار', ((cut.neg_third || {}).n || 2) + ' سيخ يتجاوز نقطة الانقلاب ('
             + nf(cut.inflect || 0, 2) + ' م) بـ ' + nf((cut.neg_third || {}).ext || 0, 2)
             + ' م = الأكبر من d و12db و ln/16'],
             ['لماذا', 'نقطة الانقلاب موضع نظري يتحرّك مع نمط التحميل — فيُمدّ الحديد بعدها احتياطاً'],
-            ['البند', 'ACI 318M-14 9.7.3.8.4']] },
+            ['البند', 'ACI 318-19 9.7.3.8.4']] },
         { title: 'سفلي — الطبقة المستمرة · 2Ø' + int(o.bot_db), on: true, tag: 'مستمر',
           lines: [['أين', 'يدخل العمود و**ينشر fy عند وجهه**'],
             ['ما هو', 'حديد التماسك الإنشائي الذي يمنع الانهيار التدريجي لو فُقد مسند'],
-            ['البند', 'ACI 318M-14 9.7.7 + 9.7.3.8.2']] },
+            ['البند', 'ACI 318-19 9.7.7 + 9.7.3.8.2']] },
         { title: 'سفلي — الباقي · ' + Math.max(0, o.bot_n - 2) + 'Ø' + int(o.bot_db),
           on: o.bot_n > 2, bad: true, tag: 'ينقطع',
           lines: [['أين ينتهي', 'على بُعد 0.1·ln ≈ ' + nf(0.1 * o.ln, 2) + ' م من وجه المسند'
             + (mb.detail.bent ? ' — ونصفه يُثنى 45° عند ln/7 = ' + nf(mb.detail.bend_at, 2) + ' م' : '')],
-            ['البند', 'ACI 318M-14 9.7.3.8.3']] },
+            ['البند', 'ACI 318-19 9.7.3.8.3']] },
         { title: 'وصلات الحديد السفلي', on: true, tag: 'بمكان محدّد',
           lines: [['النطاق المسموح', nf(o.splice[0], 2) + ' – ' + nf(o.splice[1], 2)
             + ' م من مركز المسند'],
             ['الممنوع', 'الوصل قرب وجه العمود — هناك تتكوّن المفصلة اللدنة والوصلة تنزلق'],
-            ['البند', 'ACI 318M-14 18.6.3.3']] },
+            ['البند', 'ACI 318-19 18.6.3.3']] },
         { title: 'الكانات — المنطقة الحرجة · Ø' + int(o.tie_db) + '@' + int(o.s_hoop) + ' مم',
           on: true, tag: 'مكثّفة',
           lines: [['المدى', 'على 2h = ' + nf(Math.min(2 * o.h / 1000, o.ln / 3), 2)
             + ' م من وجه كل عمود'],
             ['العكفة', '135° تدخل لبّ الجسر — لا 90° تنفتح مع تقشّر الغطاء'],
-            ['البند', 'ACI 318M-14 18.6.4.1 + 25.3.4']] },
+            ['البند', 'ACI 318-19 18.6.4.1 + 25.3.4']] },
         { title: 'الكانات — باقي البحر · Ø' + int(o.tie_db) + '@' + int(o.s) + ' مم',
           on: true, tag: 'عادية',
           lines: [['أين', 'بوسط البحر حيث القص أقلّ'],
             ['الحدّ', 'التباعد لا يتجاوز d/2 = ' + int(x.d / 2) + ' مم'],
-            ['البند', 'ACI 318M-14 9.7.6.2.2']] },
+            ['البند', 'ACI 318-19 9.7.6.2.2']] },
       ])}`;
   }).join('');
   return `<div class="card"><h3>🧵 الشياش المستمرة وغير المستمرة — والكانات</h3>
@@ -1737,7 +1737,7 @@ function liftPanel(r) {
       ])}
 
       <h4 style="margin:16px 0 6px;color:var(--mut);font-size:13px">
-        ٣ · تصميم الجدار — ACI 318M-14 الفصل 11</h4>
+        ٣ · تصميم الجدار — ACI 318-19 الفصل 11</h4>
       ${table(['البند', 'القيمة'], w.rows.map(x => [x[0], x[1]]))}
       <div class="grid g4" style="margin-top:8px">
         ${kpi('المحوري', y(w.ok_axial), w.ok_axial ? 'ok' : 'bad')}
@@ -1958,13 +1958,13 @@ function pilePanel(r) {
         والبرنامج يفرضه ولو كان الحمل يحتاج واحدة.</div></div>`;
 }
 
-/* ---- أربعة أبواب من ACI 318M-14 تُحسب على المشروع: 22.7 · 18.8.4 · 24.2 · 19.3 ---- */
+/* ---- أربعة أبواب من ACI 318-19 تُحسب على المشروع: 22.7 · 18.8.4 · 24.2 · 19.3 ---- */
 function extraPanel(r) {
   const a = r.aci_extra; if (!a) return '';
   const t = a.torsion, j = a.joint, dd = a.deflection, du = a.durability;
   const y = ok => ok ? '<span class="tag t-ok">مقبول</span>' : '<span class="tag t-bad">راجع</span>';
   return `
-    <div class="card"><h3>🌀 الالتواء بالجسر الطرفي — ACI 318M-14 الباب 22.7</h3>
+    <div class="card"><h3>🌀 الالتواء بالجسر الطرفي — ACI 318-19 الباب 22.7</h3>
       ${t.required ? table(['البند', 'القيمة'], [
         ['الجسر الحاكم', 'باتجاه ' + t.beam + ' — ' + int(t.b) + '×' + int(t.h) + ' مم'],
         ['عزم الالتواء Tu', '<b>' + nf(t.Tu, 2) + ' kN·م</b> — من عزم طرف البلاطة ' +
@@ -1983,7 +1983,7 @@ function extraPanel(r) {
         <b>مغلقة</b> لا زوج U متراكب، لأن الغطاء الجانبي ينقشر بالالتواء العالي فتفشل الوصلة
         (تعليق R9.7.6.3.1).</div></div>
 
-    <div class="card"><h3>🔗 قص العقدة جسر–عمود — ACI 318M-14 المادة 18.8.4</h3>
+    <div class="card"><h3>🔗 قص العقدة جسر–عمود — ACI 318-19 المادة 18.8.4</h3>
       ${table(['العقدة', 'γ', 'Aj (م²)', 'Vu (kN)', 'φVn (kN)', 'النسبة', 'الحالة'],
         j.rows.map(x => [x.name, nf(x.gamma, 1), nf(x.Aj / 1e6, 3), int(x.Vu), int(x.phiVn),
           `<b style="color:${rcol(x.ratio)}">${nf(x.ratio, 2)}</b>`, y(x.ok)]))}
@@ -1994,7 +1994,7 @@ function extraPanel(r) {
         25.4.3.1 لأنه يراعي انعكاس الحمل، والعكفة تُثنى <b>نحو داخل العقدة</b> وداخل لبّ العمود
         المُطوَّق. العقدة أول ما ينهار بالزلزال حين لا تُفحص.</div></div>
 
-    <div class="card"><h3>📉 الترخيم — ACI 318M-14 جدول 24.2.2 بحالاته الأربع</h3>
+    <div class="card"><h3>📉 الترخيم — ACI 318-19 جدول 24.2.2 بحالاته الأربع</h3>
       ${dd.rows.map(c => `<h4 style="margin:8px 0 4px;color:var(--mut);font-size:13px">جسر ${c.beam}
         — بحر ${nf(c.L, 2)} م · عمق ${int(c.h)} مم · λΔ = ${nf(c.long_term.lambda_d, 2)}
         (ξ = ${nf(c.long_term.xi, 1)})</h4>
@@ -2007,7 +2007,7 @@ function extraPanel(r) {
         <b>L/480</b> لأن القواطع البلوكية بالبناء العراقي تقف على الجسور وتتشقّق فعلاً —
         وهذا الحدّ هو الذي يقرّر عمق الجسر هنا، لا الانحناء.</div></div>
 
-    <div class="card"><h3>🧪 الديمومة وأصناف التعرّض — ACI 318M-14 الباب 19.3</h3>
+    <div class="card"><h3>🧪 الديمومة وأصناف التعرّض — ACI 318-19 الباب 19.3</h3>
       ${table(['الصنف', 'الفئة', 'الشرط', "أدنى f'c", 'أقصى w/cm', 'شرط إضافي'],
         du.rows.map(x => [`<b>${x.code}</b>`, x.cat, x.desc, x.fc + ' ميغا',
           x.wcm ? nf(x.wcm, 2) : '—', x.note || '—']))}
@@ -2149,7 +2149,7 @@ function movOverlay(g, W, H, sc, i, n, tIn, tot, done) {
   g.fillRect(0, 0, W, H * .085);
   g.fillStyle = '#cfe0f5';
   g.font = '600 ' + Math.round(fs * .58) + 'px system-ui, sans-serif';
-  g.fillText('المنصة الإنشائية · ACI 318M-14', W - pad, H * .052);
+  g.fillText('المنصة الإنشائية · ACI 318-19', W - pad, H * .052);
   g.textAlign = 'left';
   g.fillStyle = '#6f86a8';
   g.fillText((i + 1) + ' / ' + n, pad, H * .052);
@@ -2284,7 +2284,125 @@ const MOVIE = {
   }
 };
 
+/* ═══════════ تفاصيل الحسابات: المعادلة فالتعويض فالبند ═══════════
+
+   إضافة خالصة فوق المعالج: لا تُعدّل خطوةً من خطواته ولا رقماً من أرقامه،
+   وإنما تأخذ ما صمّمه **هو** وتُظهر كيف خرج — معادلةً رمزية، ثم تعويضاً
+   بالأرقام، ثم رقم البند ونصّ ما يفرضه. والحساب يجري في `calcdoc.py`
+   وحده، فلا نسختان تتباعدان.                                          */
+const CALCTABS = [['col', '🟫 الأعمدة'], ['beam', '🟩 الجسور'],
+                  ['fnd', '🟦 الأسس'], ['slab', '🧱 البلاطة']];
+
+function calcPayloads(k) {
+  const r = WZ;
+  if (!r) return null;
+  if (k === 'col') {
+    const c = r.model.col, rb = c.rebar, H = r.model.story_h;
+    const hb = (r.model.beams && r.model.beams.x ? r.model.beams.x.h : 600) / 1000;
+    return { note: 'العمود النموذجي الذي صمّمه المعالج — والأرقام هي أرقامه نفسها.',
+      sum: [['المقطع', `${int(c.b)}×${int(c.h)} مم`, 'ltr'],
+            ['التسليح', `${rb.n}Ø${rb.db}`, 'ltr'],
+            ['الأساور', `Ø${rb.tie_db}@${int(rb.tie_s)}`, 'ltr'],
+            ['ارتفاع الطابق', nf(H, 2) + ' م', 'ltr']],
+      p: [{ what: 'col_long', b: c.b, h: c.h, db: rb.db, n_bars: rb.n, Ast: rb.Ast,
+            fc: r.input.fc, fy: r.input.fy, cover: rb.cover, db_tie: rb.tie_db,
+            Pu: r.Pumax, Mu: r.col.Mu, phiPn: rb.phiPn_max, phiMn: rb.phiMn },
+          { what: 'col_ties', H: H, b: c.b, h: c.h, db_long: rb.db, db_tie: rb.tie_db,
+            s_mid: rb.tie_s, s_conf: rb.tie_s_conf, lo: rb.conf_len,
+            ln: Math.max(0.5, H - hb) }] };
+  }
+  if (k === 'beam') {
+    const b = r.beams.x, m = r.model.beams.x, dg = b.design[0], fx = dg.flex;
+    const trib = m.sec.trib;
+    const wu = 1.2 * (r.floor.D * trib + b.sw) + 1.6 * (r.floor.L * trib);
+    const sup = (b.supports || []).filter(s => s.flex)
+      .sort((x, y) => Math.abs(y.M) - Math.abs(x.M))[0];
+    const p = [
+      { what: 'beam_moment', w: wu, L: dg.L, ln: m.detail.ln,
+        kind: b.design.length > 1 ? 'end_int' : 'interior', M: dg.Mpos, V: dg.Vu },
+      { what: 'beam_steel', b: fx.b, bw: m.b, h: m.h, d: fx.d, Mu: fx.Mu,
+        fc: fx.fc, fy: fx.fy, db: fx.bars.db, n_bars: fx.bars.n,
+        As_used: fx.bars.As, cover: m.rebar.cover }];
+    if (sup) p.push({ what: 'beam_steel', b: sup.flex.b, bw: m.b, h: m.h,
+      d: sup.flex.d, Mu: sup.flex.Mu, fc: sup.flex.fc, fy: sup.flex.fy,
+      db: sup.flex.bars.db, n_bars: sup.flex.bars.n, As_used: sup.flex.bars.As,
+      cover: m.rebar.cover });
+    return { note: 'الحمل شريحةٌ كاملة من البلاطة بعرض ' + nf(trib, 2) + ' م '
+        + '(الجانب الآمن)، والعزوم من تحليل الجائز المستمر لا من المعاملات — '
+        + 'والمعاملات معروضة للمقارنة.',
+      sum: [['المقطع', `${int(m.b)}×${int(m.h)} مم`, 'ltr'],
+            ['البحر', nf(dg.L, 2) + ' م', 'ltr'],
+            ['wu', nf(wu, 1) + ' kN/م', 'ltr'],
+            ['السفلي / العلوي', `${m.rebar.bottom.n}Ø${m.rebar.bottom.db}`
+              + ` · ${m.rebar.top.n}Ø${m.rebar.top.db}`, 'ltr']],
+      p: p };
+  }
+  if (k === 'fnd') {
+    const rf = r.design && r.design.raft;
+    if (rf && rf.h) {          // الحصيرة: منطق تصميمها مختلف، فوثيقتها مختلفة
+      const c = r.model.col, g = r.grid;
+      return { note: 'الحصيرة التي صمّمها المعالج — سماكتها يقرّرها القصّ '
+          + 'الثاقب تحت أثقل عمود وحده.',
+        sum: [['المساحة', nf(rf.A, 0) + ' م²', 'ltr'],
+              ['السماكة', `${int(rf.h)} مم`, 'ltr'],
+              ['العلوي / السفلي', `Ø${rf.top.db}@${int(rf.top.s)}`
+                + ` · Ø${rf.bottom.db}@${int(rf.bottom.s)}`, 'ltr'],
+              ['الخرسانة', nf(rf.conc, 0) + ' م³', 'ltr']],
+        p: [{ what: 'raft', total: r.total, Pmax: r.Pumax, Lx: rf.Lx, Ly: rf.Ly,
+              h: rf.h, d: rf.d, q_serv: rf.q_serv, q_u: rf.q_u, qa: rf.qa,
+              cx: c.b, cy: c.h, span: Math.max(g.sx, g.sy), fc: r.input.fc,
+              fy: r.input.fy, cover: rf.cover, top: rf.top, bottom: rf.bottom },
+            { what: 'bars', L: rf.Lx, s: rf.top.s / 1000, cover: 0.075,
+              label: 'الشبكة العلوية للحصيرة', db: rf.top.db }] };
+    }
+    const t = r.design && r.design.typical;
+    if (!t || !t.B) return { err: 'نظام الأساس المختار هنا ('
+      + ((r.design && r.design.name) || '—') + ') لا اشتقاقَ مفصَّلاً له بعد. '
+      + 'راجع بطاقة الأساس أعلاه.' };
+    return { note: 'الأساس النموذجي (أثقل عمود). كل فحصٍ على البُعد والسماكة '
+        + 'اللذين خرج بهما المعالج فعلاً.',
+      sum: [['الأبعاد', `${nf(t.B, 2)} × ${nf(t.B, 2)} م`, 'ltr'],
+            ['السماكة', `${int(t.h)} مم`, 'ltr'],
+            ['التسليح', `Ø${t.bar_db} @ ${int(t.spacing)} مم`, 'ltr'],
+            ['P خدمة / مُعامَل', `${int(t.Ps)} / ${int(t.Pu)} kN`, 'ltr']],
+      p: [{ what: 'footing', Ps: t.Ps, Pu: t.Pu, B: t.B, h: t.h, d: t.d,
+            c1: t.cx, c2: t.cy, fc: t.fc, fy: t.fy, qa: r.input.qa,
+            q_net: t.q_net, cover: 75, db: t.bar_db, s_exec: t.spacing,
+            Mux: 0, Muy: 0 },
+          { what: 'bars', L: t.B, s: t.spacing / 1000, cover: 0.075,
+            label: 'الأساس المنفرد', db: t.bar_db }] };
+  }
+  const s = r.model.slab, me = s.mesh && s.mesh.short;
+  if (!me) return { err: 'لا شبكة حديد معروضة لهذا النوع من السقوف.' };
+  return { note: 'شبكة السقف: حدّ التباعد الكودي أوّلاً، ثم العدد الذي يفرضه '
+      + 'ذلك التباعد على عرض المبنى.',
+    sum: [['السقف', s.name || s.kind], ['السماكة', `${int(s.h)} مم`, 'ltr'],
+          ['الشبكة', `Ø${me.db} @ ${int(me.s)} مم`, 'ltr'],
+          ['عرض المبنى', nf(r.grid.L, 2) + ' م', 'ltr']],
+    p: [{ what: 'slab_limits', h: s.h / 1000, cover: 0.02, db: me.db,
+          fy: r.input.fy, kind: s.kind === 'two' ? 'two' : 'one' },
+        { what: 'bars', L: r.grid.L, s: me.s / 1000, cover: 0.02,
+          label: 'شبكة السقف (الاتجاه القصير)', db: me.db }] };
+}
+
 const TABS = {
+  /* ---------- تفاصيل الحسابات: اشتقاق كل رقم ببنده ---------- */
+  calc: () => TABS.cpick('col'),
+
+  cpick: (k) => {
+    $$('#cdbar button').forEach(b => b.classList.toggle('hot', b.dataset.c === k));
+    const host = $('#cdbody');
+    if (!host) return;
+    const d = calcPayloads(k);
+    if (!d) { host.innerHTML = `<div class="note">شغّل المعالج أولاً.</div>`; return; }
+    if (d.err) { host.innerHTML = `<div class="note">${d.err}</div>`; return; }
+    if (!window.CALCDOC) {
+      host.innerHTML = `<div class="note">وحدة التفاصيل غير محمَّلة (calcdoc.js).</div>`;
+      return;
+    }
+    window.CALCDOC.into(host, d.p, { summary: d.sum, note: d.note });
+  },
+
   /* ---------- الأشعة الإنشائية على هندسة المشروع نفسه ---------- */
   xr: async () => {
     const r = WZ, g = r.grid, m = r.model;
@@ -2396,7 +2514,7 @@ const TABS = {
   },
   /* ---------- الإنشائيات والتجربة: اختيار بالضغط على المجسم ---------- */
   lab: () => { LAB_SEL = null; LAB_MULTI = []; renderLab(null); },
-  /* ---------- تقرير مطابقة ACI 318M-14 ---------- */
+  /* ---------- تقرير مطابقة ACI 318-19 ---------- */
   aci: async () => {
     const r = await post('aci', WZ);
     const IC = { ok: '✓', warn: '⚠', fail: '✗', na: '—', review: '?' };
@@ -2965,7 +3083,7 @@ PAGES.wizard = {
         والفارق سُمك الطبقة الحاملة وما تحتها، والانتفاخ، والماء والأملاح — لا رقم
         التحمّل وحده. اتركها فارغة إن لم يكن عندك تقرير جسّات، وسيقول الجدول صراحةً
         إن الشرط لم يُفحص.</div>
-      <h3 style="margin-top:14px">أصناف التعرّض — ACI 318M-14 جدول 19.3.1.1</h3>
+      <h3 style="margin-top:14px">أصناف التعرّض — ACI 318-19 جدول 19.3.1.1</h3>
       <div class="f">${expSelects()}
       ${F('نسبة الماء/الأسمنت w/cm (0=غير محدّدة)', 'w_wcm', 0, .01, '')}</div>
       <div class="hint">الكود يفرض حدّاً أدنى لـ f'c وحدّاً أعلى لنسبة الماء/الأسمنت
@@ -3136,13 +3254,23 @@ PAGES.wizard = {
         ويتنقل معك بين الطوابق من قائمة الطوابق.</div>
 
       <div class="wtabs" id="wtabs">
-        ${[['detail', '🧵 التسليح والتفاصيل'], ['aci', '📕 مطابقة ACI 318M-14'],
+        ${[['detail', '🧵 التسليح والتفاصيل'], ['calc', '🧮 تفاصيل الحسابات'],
+           ['aci', '📕 مطابقة ACI 318-19'],
            ['xr', '🩻 الأشعة الإنشائية'], ['movie', '🎬 فيديو البناء'],
            ['slabs', '🧱 نوع السقف'], ['lab', '🧪 الإنشائيات والتجربة'],
            ['plan', '📐 المخطط (DWG)'], ['boq', '📋 الكميات والحديد']].map(([k, t], i) =>
           `<button data-t="${k}" class="${i ? '' : 'on'}" onclick="wtab('${k}')">${t}</button>`).join('')}
       </div>
       <div class="wpanel" data-t="detail">${detailPanel(r)}</div>
+      <div class="wpanel" data-t="calc" hidden>
+        <div class="selbox">كل رقمٍ صمّمه المعالج، مشتقّاً خطوةً خطوة: المعادلة
+          الرمزية، ثم التعويض بالأرقام، ثم <b>رقم البند الكودي ونصّ ما يفرضه</b> —
+          حدٌّ أعلى مقطوع أم يحدّده التصميم. كلّها <b>ACI 318-19</b>.</div>
+        <div class="v3bar" id="cdbar">${CALCTABS.map(([k, t], i) =>
+          `<button data-c="${k}" class="${i ? '' : 'hot'}"
+            onclick="TABS.cpick('${k}')">${t}</button>`).join('')}</div>
+        <div id="cdbody"><div class="note">جارٍ اشتقاق الحساب…</div></div>
+      </div>
       <div class="wpanel" data-t="aci" hidden><div id="wp_aci" class="note">جارٍ الفحص…</div></div>
       <div class="wpanel" data-t="xr" hidden><div id="wp_xr" class="note">جارٍ التحليل…</div></div>
       <div class="wpanel" data-t="movie" hidden><div id="wp_movie" class="note">جارٍ التحضير…</div></div>
@@ -3670,7 +3798,7 @@ PAGES.detail66 = {
   html: () => `<div class="card">
     <h3>المرجعان معاً — لا بديلاً عن الآخر</h3>
     <div class="grid g2">
-      <div class="note" style="border-right:3px solid var(--acc2)"><b>ACI 318M-14</b> يقول
+      <div class="note" style="border-right:3px solid var(--acc2)"><b>ACI 318-19</b> يقول
         <b>كم</b> حديداً يلزم: المساحة والقطر والتباعد وطول النشر. وهو مطبَّق كما هو
         بصفحة المعالج وتقرير المطابقة — <b>لم يتغيّر منه شيء</b>.</div>
       <div class="note" style="border-right:3px solid #facc15"><b>MNL-66(20)</b> يقول

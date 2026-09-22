@@ -547,7 +547,7 @@ def wizard(p):
     floors = max(1, int(p.get('floors', 2)))
     use = p.get('use', 'سكني / غرف نوم')
     # الافتراضي 31 ميغا لا 25: أصناف التعرّض الافتراضية (كبريتات S2 — تربة
-    # العراق الجبسية) توجب f'c ≥ 31 بجدول ACI 318M-14 رقم 19.3.2.1.
+    # العراق الجبسية) توجب f'c ≥ 31 بجدول ACI 318-19 رقم 19.3.2.1.
     fc = float(p.get('fc', 31.0)); fy = float(p.get('fy', 420.0))
     soil_name = p.get('soil', 'طين قاسي')
     qa = float(p.get('qa') or F.SOIL_MAP.get(soil_name, (150.0, 'clay'))[0])
@@ -761,7 +761,7 @@ def wizard(p):
     by = design_beam(g['sy'], g['ny'], g['sx'], fl['D'], live, fc, fy, cb, spans=sy_real,
                      btype=bt_y, slab_h=t_slab, col_h=ch, side=g['sx'],
                      w_slab=fl['D'] * g['sx'])
-    # --- ACI 318M-14 18.8.4: مقطع العمود يجب أن يكفي **قص العقدة** لا الحمل وحده.
+    # --- ACI 318-19 18.8.4: مقطع العمود يجب أن يكفي **قص العقدة** لا الحمل وحده.
     # العقدة الداخلية تستلم شدّ الحديد العلوي بإجهاد 1.25fy من الجهتين (18.8.2.1)،
     # وهي الحالة التي تُسقط الطابق كله بالزلزال إن نقصت. حين يكون المقطع مستنتَجاً
     # تلقائياً نكبّره حتى يمرّ؛ وحين يكون **من مخططك أو باختيارك** لا نغيّره أبداً
@@ -1279,7 +1279,7 @@ def cantilever_pkg(p, g, bx, by, wD, live, fc, fy, cb, ch, slab):
                                                          for i in items),
                 area=sum(i['area'] for i in items),
                 options=[dict(k=a, name=b) for a, b in CANTI_SIDES],
-                clause='ACI 318M-14 جدول 9.3.1.1 · 9.7.3 · 25.4 · 22.5 · 9.7.7',
+                clause='ACI 318-19 جدول 9.3.1.1 · 9.7.3 · 25.4 · 22.5 · 9.7.7',
                 note='حديد الكانتيليفر **كله علوي** — الوجه المشدود هو العلوي على '
                      'طول البروز. وهو مرسوم بالمجسم بلون مميّز فوق منتصف السماكة '
                      'ليُرى بالعين، ويمتد داخل البحر الخلفي طول النشر كاملاً.')
@@ -1287,7 +1287,7 @@ def cantilever_pkg(p, g, bx, by, wD, live, fc, fy, cb, ch, slab):
 
 # ============ فحوص ACI التي كانت غائبة: الالتواء · العقدة · الترخيم · الديمومة ============
 def aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy, wD, live, exposure, p):
-    """أربعة أبواب من ACI 318M-14 لم تكن مطبَّقة أبداً، تُحسب هنا على المشروع نفسه:
+    """أربعة أبواب من ACI 318-19 لم تكن مطبَّقة أبداً، تُحسب هنا على المشروع نفسه:
 
       22.7  الالتواء بالجسر الطرفي (الشناشيل والبلكونات) — كان يُهمَل كلياً
       18.8.4 قص العقدة بين الجسر والعمود — وهي أول ما ينهار زلزالياً
@@ -1357,7 +1357,7 @@ def aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy, wD, live, exposure, p
     out['joint'] = dict(rows=joints, As_top=As_top, T=T, Vcol=Vcol, Mpr=Mpr,
                         hook=E.joint_hook(bm['rebar']['top']['db'], fc, fy),
                         worst=min(joints, key=lambda j: (j['ok'], -j['ratio'])),
-                        clause='ACI 318M-14 18.8.4 + 18.8.2.1 + 18.8.5.1')
+                        clause='ACI 318-19 18.8.4 + 18.8.2.1 + 18.8.5.1')
 
     # ---------------- 24.2 الترخيم بجدول 24.2.2 ----------------
     dfl = []
@@ -1375,7 +1375,7 @@ def aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy, wD, live, exposure, p
     out['deflection'] = dict(rows=dfl, worst=min(dfl, key=lambda c: (c['ok'], -c['ratio'])),
                              cases=[dict(k=a, name=b, den=c2, what=d2)
                                     for a, b, c2, d2 in E.DEFL_CASES],
-                             clause='ACI 318M-14 جدول 24.2.2')
+                             clause='ACI 318-19 جدول 24.2.2')
 
     # ---------------- 9.7.3 + 18.6.3 قواعد حديد الجسور ----------------
     beams_rules = []
@@ -1402,7 +1402,7 @@ def aci_checks(g, bx, by, slab, col_rebar, cb, ch, fc, fy, wD, live, exposure, p
                                 top=rb2['top'], bottom=rb2['bottom'],
                                 stirrup=rb2['stirrup']))
     out['beam_rules'] = dict(rows=beams_rules,
-                             clause='ACI 318M-14 9.7.3 · 18.6.3 · 25.3 · 25.7.2')
+                             clause='ACI 318-19 9.7.3 · 18.6.3 · 25.3 · 25.7.2')
 
     # ---------------- 13.3.3.3 توزيع حديد الأساس ----------------
     out['footing_band'] = None
@@ -1673,7 +1673,7 @@ def slabtypes(p):
     span = float(p.get('span', 6.0)); span2 = float(p.get('span2', span))
     live = float(p.get('live', 2.0)); wD = float(p.get('wD', 2.5))
     # الافتراضي 31 ميغا لا 25: أصناف التعرّض الافتراضية (كبريتات S2 — تربة
-    # العراق الجبسية) توجب f'c ≥ 31 بجدول ACI 318M-14 رقم 19.3.2.1.
+    # العراق الجبسية) توجب f'c ≥ 31 بجدول ACI 318-19 رقم 19.3.2.1.
     fc = float(p.get('fc', 31.0)); fy = float(p.get('fy', 420.0))
     base = dict(p.get('hordi') or {})
     base.update(span=span, Lx=span, Ly=span2, live=live, wD=wD, fc=fc, fy=fy,

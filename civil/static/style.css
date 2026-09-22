@@ -21,7 +21,11 @@ a{color:var(--acc);text-decoration:none}
 .nav button.on{background:linear-gradient(90deg,rgba(56,189,248,.18),transparent);color:#fff;
   box-shadow:inset -3px 0 0 var(--acc)}
 .nav .ic{width:22px;text-align:center;font-size:15px}
-.main{flex:1;padding:20px 26px 60px;max-width:1500px}
+/* min-width:0 لازم لعنصر flex: بدونه يتمدّد إلى عرض أعرض محتوى فيه (جدول
+   عريض مثلاً) فيدفع الصفحة كلّها ويظهر شريط تمرير أفقي، ويخرج جزء من
+   المحتوى عن الشاشة بصفحةٍ من اليمين لليسار. معه ينكمش إلى عرض الشاشة
+   ويتمرّر الجدول داخل حاويته وحدها. */
+.main{flex:1;min-width:0;padding:20px 26px 60px;max-width:1500px}
 .top{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:18px;
   border-bottom:1px solid var(--line);padding-bottom:12px;flex-wrap:wrap}
 .top h2{margin:0;font-size:21px}

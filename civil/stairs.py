@@ -48,7 +48,12 @@ def flight(p):
     main = E.bar_spacing(As, dbs=(10, 12, 16), smax=min(3 * waist, 450))
     dist = E.bar_spacing(0.0018 * 1000.0 * waist, dbs=(8, 10, 12), smax=min(5 * waist, 450))
     Vu = wu * span / 2.0
-    phiVc = 0.75 * 0.17 * math.sqrt(fc) * 1000.0 * d / 1000.0
+    # وِتر الدرج بلاطة بلا أساور قصّ ⇒ حالة Av < Av,min بجدول ACI 318-19 رقم
+    # 22.5.5.1، تدخلها ρw، ومعها معامل أثر الحجم λs (§22.5.5.1.3).
+    _ls = E.lambda_s(d)
+    _rw = min(0.02, max(0.0025, As / (1000.0 * d)))
+    phiVc = 0.75 * min(0.66 * _ls * (_rw ** (1.0 / 3.0)) * math.sqrt(fc),
+                       0.42 * math.sqrt(fc)) * 1000.0 * d / 1000.0
     react = wu * span / 2.0 * width               # kN على كل جسر عند طرفي القلبة
     reb = flight_rebar(dict(span=span, run=run, land=land, width=width, waist=waist,
                             theta=theta, d=d, cov=cov, fc=fc, fy=fy, Mu=Mu,
@@ -172,7 +177,7 @@ def flight_rebar(p):
                       'ويُنشر داخل البسطة بطول ld.',
                  why='المحصّلة هنا تتّجه **داخل** المقطع فتضغط الخرسانة ولا تطيّرها.'),
         ],
-        clause='ACI 318M-14 7.7 · 25.4 · 25.5.2.1 · 9.7.7')
+        clause='ACI 318-19 7.7 · 25.4 · 25.5.2.1 · 9.7.7')
 
 
 def opening(p):

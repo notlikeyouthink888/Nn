@@ -220,7 +220,7 @@
 
   /* ════════ ٣) تصميم أساس منفرد وفق **ACI 318-19** ════════
      كل خطوة ببندها. لا معامل تجريبي ولا «تقريب مقبول».
-     نسخة 2019 أشدّ من 318M-14 على الأساسات تحديداً: انظر شرح الخطوة (٣). */
+     نسخة 2019 أشدّ من 318-14 على الأساسات تحديداً: انظر شرح الخطوة (٣). */
   function footing(P) {
     // P = {Ps, Pu, Mux, Muy, c1, c2, fc, fy, qa, pos, gamma, cover}
     var fc = P.fc, fy = P.fy, qa = P.qa;                  // MPa · MPa · kPa
@@ -251,7 +251,7 @@
     var qu = P.Pu / (B * B);                               // kPa
     steps.push(['٣', 'ضغط التربة المُعامَل', 'qu = Pu / B^2 = ' + P.Pu.toFixed(1) + ' / ' + (B * B).toFixed(2), qu.toFixed(1) + ' kPa', 'اتزان']);
 
-    /* (٣) العمق من فحصَي القصّ وفق **ACI 318-19** — وهي أشدّ من 318M-14 بكثير
+    /* (٣) العمق من فحصَي القصّ وفق **ACI 318-19** — وهي أشدّ من 318-14 بكثير
        على الأساسات، لسببين أضافتهما نسخة 2019:
 
          • **معامل أثر الحجم** λs = √(2/(1 + d/250)) ≤ 1.0 — §22.5.5.1.3
@@ -311,7 +311,7 @@
       'lambda_s = sqrt(2/(1+d/250)) = ' + lamS.toFixed(4)
       + '   ·   rho_w = As/(B*d) = ' + rhoW.toFixed(5),
       lamS < 0.999 ? 'يُنقص المقاومة' : 'لا أثر (d صغير)',
-      'ACI 318-19 §22.5.5.1.3 — غير موجودَين في 318M-14']);
+      'ACI 318-19 §22.5.5.1.3 — غير موجودَين في 318-14']);
     steps.push(['٥', 'قصّ ثاقب (ثنائي الاتجاه)',
       'vu = ' + vu2.toFixed(3) + ' <= phi*vc = ' + (phiV * vc2).toFixed(3) + ' MPa',
       ok2 ? '✓ يمرّ' : '✗', 'ACI 318-19 جدول 22.6.5.2 · alpha_s = 40 · phi = 0.75']);
@@ -341,7 +341,8 @@
       qAct.toFixed(1) + ' / ' + qa.toFixed(0) + ' kPa',
       qAct <= qa * 1.001 ? '✓ يمرّ — ACI 318-19 §13.3.1.1' : '✗ يتجاوز المسموح']);
 
-    return { B: B, h: h, d: d, As: AsUse, AsMin: AsMin, nBar: nBar, db: db,
+    return { B: B, h: h, d: d, qNet: qNet, cover: cov,
+             As: AsUse, AsMin: AsMin, nBar: nBar, db: db,
              spac: spac, qu: qu, qAct: qAct, e: e, vu2: vu2, vc2: phiV * vc2,
              Vu1: Vu1 / 1000, Vc1: phVc1 / 1000, Mu: Mu / 1e6,
              ok: qAct <= qa * 1.001 && ok1 && ok2, ecc: e > B / 6,

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-قواعد التفاصيل الإنشائية — ACI 318M-14 + CRSI.
+قواعد التفاصيل الإنشائية — ACI 318-19 + CRSI.
 الغطاء الخرساني · الكراسي وأنواعها · العكفات وزواياها · نقاط قطع وثني الحديد ·
 الدولات (Dowels) · قواعد الوصلات.  كل الأطوال بالمليمتر ما لم يُذكر خلاف ذلك.
 """
@@ -8,7 +8,7 @@ import math
 import engine as E
 
 # ============================ الغطاء الخرساني ============================
-# ACI 318M-14 جدول 20.6.1.3.1
+# ACI 318-19 جدول 20.6.1.3.1
 EXPOSURES = [
     ('ground', 'مصبوب على التربة مباشرة'),
     ('weather', 'معرّض للجو أو التربة بعد فك القالب'),
@@ -75,7 +75,7 @@ def exposure_req(classes):
                 gov_fc=gov_fc[0], gov_wcm=(gov_w[0] if gov_w else None),
                 rows=[dict(code=c[0], cat=c[1], desc=c[2], wcm=c[3], fc=c[4], note=c[5])
                       for c in picked],
-                clause='ACI 318M-14 جدول 19.3.1.1 + جدول 19.3.2.1')
+                clause='ACI 318-19 جدول 19.3.1.1 + جدول 19.3.2.1')
 
 def durability(fc, classes=IRAQ_DEFAULT, wcm=None):
     """يفحص f'c المختار (ونسبة الماء/الأسمنت إن عُرفت) مقابل أصناف التعرّض."""
@@ -283,7 +283,7 @@ def bent_bar(span, h, cov, db, sup_w=0.4, angle=45.0):
 
 # ==================== حدود التباعد والحديد الأدنى ====================
 def crack_spacing(fy, cc, fs=None, detail=False):
-    """أقصى تباعد بين أسياخ الشدّ للتحكم بالشقوق — ACI 318M-14 المادة 24.3.2:
+    """أقصى تباعد بين أسياخ الشدّ للتحكم بالشقوق — ACI 318-19 المادة 24.3.2:
 
         s ≤ الأصغر من [ 380·(280/fs) − 2.5·cc   ,   300·(280/fs) ]
 
@@ -296,43 +296,43 @@ def crack_spacing(fy, cc, fs=None, detail=False):
     s = E.crack_spacing(fy, cc, fs)          # النسخة المرجعية بالمحرّك
     if not detail:
         return s
-    return dict(s_max=s, a=a, b=b, fs=fs, cc=cc, clause='ACI 318M-14 24.3.2')
+    return dict(s_max=s, a=a, b=b, fs=fs, cc=cc, clause='ACI 318-19 24.3.2')
 
 def skin_reinforcement(h, cover, fy, db_skin=12.0, detail=False):
-    """حديد الجلد على وجهي الجسر العميق — ACI 318M-14 المادة 9.7.2.3:
+    """حديد الجلد على وجهي الجسر العميق — ACI 318-19 المادة 9.7.2.3:
     مطلوب حين يتجاوز عمق الجسر **900 مم**، ويُوزّع على مسافة h/2 من وجه الشدّ
     بتباعد لا يتجاوز حدّ 24.3.2. كان مفقوداً — والجسور العميقة تتشقق جانبياً بدونه."""
     if h <= 900.0:
-        return dict(required=False, h=h, clause='ACI 318M-14 9.7.2.3',
+        return dict(required=False, h=h, clause='ACI 318-19 9.7.2.3',
                     note='عمق الجسر %d مم ≤ 900 مم — لا يلزم حديد جلد' % int(h))
     s = crack_spacing(fy, cover)
     zone = h / 2.0
     n_face = max(2, int(math.ceil(zone / s)))
     return dict(required=True, h=h, zone=zone, s=s, db=db_skin, n_per_face=n_face,
                 n_total=2 * n_face, As_face=n_face * E.ab(db_skin),
-                clause='ACI 318M-14 9.7.2.3 + 24.3.2',
+                clause='ACI 318-19 9.7.2.3 + 24.3.2',
                 label='حديد جلد %dØ%d لكل وجه @ %d مم على ارتفاع %d مم من وجه الشدّ'
                       % (n_face, int(db_skin), int(s), int(zone)),
                 note='مطلوب لأن عمق الجسر %d مم > 900 مم' % int(h))
 
 def as_min_relief(As_req, As_min, detail=False):
-    """إعفاء الحديد الأدنى — ACI 318M-14 المادة 9.6.1.3: لا يلزم تجاوز
+    """إعفاء الحديد الأدنى — ACI 318-19 المادة 9.6.1.3: لا يلزم تجاوز
     As,min إذا كان المنفَّذ ≥ 1.33 × المطلوب بالتحليل. يوفّر حديداً بلا مخالفة."""
     gov = min(As_min, 1.33 * As_req) if As_req > 0 else As_min
     if not detail:
         return gov
     return dict(As_req=As_req, As_min=As_min, As_gov=gov,
-                relieved=gov < As_min - 1e-6, clause='ACI 318M-14 9.6.1.3',
+                relieved=gov < As_min - 1e-6, clause='ACI 318-19 9.6.1.3',
                 note='1.33·As المطلوب = %.0f مم² %s As,min = %.0f مم²'
                      % (1.33 * As_req, '<' if gov < As_min else '≥', As_min))
 
 def beam_integrity(As_pos, As_neg, db, perimeter=False, detail=False):
-    """حديد التماسك الإنشائي بالجسور — ACI 318M-14 المادة 9.7.7:
+    """حديد التماسك الإنشائي بالجسور — ACI 318-19 المادة 9.7.7:
     لا يقل الحديد السفلي المستمر عن **ربع** أكبر حديد سفلي بالبحر ولا عن سيخين،
     ويُوصل عند المسند بوصلة صنف B أو يُنشر بعكفة. وبالجسور المحيطية يُضاف
     **سدس** الحديد العلوي مستمراً، ويُطوَّق الجسر بأساور مغلقة بكامل طوله."""
     As_bot = max(As_pos / 4.0, 2.0 * E.ab(db))
-    r = dict(As_bot_cont=As_bot, n_min=2, clause='ACI 318M-14 9.7.7',
+    r = dict(As_bot_cont=As_bot, n_min=2, clause='ACI 318-19 9.7.7',
              note='ربع الحديد السفلي وبحدّ أدنى سيخان يستمران خلال المسند')
     if perimeter:
         r.update(As_top_cont=As_neg / 6.0, closed_stirrups=True,
@@ -342,7 +342,7 @@ def beam_integrity(As_pos, As_neg, db, perimeter=False, detail=False):
     return r
 
 def seismic_hoops(h_beam, db_long, db_hoop, d, detail=False):
-    """أساور المنطقة الحرجة بالجسر — ACI 318M-14 المادة 18.6.4:
+    """أساور المنطقة الحرجة بالجسر — ACI 318-19 المادة 18.6.4:
     تُوضع أساور مغلقة على مسافة **2h** من وجه المسند، بتباعد لا يتجاوز
     الأصغر من [ d/4 , 6·db الطولي , 150 مم ]، وأول أسوار على 50 مم من الوجه.
     وخارج المنطقة الحرجة لا يتجاوز التباعد d/2 (18.6.4.6)."""
@@ -351,7 +351,7 @@ def seismic_hoops(h_beam, db_long, db_hoop, d, detail=False):
     s_out = max(50.0, math.floor(min(d / 2.0, 300.0) / 25.0) * 25.0)
     lo = 2.0 * h_beam
     r = dict(zone=lo, s_crit=s_cr, s_outside=s_out, first=50.0, db=db_hoop,
-             clause='ACI 318M-14 18.6.4',
+             clause='ACI 318-19 18.6.4',
              label='أساور مغلقة Ø%d @ %d مم على %d مم من كل وجه مسند · '
                    'ثم Ø%d @ %d مم · أول أسوار على 50 مم'
                    % (int(db_hoop), int(s_cr), int(lo), int(db_hoop), int(s_out)))

@@ -86,20 +86,23 @@
     };
   }
 
-  /* تنبيه ظاهر: هذا القسم يعمل بـ ACI 318-19 بينما بقية المنصّة تعلن
-     318M-14. إخفاء التعارض أسوأ من إظهاره — والفرق حقيقي على الأساسات. */
+  /* نسخة الكود: المنصّة كلّها موحَّدة الآن على ACI 318-19 — التحليل والأساسات
+     والمعالج والحاسبات المنفردة. ويبقى بيان **أثر** التوحيد ظاهراً، لأن من
+     يقارن بنتيجةٍ قديمة يجب أن يعرف لماذا اختلفت. */
   function editionNote() {
-    return '<div class="card" style="grid-column:1/-1;border-color:rgba(251,191,36,.45);'
-      + 'background:rgba(251,191,36,.06)"><h3>نسخة الكود المعتمَدة هنا</h3>'
+    return '<div class="card" style="grid-column:1/-1;border-color:rgba(52,211,153,.4);'
+      + 'background:rgba(52,211,153,.05)"><h3>نسخة الكود المعتمَدة</h3>'
       + '<p style="font-size:12.5px;color:var(--mut);line-height:1.95;margin:0">'
-      + 'هذا القسم — التحليل والأساسات — يعمل بـ <b style="color:#fbbf24">ACI 318-19</b> '
-      + 'خالصاً. وبقية المنصّة تعلن <b>ACI 318M-14</b> في عنوانها وحاسباتها المنفردة.<br>'
-      + 'والفرق ليس تسميةً: نسخة 2019 أضافت معامل أثر الحجم '
+      + 'المنصّة كلّها — هذا القسم ومعالج المشروع والحاسبات المنفردة — تعمل بـ '
+      + '<b style="color:#34d399">ACI 318-19</b> خالصاً. لا خلط بين نسختين ولا '
+      + '«الأصغر من الاثنتين».<br>'
+      + 'وأثر التوحيد حقيقي لا اسميّ: نسخة 2019 أضافت معامل أثر الحجم '
       + '<b>λs = √(2/(1+d/250))</b> ونسبة التسليح <b>ρw</b> إلى صيغة القصّ للمقاطع '
       + 'بلا أساور (جدول 22.5.5.1 و§22.5.5.1.3)، فمقاومة قصّ الأساسات تنزل إلى نحو '
-      + '<b>نصف</b> ما تعطيه 2014 — والأساسات هنا تخرج أسمك تبعاً لذلك.<br>'
-      + '<b style="color:#e6edf7">قبل اعتماد أي رقم، تأكّد أن النسخة التي تصمّم بها '
-      + 'هي 318-19، وأن تدقيق مهندس مُجاز قد جرى.</b></p></div>';
+      + '<b>نصف</b> ما تعطيه 2014 — والأساسات تخرج أسمك تبعاً لذلك، هنا وفي '
+      + 'المعالج معاً.<br>'
+      + '<b style="color:#e6edf7">ولا يُعتمد أي رقم إلا بتدقيق مهندس مُجاز.</b>'
+      + '</p></div>';
   }
 
   /* لوحة تبويب ① بوضع المشروع: بنيةٌ مقروءة من المعالج + خيارات التحليل. */
@@ -293,6 +296,8 @@
     for (var k in DIAG)
       h += '<button class="' + (k === DK ? 'on' : '') + '" onclick="FEM3D.page.diag(\'' + k
         + '\')">' + DIAG[k].nm + '</button>';
+    // «اضغط على سهم العزوم» — اشتقاق كامل للعنصر الذي يحمل المخطط المعروض
+    h += '<button onclick="FEM3D.page.momentDetails()">🧮 تفاصيل حساب هذا المخطط</button>';
     var e = $id('f_dbar'); if (e) e.innerHTML = h;
   }
 
@@ -367,7 +372,10 @@
       + (SRC === 'env' ? 'غلاف التراكيب' : esc(SRC.slice(2))) + '</h3>'
       + tbl(['x (م)', 'N (kN)', 'V₂ (kN)', 'V₃ (kN)', 'T (kN·m)', 'M₂₂ (kN·m)',
              'M₃₃ (kN·m)', 'التركيب الحاكم'], rows)
-      + '<div class="bar"><button onclick="FEM3D.page.goProof()">📖 إثبات حساب هذا العنصر</button></div>';
+      + '<div class="bar"><button onclick="FEM3D.page.goProof()">📖 إثبات حساب هذا العنصر</button>'
+      + '<button onclick="FEM3D.page.details(' + k + ')">🧮 إظهار التفاصيل الكاملة '
+      + (m.kind === 'col' ? 'لتصميم هذا العمود' : 'لتصميم هذا الجسر') + '</button></div>'
+      + '<div id="f_cd" hidden style="margin-top:12px"></div>';
   }
 
   /* ─────────────── النتائج ─────────────── */
@@ -478,7 +486,7 @@
   function fndHTML() {
     if (!FTS) return '<div class="card">لم تُحسب بعد.</div>';
     var c = FR.meta.cfg;
-    var rows = FTS.map(function (d) {
+    var rows = FTS.map(function (d, i) {
       return [esc(d.name),
         d.pos === 'corner' ? 'ركني' : d.pos === 'edge' ? 'طرفي' : 'داخلي',
         nf(d.Ps, 0), nf(d.Pu, 0),
@@ -486,7 +494,8 @@
         ltr(nf(d.B, 2) + ' × ' + nf(d.B, 2)), d.h + ' مم',
         ltr(nf(d.qAct, 1) + ' / ' + nf(c.qa, 0)),
         ltr(d.nBar + 'Ø' + d.db + ' @ ' + d.spac),
-        d.ok ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'];
+        d.ok ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>',
+        '<button class="lnk" onclick="FEM3D.page.fndDetails(' + i + ')">🧮 التفاصيل</button>'];
     });
     var tot = FTS.reduce(function (a, d) { return a + d.vol; }, 0);
     var st = FTS[0].steps;
@@ -502,8 +511,12 @@
       + '<b>رد الفعل المحسوب فعلاً</b> عند عموده، لا من تقدير. حمل الخدمة لضغط التربة '
       + 'والحمل المُعامَل للقصّ والانحناء.</p>'
       + tbl(['العمود', 'الموقع', 'P خدمة (kN)', 'P مُعامَل (kN)', 'التركيب الحاكم',
-             'الأبعاد (م)', 'السماكة', 'q / q_مسموح (kPa)', 'التسليح', 'الحكم'], rows)
+             'الأبعاد (م)', 'السماكة', 'q / q_مسموح (kPa)', 'التسليح', 'الحكم',
+             'الاشتقاق'], rows)
       + '</div>'
+      // خارج بطاقة الجدول عمداً: الجدول عريض ويمدّ بطاقته، فلو وُضع الاشتقاق
+      // داخلها لخرج نصفه عن الشاشة بصفحةٍ من اليمين لليسار.
+      + '<div id="f_fcd" hidden style="margin-bottom:13px"></div>'
       + '<div class="card"><h3>خطوات تصميم الأساس — مثال: ' + esc(FTS[0].name) + '</h3>'
       + tbl(['#', 'الخطوة', 'المعادلة والأرقام', 'النتيجة', 'المرجع'],
           st.map(function (s) {
@@ -513,6 +526,123 @@
               '<b>' + esc(s[3]) + '</b>',
               '<span style="font-size:11px;color:var(--mut)">' + esc(s[4]) + '</span>'];
           }), '') + '</div>';
+  }
+
+  /* ══════════ التفاصيل الكاملة للحساب — مصدرها calcdoc.py وحده ══════════
+
+     الضغطة على عمود أو جسر أو أساس تفتح «الاشتقاق»: المعادلة الرمزية، ثم
+     التعويض بالأرقام، ثم رقم البند ونصّ ما يفرضه. والحساب لا يُعاد هنا
+     بالجافاسكربت — يُطلب من الخادم من الملف نفسه الذي يخدم المعالج، فلا
+     نسختان تتباعدان. */
+
+  /** متوسّط الحمل الموزّع على العنصر في حالةٍ ما (kN/م). */
+  function avgW(k, cs) {
+    var segs = (FR.wloc && FR.wloc[cs] && FR.wloc[cs][k]) || [], s = 0, i;
+    var L = FR.cache[k].L;
+    for (i = 0; i < segs.length; i++) {
+      var g = segs[i];
+      s += (Math.abs(g.w2a || 0) + Math.abs(g.w2b || 0)) / 2 * (g.b - g.a);
+    }
+    return L > 0 ? s / L : 0;
+  }
+
+  /** تسليح العمود: من المعالج إن كان المقطع نفسه، وإلّا من الحدّ الأدنى. */
+  function colRebar(m) {
+    var W = wiz(), b = m.b * 1000, h = m.h * 1000;
+    if (W && W.model && W.model.col && W.model.col.rebar
+        && Math.round(W.model.col.b) === Math.round(b)
+        && Math.round(W.model.col.h) === Math.round(h)) {
+      var q = W.model.col.rebar;
+      return { db: q.db, n: q.n, Ast: q.Ast, tie_db: q.tie_db, s_mid: q.tie_s,
+               s_conf: q.tie_s_conf, cover: q.cover, phiPn: q.phiPn_max,
+               phiMn: q.phiMn,
+               src: 'تسليح العمود من معالج المشروع (نفس المقطع)' };
+    }
+    // لا يصمّم هذا القسم حديد الأعمدة، فيُعرض الاشتقاق على الحدّ الأدنى
+    // ρ = 1% (ACI 318-19 §10.6.1.1) وحدودِ التباعد — ويُقال ذلك صراحةً.
+    var db = 16, Ab = Math.PI * db * db / 4, dbt = 10;
+    var n = Math.max(4, Math.ceil(0.01 * b * h / Ab / 4) * 4);
+    var sm = Math.floor(Math.min(16 * db, 48 * dbt, Math.min(b, h)) / 25) * 25;
+    var hx = Math.max(b, h) - 2 * 40 - dbt;
+    var so = Math.max(100, Math.min(150, 100 + (350 - hx) / 3));
+    var sc = Math.floor(Math.min(b / 4, h / 4, 6 * db, so) / 5) * 5;
+    return { db: db, n: n, Ast: n * Ab, tie_db: dbt, s_mid: sm, s_conf: sc,
+             cover: 40,
+             src: 'هذا القسم يحلّل ولا يصمّم حديد الأعمدة — فالاشتقاق معروض على '
+                  + 'الحدّ الأدنى ρ = 1٪ وحدودِ التباعد الكودية' };
+  }
+
+  /** حزمة الطلبات التي تُرسَل إلى /api/calcdoc لعنصرٍ مختار. */
+  function memberPayloads(k) {
+    var m = FR.members[k], c = FR.cache[k], cf = FR.meta.cfg;
+    var fc = cf.fc, fy = cf.fy || 420, out = [];
+    var ln = Math.max(0.1, c.L - m.offI - m.offJ);
+    if (m.kind === 'col') {
+      var rb = colRebar(m), N = 0, e = FR.envelope(k, 17, COMBOS), Mx = 0;
+      e.forEach(function (s) {
+        if (Math.abs(s.Nmin) > Math.abs(N)) N = s.Nmin;
+        if (Math.abs(s.M33max) > Math.abs(Mx)) Mx = s.M33max;
+        if (Math.abs(s.M33min) > Math.abs(Mx)) Mx = s.M33min;
+      });
+      out.push({ what: 'col_long', b: m.b * 1000, h: m.h * 1000, db: rb.db,
+                 n_bars: rb.n, Ast: rb.Ast, fc: fc, fy: fy, cover: rb.cover,
+                 db_tie: rb.tie_db, Pu: Math.abs(N), Mu: Math.abs(Mx),
+                 phiPn: rb.phiPn, phiMn: rb.phiMn });
+      out.push({ what: 'col_ties', H: c.L, b: m.b * 1000, h: m.h * 1000,
+                 db_long: rb.db, db_tie: rb.tie_db, s_mid: rb.s_mid,
+                 s_conf: rb.s_conf, ln: ln });
+      out.note = rb.src;
+      return out;
+    }
+    // جسر: من الحمل إلى العزم، ثم من العزم إلى عدد الأسياخ
+    var wu = 1.2 * avgW(k, 'DEAD') + 1.6 * avgW(k, 'LIVE');
+    var nsp = m.dir === 'y' ? cf.ny : cf.nx;
+    var kind = (nsp > 1 && (m.gi === 0 || m.gi === nsp - 1)) ? 'end_int' : 'interior';
+    var ns = 41, env = FR.envelope(k, ns, COMBOS);
+    var idx = Math.round(m.offI / c.L * (ns - 1));
+    var sf = env[Math.max(0, Math.min(ns - 1, idx))];
+    var Mface = Math.abs(sf.M33max) >= Math.abs(sf.M33min) ? sf.M33max : sf.M33min;
+    var Mmid = 0, Vmx = 0;
+    env.forEach(function (s) {
+      if (Math.abs(s.M33max) > Math.abs(Mmid)) Mmid = s.M33max;
+      if (Math.abs(s.M33min) > Math.abs(Mmid)) Mmid = s.M33min;
+      if (Math.abs(s.V2max) > Math.abs(Vmx)) Vmx = s.V2max;
+      if (Math.abs(s.V2min) > Math.abs(Vmx)) Vmx = s.V2min;
+    });
+    var Mu = Math.max(Math.abs(Mface), Math.abs(Mmid));
+    var dEff = m.h * 1000 - 40 - 10 - 8;
+    out.push({ what: 'beam_moment', w: wu, L: c.L, ln: ln, kind: kind,
+               M: Mface, V: Vmx });
+    out.push({ what: 'beam_steel', b: m.b * 1000, h: m.h * 1000, d: dEff,
+               Mu: Mu, fc: fc, fy: fy, cover: 40, db: 16, db_stir: 10 });
+    out.note = 'العزم من تحليل الإطار الفراغي · الحمل من توزيع البلاطة بخطوط 45°';
+    return out;
+  }
+
+  /** حزمة طلبات أساسٍ واحد من جدول الأساسات. */
+  function fndPayloads(i) {
+    var d = FTS[i], c = FR.meta.cfg;
+    return [
+      { what: 'footing', Ps: d.Ps, Pu: d.Pu, B: d.B, h: d.h, d: d.d,
+        c1: c.cb * 1000, c2: c.ch * 1000, fc: c.fc, fy: c.fy || 420,
+        qa: c.qa, q_net: d.qNet || c.qa, cover: 75, db: d.db,
+        s_exec: d.spac, Mux: 0, Muy: 0 },
+      { what: 'bars', L: d.B, s: d.spac / 1000, cover: 0.075,
+        label: 'الأساس ' + (d.name || ''), db: d.db }
+    ];
+  }
+
+  /** يفتح لوحة التفاصيل ويملؤها من الخادم. */
+  function showDetails(el, payloads, summary, note) {
+    if (!el) return;
+    if (!global.CALCDOC) {
+      el.innerHTML = '<div class="note" style="color:var(--bad)">وحدة التفاصيل '
+        + 'غير محمَّلة (calcdoc.js).</div>';
+      return;
+    }
+    el.hidden = false;
+    global.CALCDOC.into(el, payloads,
+      { noHead: false, summary: summary || [], note: note || '' });
   }
 
   /* ─────────────── دليل الحسابات ─────────────── */
@@ -962,6 +1092,45 @@
       if (!fromView) tab('vw');
     },
     goProof: function () { tab('prf'); },
+
+    /** تفاصيل تصميم العنصر المختار: المعادلة فالتعويض فالبند. */
+    details: function (k) {
+      if (!FR || k < 0 || k >= FR.members.length) return;
+      var m = FR.members[k], c = FR.cache[k], p = memberPayloads(k);
+      var sum = [['العنصر', m.tag || ('#' + k), 'ltr'],
+                 ['المقطع', Math.round(m.b * 1000) + '×' + Math.round(m.h * 1000)
+                   + ' مم', 'ltr'],
+                 ['الطول', nf(c.L, 2) + ' م', 'ltr'],
+                 ['f′c / f_y', nf(FR.meta.cfg.fc, 0) + ' / '
+                   + nf(FR.meta.cfg.fy || 420, 0) + ' MPa', 'ltr']];
+      showDetails($id('f_cd'), p, sum, p.note);
+      var e = $id('f_cd'); if (e) setTimeout(function () {
+        e.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 60);
+    },
+
+    /** «اضغط على سهم العزوم»: يفتح اشتقاق العزم للعنصر المختار مباشرةً. */
+    momentDetails: function () {
+      if (SEL < 0) {
+        var st = $id('f_stat');
+        if (st) { st.textContent = 'اختر عنصراً من المجسّم أوّلاً ثم اطلب التفاصيل';
+                  st.style.color = 'var(--warn)'; }
+        return;
+      }
+      page.details(SEL);
+    },
+
+    /** تفاصيل تصميم أساسٍ من جدول الأساسات. */
+    fndDetails: function (i) {
+      if (!FTS || !FTS[i]) return;
+      var d = FTS[i];
+      showDetails($id('f_fcd'), fndPayloads(i),
+        [['الأساس', d.name || ('#' + (i + 1)), 'ltr'],
+         ['الأبعاد', nf(d.B, 2) + ' × ' + nf(d.B, 2) + ' م', 'ltr'],
+         ['السماكة', d.h + ' مم', 'ltr'],
+         ['P خدمة / مُعامَل', nf(d.Ps, 0) + ' / ' + nf(d.Pu, 0) + ' kN', 'ltr']]);
+      var e = $id('f_fcd'); if (e) setTimeout(function () {
+        e.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 60);
+    },
 
     /** يفتح معالج المشروع (وهو يُشغّل نفسه عند فتحه) ثم يعود إلى هنا ما إن
         تجهز نتيجتُه. مجرّد تنقّل — لا يكتب في المعالج شيئاً. */

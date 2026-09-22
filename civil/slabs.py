@@ -66,7 +66,12 @@ def hordi(p):
     fl['bars'] = E.pick_bars(fl['As_req'], dbs=(12, 16, 20), nmin=2, nmax=4, width=rw)
     a = fl['bars']['As'] * fy / (0.85 * fc * bf)
     Vu = w_rib * span / 2.0 * (1.15 if cont else 1.0)
-    phiVc = 0.75 * 1.1 * 0.17 * math.sqrt(fc) * rw * d / 1000.0     # ACI 9.8.1.5 (+10%)
+    # العصب بلا أساور ⇒ حالة Av < Av,min بجدول ACI 318-19 رقم 22.5.5.1 (تدخلها
+    # ρw) مع λs (§22.5.5.1.3)، و +10% للعصبيّات وحدها بالمادة §9.8.1.5.
+    _ls = E.lambda_s(d)
+    _rho = min(0.02, max(0.0025, fl['bars']['As'] / (rw * d)))
+    phiVc = 0.75 * 1.1 * min(0.66 * _ls * (_rho ** (1.0 / 3.0)) * math.sqrt(fc),
+                             0.42 * math.sqrt(fc)) * rw * d / 1000.0
     solid_len = 0.0
     if Vu > phiVc:
         x = (Vu - phiVc) / (w_rib if w_rib else 1.0)
@@ -76,7 +81,7 @@ def hordi(p):
     # يوجد إلا سلكاً أملس بالشبك الملحوم (Welded Wire Fabric) وهو منتج آخر
     # بمواصفة أخرى. كان الحساب يختار Ø6 لأنه بسُلَّم الأقطار، فتخرج شبكة لا
     # تُشترى. والحدّ الأدنى للتباعد بشبكة الانكماش = أصغر من 5h أو 450 مم
-    # (ACI 318M-14 المادة 24.4.3.3) لا 300.
+    # (ACI 318-19 المادة 24.4.3.3) لا 300.
     mesh = E.bar_spacing(max(Ash, 100.0), dbs=(8, 10, 12),
                          smax=min(5 * top, 450.0))
     return dict(kind='hordi', name='هوردي (عصبي بالبلوك)', h=h, hmin=hmin, ok_h=h >= hmin,

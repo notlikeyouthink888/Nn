@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Civil / Structural engineering calculation engine.
-Codes: ACI 318M-14 (SI), ASCE 7-16 (ELF), Iraqi Code for Loads & Forces.
+Codes: ACI 318-19 (SI), ASCE 7-16 (ELF), Iraqi Code for Loads & Forces.
 Units: mm, MPa, kN, kN.m, m  (frame analysis internally uses kN, m).
 """
 import math
@@ -153,7 +153,7 @@ class Frame:
             out.append(dict(x=x, N=N, V=V, M=M, d=d * 1000.0))  # d in mm
         return out
 
-# =============================== ACI 318M-14 ================================
+# =============================== ACI 318-19 ================================
 ES = 200000.0
 BARS = [10, 12, 16, 20, 25, 32, 40]
 def ab(db): return math.pi * db * db / 4.0
@@ -172,7 +172,7 @@ def as_min(fc, fy, b, d):
     return max(0.25 * math.sqrt(fc) / fy, 1.4 / fy) * b * d
 
 def bars_per_layer(width, db, cover=40.0, ds=10.0, dagg=20.0):
-    """كم سيخاً يتسع بصفّ واحد — ACI 318M-14 المادة 25.2.1:
+    """كم سيخاً يتسع بصفّ واحد — ACI 318-19 المادة 25.2.1:
     الخلوص الصافي بين الأسياخ لا يقل عن الأكبر من [ 25 مم , db , (4/3)·dagg ].
     كان هذا الحدّ غائباً عن اختيار الأسياخ فكانت تُرصف أكثر مما يتسع فعلاً."""
     clear = max(25.0, db, 4.0 * dagg / 3.0)
@@ -181,7 +181,7 @@ def bars_per_layer(width, db, cover=40.0, ds=10.0, dagg=20.0):
     return max(2, n), clear
 
 def crack_spacing(fy, cc, fs=None):
-    """أقصى تباعد بين أسياخ الشدّ للتحكم بالشقوق — ACI 318M-14 المادة 24.3.2:
+    """أقصى تباعد بين أسياخ الشدّ للتحكم بالشقوق — ACI 318-19 المادة 24.3.2:
 
         s ≤ الأصغر من [ 380·(280/fs) − 2.5·cc  ,  300·(280/fs) ]
 
@@ -238,7 +238,7 @@ def pick_bars(As_req, dbs=(12, 16, 20, 25, 32), nmin=2, nmax=24, width=None,
     best['label'] = "%dØ%d%s" % (best['n'], best['db'],
                                  '' if best['layers'] <= 1 else
                                  ' على %d طبقات' % best['layers'])
-    best['clause'] = 'ACI 318M-14 25.2.1 (الخلوص) و25.2.2 (بين الطبقات)'
+    best['clause'] = 'ACI 318-19 25.2.1 (الخلوص) و25.2.2 (بين الطبقات)'
     return best
 
 def bar_spacing(As, dbs=(10, 12, 16, 20, 25, 32), smin=100.0, smax=300.0, target=200.0):
@@ -345,26 +345,31 @@ def flexure(Mu, b, d, fc, fy, h=None, min_rule='beam', bw=None):
 def lambda_s(d):
     """معامل أثر الحجم λs.
 
-    **ليس من ACI 318M-14** — النسخة المترية 2014 لا تعرف λs، وتعطي
-    Vc = 0.17·λ·√f'c·bw·d للمقطع مهما عمُق. أُضيف في ACI 318-19 (22.5.5.1.3):
+    من **ACI 318-19 §22.5.5.1.3**، ولم يكن في 318-14 التي تعطي
+    Vc = 0.17·λ·√f'c·bw·d للمقطع مهما عمُق:
         λs = √( 2 / (1 + d/250) ) ≤ 1.0
-    وهو **يُنقص** المقاومة للمقاطع العميقة، فتطبيقه تحفّظ فوق 318M-14 لا مخالفة له.
-    بدونه كانت مقاومة قص البلاطات والأسس السميكة تُحسب أعلى مما تتحمّله فعلاً."""
+    وهو **يُنقص** المقاومة للمقاطع العميقة: بدونه تُحسب مقاومة قصّ البلاطات
+    والأسس السميكة أعلى مما تتحمّله فعلاً."""
     return min(1.0, math.sqrt(2.0 / (1.0 + d / 250.0)))
 
 def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0,
-          rho_w=None, Nu=0.0, Ag=None, min_stirrups=True, av_add=0.0):
-    """قص باتجاه واحد — **الأصغر** من صيغتَي ACI 318M-14 وACI 318-19.
+          rho_w=None, Nu=0.0, Ag=None, min_stirrups=True, av_add=0.0,
+          both=False):
+    """قص باتجاه واحد — **ACI 318-19 جدول 22.5.5.1** خالصاً.
 
-    ACI 318M-14 المعادلة 22.5.5.1:   Vc = 0.17·λ·√f'c·bw·d
-      ومع ضغط محوري (22.5.6.1):      Vc = 0.17·(1 + Nu/(14·Ag))·λ·√f'c·bw·d
-      ومع شدّ محوري (22.5.7.1):      Vc = 0.17·(1 + Nu/(3.5·Ag))·λ·√f'c·bw·d ≥ 0
-    ACI 318-19 جدول 22.5.5.1:        Vc = [0.17·λ·√f'c + Nu/(6·Ag)]·bw·d
-      وبلا أساور:                    Vc = [0.66·λs·λ·ρw^(1/3)·√f'c + Nu/(6·Ag)]·bw·d
+    بأساور لا تقلّ عن الحدّ الأدنى (Av ≥ Av,min):
+        Vc = [ 0.17·λ·√f'c + Nu/(6·Ag) ] · bw · d
+    وبلا أساور (Av < Av,min) — وهي حال البلاطات والأسس:
+        Vc = [ 0.66·λs·λ·ρw^(1/3)·√f'c + Nu/(6·Ag) ] · bw · d
+    والسقف بالحالتين (§22.5.5.1.1):  Vc ≤ 0.42·λ·√f'c·bw·d
 
-    صيغة 2019 للضغط المحوري **أسخى** من 318M-14 (عند Nu/Ag = 5 ميغا و f'c = 25:
-    1.68 مقابل 1.15 ميغا)، فالأخذ بالأصغر يجعل الحساب مطابقاً للنسختين معاً.
-    والسقف Vc ≤ 0.42·λ·√f'c·bw·d قائم بالنسختين.
+    **ما تغيّر عن 318-14:** كانت الدالّة تأخذ الأصغر من صيغتَي النسختين.
+    وبعد توحيد المنصّة على 2019 صارت صيغة 2019 وحدها. وأثر ذلك مزدوج:
+      • بلا أساور: 2019 **أشدّ** كثيراً — تُدخل ρw و λs فتنزل المقاومة إلى
+        نحو النصف للمقاطع قليلة التسليح (وهذا ما يحكم الأسس والبلاطات).
+      • مع ضغط محوري وأساور: 2019 **أسخى** من 2014 (عند Nu/Ag = 5 MPa
+        و f'c = 25 تعطي 1.68 مقابل 1.15 ميغا). فمن يريد الجانب الأشدّ من
+        النسختين معاً يضع both=True.
     Vu وNu بالكيلونيوتن · الأبعاد بالمليمتر · Ag بالمليمتر المربّع."""
     Vu = abs(Vu); phi = 0.75
     root = math.sqrt(fc)
@@ -373,23 +378,25 @@ def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0,
     # --- صيغة 318-19: إضافة إجهاد محوري مستقل
     ax19 = n_ag / 6.0
     ax19 = max(ax19, -0.17 * lam * root)                       # لا تتجاوز إلغاء Vc
-    # --- صيغة 318M-14: مضاعِف على 0.17λ√f'c (22.5.6.1 ضغطاً · 22.5.7.1 شدّاً)
+    # --- صيغة 318-14: مضاعِف على 0.17λ√f'c (22.5.6.1 ضغطاً · 22.5.7.1 شدّاً)
     f14 = (1.0 + n_ag / 14.0) if n_ag >= 0 else max(0.0, 1.0 + n_ag / 3.5)
     if min_stirrups:
         ls = 1.0
-        vc = min(0.17 * lam * root + ax19,                     # 318-19
-                 0.17 * f14 * lam * root)                      # 318M-14
+        vc = 0.17 * lam * root + ax19                          # 318-19 جدول 22.5.5.1
+        if both:
+            vc = min(vc, 0.17 * f14 * lam * root)              # وأيضاً 318-14
     else:
         ls = lambda_s(d)
         rw = max(0.0025, min(0.02, rho_w if rho_w else 0.01))
-        vc = min(0.66 * ls * lam * (rw ** (1.0 / 3.0)) * root + ax19,   # 318-19
-                 0.17 * f14 * ls * lam * root)                          # 318M-14 + λs
-    vc = max(0.0, min(vc, 0.42 * lam * root))                  # ACI 22.5.5.1.1
+        vc = 0.66 * ls * lam * (rw ** (1.0 / 3.0)) * root + ax19
+        if both:
+            vc = min(vc, 0.17 * f14 * ls * lam * root)
+    vc = max(0.0, min(vc, 0.42 * lam * root))                  # §22.5.5.1.1
     Vc = vc * bw * d / 1000.0                                  # kN
     Vsmax = 0.66 * math.sqrt(fc) * bw * d / 1000.0
     r = dict(Vu=Vu, Vc=Vc, phiVc=phi * Vc, ok=True, lambda_s=ls, vc=vc,
-             clause='ACI 318M-14 22.5.5.1 (والأصغر مع جدول 318-19 22.5.5.1)'
-                    + ('' if min_stirrups else ' — بلا أساور، بأثر الحجم λs'))
+             clause='ACI 318-19 جدول 22.5.5.1'
+                    + ('' if min_stirrups else ' — بلا أساور: بـ ρw و λs'))
     Av = legs * ab(db_stirrup)
     if Vu <= 0.5 * phi * Vc:
         r.update(case="لا يحتاج أساور (يوضع الحد الأدنى)", Vs=0.0)
@@ -430,7 +437,7 @@ def shear(Vu, bw, d, fc, fy, fyt=420.0, legs=2, db_stirrup=10, lam=1.0,
 # ------------------------------- الالتواء 22.7 -------------------------------
 def torsion(Tu, Vu, bw, h, fc, fy, fyt=420.0, cover=40.0, ds=10.0, d=None,
             lam=1.0, Nu=0.0, Vc=None, hollow=False, Ag=None):
-    """تصميم الالتواء — ACI 318M-14 الباب 22.7 مع تفاصيل 9.6.4 و9.7.5 و9.7.6.3.
+    """تصميم الالتواء — ACI 318-19 الباب 22.7 مع تفاصيل 9.6.4 و9.7.5 و9.7.6.3.
 
     كان **غائباً كلياً**، والجسر الطرفي والجسر الحامل لبلاطة من جهة واحدة
     (الشناشيل والبلكونات ودرابزين السلّم) يتعرّض لالتواء حقيقي؛ بلا هذا الباب
@@ -475,7 +482,7 @@ def torsion(Tu, Vu, bw, h, fc, fy, fyt=420.0, cover=40.0, ds=10.0, d=None,
     Tu = abs(float(Tu))
     r = dict(Tu=Tu, Tth=Tth, Tcr=Tcr, phiTth=phi * Tth, phiTcr=phi * Tcr,
              Acp=Acp, pcp=pcp, theta=45.0, hollow=hollow,
-             clause='ACI 318M-14 22.7 (+ 9.6.4 · 9.7.5 · 9.7.6.3)')
+             clause='ACI 318-19 22.7 (+ 9.6.4 · 9.7.5 · 9.7.6.3)')
     if Tu < phi * Tth:
         r.update(required=False, ok=True, ratio=Tu / (phi * Tth) if Tth > 0 else 0.0,
                  case='الالتواء مهمل — Tu أقل من φ·Tth (المادة 22.7.1.1)',
@@ -524,7 +531,7 @@ JOINT_CONF = [('four', 'محصورة بجسور على الأوجه الأربع
 
 def joint_shear(Vu_j, col_b, col_h, beam_b, fc, conf='other', lam=1.0,
                 ecc=0.0, detail=False):
-    """قص العقدة بين الجسر والعمود — ACI 318M-14 المادة 18.8.4.
+    """قص العقدة بين الجسر والعمود — ACI 318-19 المادة 18.8.4.
 
     كان **غائباً**، والعقدة هي أول ما ينهار بالزلزال حين لا تُفحص. المقاومة:
         Vn = γ·λ·√f'c·Aj      (جدول 18.8.4.1)
@@ -544,13 +551,13 @@ def joint_shear(Vu_j, col_b, col_h, beam_b, fc, conf='other', lam=1.0,
     wj = min(col_b, beam_b + col_h, 2.0 * near)
     wj = max(1.0, min(wj, col_b))            # Aj ≤ مساحة العمود
     Aj = col_h * wj
-    phi = 0.85                               # ACI 318M-14 21.2.4.3
+    phi = 0.85                               # ACI 318-19 21.2.4.3
     Vn = gam * lam * math.sqrt(fc) * Aj / 1000.0            # kN
     Vu_j = abs(float(Vu_j))
     r = dict(Vu=Vu_j, Vn=Vn, phiVn=phi * Vn, Aj=Aj, wj=wj, gamma=gam, phi=phi,
              conf=conf, ratio=Vu_j / (phi * Vn) if Vn > 0 else 9.9,
              ok=Vu_j <= phi * Vn * 1.001,
-             clause='ACI 318M-14 18.8.4 (جدول 18.8.4.1 + 18.8.4.3)',
+             clause='ACI 318-19 18.8.4 (جدول 18.8.4.1 + 18.8.4.3)',
              label=dict((k, t) for k, t, _ in JOINT_CONF).get(conf, ''))
     if detail:
         r['note'] = ('Aj = %d×%d = %.2f م² · Vn = %.1f·%.1f·√%d·Aj'
@@ -558,14 +565,14 @@ def joint_shear(Vu_j, col_b, col_h, beam_b, fc, conf='other', lam=1.0,
     return r
 
 def joint_hook(db, fc, fy, lam=1.0):
-    """طول نشر العكفة **داخل العقدة الزلزالية** — ACI 318M-14 المادة 18.8.5.1:
+    """طول نشر العكفة **داخل العقدة الزلزالية** — ACI 318-19 المادة 18.8.5.1:
         ldh = fy·db/(5.4·λ·√f'c)  ≥ الأكبر من 8db و150 مم (خرسانة اعتيادية)
                                   ≥ الأكبر من 10db و190 مم (خرسانة خفيفة)
     وهو **أطول** من 25.4.3.1 لأنه يراعي انعكاس الأحمال الزلزالية، والعكفة
     يجب أن تقع داخل اللبّ المُطوَّق للعمود ومثنيّة نحو داخل العقدة."""
     l = fy * db / (5.4 * lam * math.sqrt(fc))
     lo = max(8.0 * db, 150.0) if lam >= 1.0 else max(10.0 * db, 190.0)
-    return dict(ldh=max(l, lo), raw=l, floor=lo, clause='ACI 318M-14 18.8.5.1',
+    return dict(ldh=max(l, lo), raw=l, floor=lo, clause='ACI 318-19 18.8.5.1',
                 straight=max(l, lo) * 2.5)      # 18.8.5.3(أ) للسيخ المستقيم
 
 def joint_straight(db, fc, fy, lam=1.0, top=False):
@@ -578,7 +585,7 @@ def joint_straight(db, fc, fy, lam=1.0, top=False):
 XI_TABLE = [(3, 1.0), (6, 1.2), (12, 1.4), (60, 2.0)]      # جدول 24.2.4.1.3
 
 def xi_factor(months=60):
-    """معامل الزمن ξ — ACI 318M-14 جدول 24.2.4.1.3 (3ش=1.0 · 6ش=1.2 · 12ش=1.4 · 60ش+=2.0)،
+    """معامل الزمن ξ — ACI 318-19 جدول 24.2.4.1.3 (3ش=1.0 · 6ش=1.2 · 12ش=1.4 · 60ش+=2.0)،
     وبينها استيفاء خطّي كما بالشكل R24.2.4.1."""
     m = max(0.0, float(months))
     if m >= 60: return 2.0
@@ -598,7 +605,7 @@ DEFL_CASES = [
 ]
 
 def long_term(d_sustained, rho_p=0.0, months=60):
-    """الترخيم الإضافي الزمني — ACI 318M-14 المعادلة 24.2.4.1.1:
+    """الترخيم الإضافي الزمني — ACI 318-19 المعادلة 24.2.4.1.1:
         λΔ = ξ / (1 + 50·ρ′)
     مضروباً بالترخيم الفوري الناتج عن **الحمل الدائم** وحده (لا الكلي).
     ρ′ = As′/(b·d) بوسط البحر (أو المسند للكابول) — المادة 24.2.4.1.2.
@@ -607,7 +614,7 @@ def long_term(d_sustained, rho_p=0.0, months=60):
     xi = xi_factor(months)
     lam_d = xi / (1.0 + 50.0 * max(0.0, rho_p))
     return dict(xi=xi, lambda_d=lam_d, rho_p=rho_p, months=months,
-                d_add=d_sustained * lam_d, clause='ACI 318M-14 24.2.4.1.1')
+                d_add=d_sustained * lam_d, clause='ACI 318-19 24.2.4.1.1')
 
 def deflection_check(L, d_dead, d_live, rho_p=0.0, months=60, case='attach_ok'):
     """فحص الترخيم مقابل **جدول 24.2.2** كاملاً بأربع حالاته.
@@ -631,7 +638,7 @@ def deflection_check(L, d_dead, d_live, rho_p=0.0, months=60, case='attach_ok'):
     return dict(cases=out, case=case, gov=gov, long_term=lt,
                 d_dead=d_dead, d_live=d_live, d_after=d_after,
                 ok=gov['ok'], ratio=gov['ratio'],
-                clause='ACI 318M-14 جدول 24.2.2 + 24.2.3.5 + 24.2.4.1.1')
+                clause='ACI 318-19 جدول 24.2.2 + 24.2.3.5 + 24.2.4.1.1')
 
 BAR_STOCK = 12.0          # أقصى طول سيخ متوفر بالسوق (م)
 
@@ -673,7 +680,16 @@ def cut_run(total_len, lap, max_len=BAR_STOCK):
                 waste=(n - 1) * lapm, starts=starts, lengths=lengths)
 
 def punching(Vu, c1, c2, d, fc, pos='interior', lam=1.0):
-    """قص الثقب (Two-way shear) — ACI 318M-14 جدول 22.6.5.2.
+    """قص الثقب (Two-way shear) — **ACI 318-19 جدول 22.6.5.2**.
+
+        vc = λs · λ · أصغر من:   0.33·√f'c
+                                 0.17·(1 + 2/β)·√f'c
+                                 0.083·(2 + αs·d/b0)·√f'c
+
+    **ما أضافته 2019:** معامل أثر الحجم λs = √(2/(1+d/250)) ≤ 1 (§22.5.5.1.3)
+    صار يضرب الحدود الثلاثة. وهو يُنقص المقاومة كلما عمُق المقطع: عند d = 400
+    مم ينزل بها 13%، وعند d = 600 مم ينزل بها 24%. كانت 318-19 لا تعرفه،
+    فكانت مقاومة قصّ الأسس والبلاطات السميكة تُحسب أعلى مما تتحمّله فعلاً.
     Vu بـ kN · c1,c2,d بالمليمتر · النتيجة kN."""
     d = max(d, 50.0)
     if pos == 'interior':
@@ -683,9 +699,10 @@ def punching(Vu, c1, c2, d, fc, pos='interior', lam=1.0):
     else:
         b0 = (c1 + d / 2) + (c2 + d / 2); als = 20.0
     beta = max(c1, c2) / min(c1, c2)
-    v1 = 0.33 * lam * math.sqrt(fc)
-    v2 = 0.17 * (1 + 2 / beta) * lam * math.sqrt(fc)
-    v3 = 0.083 * (2 + als * d / b0) * lam * math.sqrt(fc)
+    ls = lambda_s(d)                                   # §22.5.5.1.3 — جديد في 2019
+    v1 = 0.33 * ls * lam * math.sqrt(fc)
+    v2 = 0.17 * (1 + 2 / beta) * ls * lam * math.sqrt(fc)
+    v3 = 0.083 * (2 + als * d / b0) * ls * lam * math.sqrt(fc)
     vc = min(v1, v2, v3)
     phiVc = 0.75 * vc * b0 * d / 1000.0
     r = Vu / phiVc if phiVc > 0 else 9.9
@@ -696,20 +713,19 @@ def punching(Vu, c1, c2, d, fc, pos='interior', lam=1.0):
     else:
         rec = 'يحتاج معالجة: زيادة السماكة أو رأس عمود (Drop Panel) أو مسامير قص (Shear Studs)'
     return dict(b0=b0, d=d, beta=beta, alpha_s=als, pos=pos, vc=vc, phiVc=phiVc,
+                lambda_s=ls, clause='ACI 318-19 جدول 22.6.5.2',
                 Vu=Vu, ratio=r, ok=r <= 1.0, rec=rec,
                 govern=('0.33√f\'c' if vc == v1 else ('0.17(1+2/β)√f\'c' if vc == v2 else '0.083(2+αs·d/b0)√f\'c')))
 
-#: أكبر قطر يُعدّ «قضيب رقم 19 فأصغر» بجدول ACI 318M-14 رقم 25.4.2.4.
+#: أكبر قطر يُعدّ «قضيب رقم 19 فأصغر» بجدول ACI 318-19 رقم 25.4.2.5.
 #: القضيب رقم 19 قطره الاسمي 19.1 مم، فـ Ø20 **فوقه** ويأخذ ψs = 1.0 لا 0.8.
 BAR19 = 19.1
 
 def psi_g(fy):
     """معامل الإجهاد ψg.
 
-    **ليس من ACI 318M-14** — النسخة التي بيدنا (الطبعة المترية 2014) لا تحوي ψg
-    إطلاقاً؛ أُضيف في ACI 318-19 جدول 25.4.2.5. نُبقيه لأنه **يزيد** طول النشر
-    للحديد عالي الإجهاد (520 · 550 · 690) فهو تحفّظ فوق 318M-14 لا مخالفة له،
-    ولأن fy > 420 خارج نطاق 318M-14 أصلاً في معظم الأبواب.
+    من **ACI 318-19 جدول 25.4.2.5**، ولم يكن موجوداً في 318-14. يزيد طول
+    النشر للحديد عالي الإجهاد (520 · 550 · 690).
     عند fy ≤ 420 (وهو حال المشروع) يرجع 1.0 فلا أثر له على المطابقة."""
     if fy <= 420.0:
         return 1.0
@@ -720,23 +736,23 @@ def psi_g(fy):
 def dev_length(db, fc, fy, top=False, epoxy=False, lam=1.0,
                cover=40.0, spacing=None, Atr=0.0, s_tr=0.0, n_bars_tr=1,
                excess=1.0, detail=False):
-    """طول النشر بالشدّ ld — ACI 318M-14 المعادلة 25.4.2.3(a):
+    """طول النشر بالشدّ ld — ACI 318-19 المعادلة 25.4.2.4(a):
 
         ld = [ fy·ψt·ψe·ψs / (1.1·λ·√f'c·((cb+Ktr)/db)) ] · db   ≥ 300 مم
 
-    المعاملات من **جدول 25.4.2.4** (لا 25.4.2.5 — ذاك ترقيم 2019):
+    المعاملات من **جدول 25.4.2.5** (كان ترقيمها 25.4.2.4 في 318-14):
       ψt = 1.3 إذا صُبّ تحت السيخ أكثر من 300 مم خرسانة طازجة (حديد علوي)
       ψe = 1.5 مطلي إيبوكسي بغطاء < 3db أو خلوص < 6db · 1.2 مطلي غير ذلك · 1.0 غير مطلي
       حاصل ψt·ψe ≤ 1.7 (حدّ الجدول نفسه)
       ψs = 0.8 لقضيب **رقم 19 فأصغر** (أي db ≤ 19.1 مم) · 1.0 لما فوقه
            — فـ Ø20 يأخذ 1.0. (كان الشرط db ≤ 20 فيعطي Ø20 خصماً 20% بلا وجه حق.)
-      (cb+Ktr)/db ≤ 2.5 (حدّ 25.4.2.3) — وتُحسب cb وKtr فعلاً لا تُفترض
-      Ktr = 40·Atr/(s·n) — المادة 25.4.2.3
-    و ψg مضروب زيادةً كتحفّظ من 318-19 (يساوي 1.0 عند fy ≤ 420 فلا يغيّر شيئاً).
+      (cb+Ktr)/db ≤ 2.5 (حدّ 25.4.2.4) — وتُحسب cb وKtr فعلاً لا تُفترض
+      Ktr = 40·Atr/(s·n) — المادة 25.4.2.4
+    و ψg من جدول 25.4.2.5 (يساوي 1.0 عند fy ≤ 420 فلا أثر له هنا).
     و`excess` = As المطلوب ÷ As المنفَّذ (25.4.10.1) ولا يُستعمل بالوصلات (25.5.2.1)."""
     pt = 1.3 if top else 1.0
     if epoxy:
-        # جدول 25.4.2.4: غطاء < 3db أو خلوص بين السيخان < 6db ⇒ 1.5 وإلا 1.2
+        # جدول 25.4.2.5: غطاء < 3db أو خلوص بين السيخان < 6db ⇒ 1.5 وإلا 1.2
         clear = (spacing - db) if spacing else None
         tight = (cover < 3.0 * db) or (clear is not None and clear < 6.0 * db)
         pe = 1.5 if tight else 1.2
@@ -751,13 +767,13 @@ def dev_length(db, fc, fy, top=False, epoxy=False, lam=1.0,
     if spacing:
         cb = min(cb, spacing / 2.0)
     Ktr = (40.0 * Atr / (s_tr * n_bars_tr)) if (s_tr > 0 and n_bars_tr > 0) else 0.0
-    conf = min(2.5, (cb + Ktr) / db)                    # ACI 25.4.2.3
+    conf = min(2.5, (cb + Ktr) / db)                    # حدّ 2.5 — ACI 318-19 §25.4.2.4
     ld = (fy * pt * pe * ps * pg / (1.1 * lam * math.sqrt(fc) * conf)) * db
     ld = max(ld * max(0.0, min(1.0, excess)), 300.0)
     if not detail:
         return ld
     return dict(ld=ld, psi_t=pt, psi_e=pe, psi_s=ps, psi_g=pg, cb=cb, Ktr=Ktr,
-                conf=conf, ratio_db=ld / db, clause='ACI 318M-14 (25.4.2.3a) + جدول 25.4.2.4',
+                conf=conf, ratio_db=ld / db, clause='ACI 318-19 (25.4.2.4a) + جدول 25.4.2.5',
                 note='(cb+Ktr)/db = %.2f (بحدّ 2.5) · ψt·ψe = %.2f (بحدّ 1.7)' % (conf, pt * pe))
 
 def hook_dev(db, fc, fy, epoxy=False, lam=1.0, confined=False, inside_col=False,
@@ -765,7 +781,7 @@ def hook_dev(db, fc, fy, epoxy=False, lam=1.0, confined=False, inside_col=False,
     """طول نشر السيخ **المعكوف** ldh — كان مفقوداً كلياً، وهو الحاكم عند
     المسند الطرفي حيث لا يوجد طول مستقيم كافٍ لنشر حديد الجسر داخل العمود.
 
-    **الحاكم عندنا هو ACI 318M-14 المادة 25.4.3.1** — الأكبر من:
+    **الحاكم عندنا هو ACI 318-19 المادة 25.4.3.1** — الأكبر من:
         (0.24·fy·ψe·ψc·ψr / (λ·√f'c))·db   ·   8db   ·   150 مم
     ومعاملات جدول 25.4.3.2:
       ψe = 1.2 مطلي إيبوكسي · 1.0 غير مطلي
@@ -776,9 +792,9 @@ def hook_dev(db, fc, fy, epoxy=False, lam=1.0, confined=False, inside_col=False,
      داخل العمود المُطوَّق — تحفّظ نعم لكنه ليس الكود، والاستهلاك يظهر بالكميات.)
 
     ويُحسب معه شكل 318-19 (fy·ψe·ψr·ψo·ψc/(23λ√f'c))·db^1.5 ويُؤخذ **الأكبر**
-    تحفّظاً؛ وهو زيادة على 318M-14 لا مخالفة له."""
+    تحفّظاً؛ وهو زيادة على 318-19 لا مخالفة له."""
     pe = 1.2 if epoxy else 1.0
-    # جدول 25.4.3.2 (318M-14): ψc غطاء جانبي · ψr تطويق بكانات
+    # جدول 25.4.3.2 (318-19): ψc غطاء جانبي · ψr تطويق بكانات
     pc14 = 0.7 if inside_col else 1.0
     pr14 = 0.8 if (confined and db <= 36.0) else 1.0
     # جدول 25.4.3.2 (318-19): ψr = 1.0 مع التطويق و1.6 بدونه · ψo غطاء
@@ -793,20 +809,20 @@ def hook_dev(db, fc, fy, epoxy=False, lam=1.0, confined=False, inside_col=False,
     return dict(ldh=ldh, aci19=l19, aci14=l14, psi_e=pe, psi_c=pc14, psi_r14=pr14,
                 psi_r=pr, psi_o=po,
                 govern=('ACI 318-19 (25.4.3.1a) — أكبر فأُخذ' if l19 >= l14
-                        else 'ACI 318M-14 (25.4.3.1)'),
-                clause='ACI 318M-14 25.4.3.1 + جدول 25.4.3.2', ratio_db=ldh / db,
+                        else 'ACI 318-19 (25.4.3.1)'),
+                clause='ACI 318-19 25.4.3.1 + جدول 25.4.3.2', ratio_db=ldh / db,
                 note='ψc=%.1f · ψr=%.1f · الحدّ الأدنى max(8db , 150 مم) = %d مم'
                      % (pc14, pr14, int(max(8 * db, 150.0))))
 
 def dev_compression(db, fc, fy, lam=1.0, detail=False):
-    """طول النشر بالضغط ldc — ACI 318M-14 المادة 25.4.9.2:
+    """طول النشر بالضغط ldc — ACI 318-19 المادة 25.4.9.2:
         ldc = الأكبر من [ 0.24·fy·ψr·db/(λ√f'c) , 0.043·fy·ψr·db ] ≥ 200 مم"""
     a = 0.24 * fy * db / (lam * math.sqrt(fc))
     b = 0.043 * fy * db
     ldc = max(a, b, 200.0)
     if not detail:
         return ldc
-    return dict(ldc=ldc, a=a, b=b, clause='ACI 318M-14 25.4.9.2 + جدول 25.4.9.3', ratio_db=ldc / db)
+    return dict(ldc=ldc, a=a, b=b, clause='ACI 318-19 25.4.9.2 + جدول 25.4.9.3', ratio_db=ldc / db)
 
 # --------------------------- column interaction ----------------------------
 def col_layers(b, h, nb, nh, db, cover=40, ds=10):
@@ -1216,24 +1232,37 @@ def footing_module(p):
     e = Mu / Pu if Pu else 0.0
     if e > 1e-6:
         qu_max = Pu / (B * B) * (1 + 6 * e / B) if e <= B / 6 else 2 * Pu / (3 * B * (B / 2 - e))
+    # العمق من فحصَي القصّ وفق **ACI 318-19**: القصّ الأحادي بلا أساور تدخله
+    # نسبة التسليح ρw ومعامل أثر الحجم λs (جدول 22.5.5.1 و§22.5.5.1.3)، وهما
+    # غير موجودَين في 318-14. ولأن ρw تعتمد على As وهي تعتمد على d، يُحسب
+    # **الانحناء داخل الحلقة** لا بعدها — وإلّا حُسب القصّ بتسليح لم يُحدَّد بعد.
     h = 300.0
-    for _ in range(60):
+    As_min = As = 0.0; Mu_f = 0.0; ls = rho_w = 0.0
+    for _ in range(80):
         d = h - cov - 16.0
+        if d < 50.0:
+            h += 25.0; continue
+        ls = lambda_s(d)                                   # §22.5.5.1.3
         b0 = 2 * (cx + d) + 2 * (cy + d)
         beta = max(cx, cy) / min(cx, cy)
-        vc = min(0.33, 0.17 * (1 + 2 / beta), 0.083 * (2 + 40 * d / b0)) * math.sqrt(fc)
+        # جدول 22.6.5.2 — و αs = 40 لأن محيط الأساس المنفرد مغلق من جهاته الأربع
+        vc = ls * min(0.33, 0.17 * (1 + 2 / beta),
+                      0.083 * (2 + 40 * d / b0)) * math.sqrt(fc)
         phiVc2 = 0.75 * vc * b0 * d / 1000.0
         Vu2 = qu_max * (B * B - (cx + d) * (cy + d) / 1e6)
+        armf = (Bm - cx) / 2000.0
+        Mu_f = qu_max * B * armf ** 2 / 2.0
+        fl = flexure(Mu_f / B, 1000.0, d, fc, fy, h, min_rule='slab')
+        As_min = 0.0018 * 1000.0 * h
+        As = max(fl['As_req'], As_min)                     # مم²/م
+        rho_w = min(0.02, As / (1000.0 * d))               # جدول 22.5.5.1
+        vc1 = min(0.66 * ls * (rho_w ** (1.0 / 3.0)) * math.sqrt(fc),
+                  0.42 * math.sqrt(fc))                    # §22.5.5.1.1 السقف
         arm = (Bm - cx) / 2.0 - d
         Vu1 = qu_max * B * max(arm, 0.0) / 1000.0
-        phiVc1 = 0.75 * 0.17 * math.sqrt(fc) * Bm * d / 1000.0
+        phiVc1 = 0.75 * vc1 * Bm * d / 1000.0
         if phiVc2 >= Vu2 and phiVc1 >= Vu1: break
         h += 25.0
-    armf = (Bm - cx) / 2000.0
-    Mu_f = qu_max * B * armf ** 2 / 2.0
-    fl = flexure(Mu_f / B, 1000.0, d, fc, fy, h, min_rule='slab')
-    As_min = 0.0018 * 1000.0 * h
-    As = max(fl['As_req'], As_min)
     bar = bar_spacing(As, smax=min(3 * h, 300.0))
     s = bar['s']
     nb_tot = int(B * 1000.0 / s) + 1
@@ -1245,6 +1274,8 @@ def footing_module(p):
                 bars_label="%s بالاتجاهين" % bar['label'], bar_db=bar['db'],
                 punch_ratio=Vu2 / phiVc2 if phiVc2 else 9.9,
                 oneway_ratio=Vu1 / phiVc1 if phiVc1 else 9.9,
+                lambda_s=ls, rho_w=rho_w, cover=cov, db=16.0,
+                clause='ACI 318-19 جدول 22.5.5.1 · جدول 22.6.5.2 · §13.3',
                 bearing=phi_br, dowels=0.005 * Ab_col, conc=B * B * h / 1000.0,
                 ok=(Vu2 <= phiVc2 and Vu1 <= phiVc1), cx=cx, cy=cy, Df=Df, fc=fc, fy=fy)
 
@@ -1275,10 +1306,17 @@ def slab_module(p):
         bsp = bar_spacing(Ash, dbs=(10, 12), smax=min(5 * h, 450))
         bs = dict(db=bsp['db']); ssh = bsp['s']
         V = 1.15 * wu * ln / 2.0
-        phiVc = 0.75 * 0.17 * math.sqrt(fc) * 1000.0 * d / 1000.0
+        # البلاطة بلا أساور قصّ ⇒ حالة Av < Av,min بجدول ACI 318-19 رقم 22.5.5.1،
+        # وتدخلها ρw عند المقطع الحرج (وجه أول مسند داخلي) و λs (§22.5.5.1.3).
+        ls = lambda_s(d)
+        rho_w = min(0.02, max(0.0025, res[2]['As'] / (1000.0 * d)))
+        vc = min(0.66 * ls * (rho_w ** (1.0 / 3.0)) * math.sqrt(fc),
+                 0.42 * math.sqrt(fc))
+        phiVc = 0.75 * vc * 1000.0 * d / 1000.0
         return dict(kind=kind, h=h, hmin=hmin, d=d, sw=sw, wu=wu, results=res,
                     shrink=dict(As=Ash, label="Ø%d @ %d مم" % (bs['db'], int(ssh))),
-                    V=V, phiVc=phiVc, shear_ok=V <= phiVc, Lx=Lx, fc=fc, fy=fy)
+                    V=V, phiVc=phiVc, shear_ok=V <= phiVc, Lx=Lx, fc=fc, fy=fy,
+                    lambda_s=ls, rho_w=rho_w, shear_clause='ACI 318-19 جدول 22.5.5.1')
     else:
         L1, L2 = max(Lx, Ly), min(Lx, Ly)
         beta = L1 / L2
@@ -1363,7 +1401,7 @@ def rebar_zones(span, h, d, bw, col_w, db_top, db_bot, n_bot, fc, fy, sh):
     return dict(span=span, ln=ln, h=h, sup=sup, zones=zones, splice=splice,
                 marks=[m for m in marks if 0 <= m['x'] <= span],
                 s_crit=s_crit, s_mid=sh.get('s'), conf_len=conf,
-                clause='ACI 318M-14 9.7.3 · 18.6.3.3 · 18.6.4.2')
+                clause='ACI 318-19 9.7.3 · 18.6.3.3 · 18.6.4.2')
 
 
 def xray(p):

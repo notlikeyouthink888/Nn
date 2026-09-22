@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-كتاب قواعد حديد التسليح — ACI 318M-14 حرفياً.
+كتاب قواعد حديد التسليح — ACI 318-19 حرفياً.
 
 هذا الملف يجمع البنود التي **تقرّر أين يبدأ السيخ وأين ينتهي وأين يُوصَل وأين
 يُمنع**، وهي البنود التي تُنفَّذ خطأً بالموقع أكثر من غيرها لأنها لا تظهر بالحساب
@@ -66,15 +66,15 @@ def hook_full(db, angle=90, kind='bar'):
     return dict(angle=angle, kind=kind, db=db, bend_dia=D, r_in=r_in, r_ax=r_ax,
                 ext=ext, arc=arc, added=arc + ext, proj_x=px, proj_y=py,
                 seismic=(angle == 135 and kind == 'tie'),
-                clause=('ACI 318M-14 جدول 25.3.2' + (' + 25.3.4 عكفة زلزالية'
+                clause=('ACI 318-19 جدول 25.3.2' + (' + 25.3.4 عكفة زلزالية'
                         if angle == 135 else '')) if kind == 'tie'
-                       else 'ACI 318M-14 جدول 25.3.1',
+                       else 'ACI 318-19 جدول 25.3.1',
                 label='عكفة %d° · ثني داخلي %d مم (%gdb) · امتداد %d مم'
                       % (angle, int(D), D / db, int(ext)))
 
 
 def crosstie(db, angle_a=135, angle_b=90):
-    """الأتاري (Crosstie) — ACI 318M-14 المادة 25.3.5:
+    """الأتاري (Crosstie) — ACI 318-19 المادة 25.3.5:
       (أ) متصل بين طرفيه   (ب) عكفة زلزالية 135° بطرف
       (ج) عكفة قياسية ≥ 90° بالطرف الآخر
       (هـ) الأتاري المتعاقبة على السيخ الطولي نفسه **تُبدَّل جهتها** بالتناوب
@@ -84,7 +84,7 @@ def crosstie(db, angle_a=135, angle_b=90):
     a = hook_full(db, angle_a, 'tie')
     b = hook_full(db, angle_b, 'tie')
     return dict(db=db, end_a=a, end_b=b, added=a['added'] + b['added'],
-                alternate=True, clause='ACI 318M-14 25.3.5',
+                alternate=True, clause='ACI 318-19 25.3.5',
                 label='أتاري Ø%d — عكفة 135° بطرف و%d° بالآخر، وتُبدَّل الجهة بالتناوب'
                       % (int(db), angle_b),
                 why='العكفة 135° لا تنفتح عند انقشار الغطاء، لكن وضعها كلها بجهة '
@@ -94,13 +94,13 @@ def crosstie(db, angle_a=135, angle_b=90):
 
 # ======================== ٢ · تركيب الأتاري والأساور (25.7.2) ========================
 def tie_db_min(db_long, bundled=False):
-    """أدنى قطر للأسوار — ACI 318M-14 المادة 25.7.2.2:
+    """أدنى قطر للأسوار — ACI 318-19 المادة 25.7.2.2:
       Ø10 إذا كانت الأسياخ الطولية Ø32 فأصغر · Ø13 لـ Ø36 فأكبر أو المحزومة."""
     return 13.0 if (db_long >= 36.0 or bundled) else 10.0
 
 
 def tie_spacing(db_long, db_tie, b, h, dagg=20.0):
-    """تباعد الأتاري — ACI 318M-14 المادة 25.7.2.1(ب): **الأصغر** من
+    """تباعد الأتاري — ACI 318-19 المادة 25.7.2.1(ب): **الأصغر** من
       16·db الطولي · 48·db الأسوار · أصغر بُعد بالمقطع.
     والخلوص الصافي ≥ (4/3)·مقاس الركام الأكبر (25.7.2.1أ)."""
     lim = [(16.0 * db_long, '16·db الطولي'),
@@ -109,12 +109,12 @@ def tie_spacing(db_long, db_tie, b, h, dagg=20.0):
     s, gov = min(lim, key=lambda t: t[0])
     clear_min = (4.0 / 3.0) * dagg + db_tie
     return dict(s=s, govern=gov, all=[dict(v=v, name=n) for v, n in lim],
-                clear_min=clear_min, clause='ACI 318M-14 25.7.2.1',
+                clear_min=clear_min, clause='ACI 318-19 25.7.2.1',
                 note='الحاكم: %s = %d مم' % (gov, int(s)))
 
 
 def tie_support(nb, nh, b, h, cover=40.0, ds=10.0, db=20.0):
-    """كم أتاري داخلي يلزم فعلاً — ACI 318M-14 المادة 25.7.2.3:
+    """كم أتاري داخلي يلزم فعلاً — ACI 318-19 المادة 25.7.2.3:
       (أ) كل سيخ **ركني وكل سيخ بديل** يُسنَد بركن أسوار بزاوية ≤ 135°
       (ب) لا يبعد أي سيخ غير مسنود أكثر من **150 مم خلوصاً** عن سيخ مسنود.
 
@@ -143,7 +143,7 @@ def tie_support(nb, nh, b, h, cover=40.0, ds=10.0, db=20.0):
         pos = [(i + 1.0) / (n - 1.0) for i in range(n - 2)][::2] if need else []
         out[key] = dict(n=need, gap=gap, pos=pos[:need], bars=n, why=why)
     return dict(x=out['x'], y=out['y'], total=out['x']['n'] + out['y']['n'],
-                clause='ACI 318M-14 25.7.2.3',
+                clause='ACI 318-19 25.7.2.3',
                 why='الأسوار لا توضع «لتربط الحديد» — وظيفتها ثلاث: تحمل القص، '
                     'وتحصر لبّ الخرسانة فيزيد تحمّله ومطاوعته، وتمنع **انبعاج** '
                     'السيخ الطولي للخارج بعد انقشار الغطاء. والثالثة هي سبب '
@@ -154,7 +154,7 @@ def tie_support(nb, nh, b, h, cover=40.0, ds=10.0, db=20.0):
 # ======================= ٣ · قطع حديد الجسور (9.7.3) =======================
 def bar_cutoff(ln, d, db_top, db_bot, fc, fy, cover=40.0, spacing=None,
                n_top=4, n_bot=4, simple=False, lateral=True):
-    """أين يُقطع الحديد وأين يجب أن يستمر — ACI 318M-14 المادة 9.7.3.
+    """أين يُقطع الحديد وأين يجب أن يستمر — ACI 318-19 المادة 9.7.3.
 
     ln = البحر الصافي بالمتر · d بالمليمتر. ترجع كل الأطوال **بالمتر**.
 
@@ -204,11 +204,11 @@ def bar_cutoff(ln, d, db_top, db_bot, fc, fy, cover=40.0, spacing=None,
             why='الشقّ الانحنائي ينفتح عند طرف السيخ المقطوع بحمل منخفض، فإن '
                 'كان إجهاد الحديد المستمر والقص كلاهما قريباً من حدّه، تحوّل '
                 'الشقّ إلى شقّ قطري مبكّر — فينقص تحمّل القص وتضيع المطاوعة.'),
-        clause='ACI 318M-14 9.7.3')
+        clause='ACI 318-19 9.7.3')
 
 
 def splice_zones(ln, h, sup_w=0.4, seismic=True):
-    """أين **يُمنع** لحام/تراكب حديد الجسر — ACI 318M-14 المادة 18.6.3.3.
+    """أين **يُمنع** لحام/تراكب حديد الجسر — ACI 318-19 المادة 18.6.3.3.
 
     يُمنع التراكب: (أ) داخل العقدة · (ب) بمسافة **2h** من وجه العقدة ·
     (ج) بمسافة 2h من أي مقطع حرج يُتوقّع فيه خضوع انحنائي.
@@ -228,7 +228,7 @@ def splice_zones(ln, h, sup_w=0.4, seismic=True):
                 mid=round(ln / 2.0, 2), length=round(max(0.0, free_b - free_a), 2),
                 ok=ok, seismic=seismic,
                 s_hoop=None,   # يملؤها المتصل بها من d/4 و100 مم
-                clause='ACI 318M-14 18.6.3.3',
+                clause='ACI 318-19 18.6.3.3',
                 label=('منطقة الوصل المسموحة: من %.2f م إلى %.2f م من مركز المسند '
                        '(طولها %.2f م حول وسط البحر)' % (free_a, free_b, free_b - free_a))
                       if ok else
@@ -241,7 +241,7 @@ def splice_zones(ln, h, sup_w=0.4, seismic=True):
 
 
 def seismic_beam(As_top, As_bot, b, d, fy, fc, n_top, n_bot):
-    """قواعد الجسر بالإطار المقاوم للعزوم — ACI 318M-14 المادة 18.6.3.
+    """قواعد الجسر بالإطار المقاوم للعزوم — ACI 318-19 المادة 18.6.3.
 
       18.6.3.1 سيخان مستمران بالوجهين على الأقل · ρ ≤ 0.025 · و As ≥ As,min
       18.6.3.2 مقاومة العزم **الموجب** عند وجه العقدة ≥ **نصف** السالب هناك،
@@ -269,7 +269,7 @@ def seismic_beam(As_top, As_bot, b, d, fy, fc, n_top, n_bot):
              ok=min(As_top, As_bot) >= quarter - 1e-6, unit='مم²', ge=True),
     ]
     return dict(rows=rows, ok=all(r['ok'] for r in rows), rho_top=rho_t, rho_bot=rho_b,
-                As_bot_need=half, clause='ACI 318M-14 18.6.3',
+                As_bot_need=half, clause='ACI 318-19 18.6.3',
                 why='الجسر بالإطار الزلزالي ينقلب عزمه: الوجه الذي يُشدّ من الأعلى '
                     'بالحمل الثقلي يُشدّ من الأسفل عند اهتزاز الأرض بالاتجاه '
                     'الآخر. ولهذا يوجب الكود حديداً سفلياً عند العقدة لا يقل عن '
@@ -278,7 +278,7 @@ def seismic_beam(As_top, As_bot, b, d, fy, fc, n_top, n_bot):
 
 # ===================== ٤ · توزيع حديد الأساس (13.3.3.3) =====================
 def footing_bands(B, L, As_short):
-    """توزيع حديد الاتجاه القصير بالأساس المستطيل — ACI 318M-14 المادة 13.3.3.3:
+    """توزيع حديد الاتجاه القصير بالأساس المستطيل — ACI 318-19 المادة 13.3.3.3:
       γs = 2/(β+1) حيث β = الضلع الطويل ÷ القصير
       γs·As يوزَّع بانتظام على **شريط أوسط عرضه = الضلع القصير** بمركز العمود،
       والباقي (1−γs)·As يوزَّع على ما تبقّى خارج الشريط.
@@ -293,7 +293,7 @@ def footing_bands(B, L, As_short):
     return dict(beta=beta, gamma_s=gs, band_width=short, band_As=band,
                 outer_As=outer, outer_width=max(0.0, long_ - short),
                 uniform=(abs(beta - 1.0) < 0.02),
-                clause='ACI 318M-14 13.3.3.3',
+                clause='ACI 318-19 13.3.3.3',
                 label=('الأساس مربّع — التوزيع منتظم بالاتجاهين' if abs(beta - 1.0) < 0.02
                        else 'β = %.2f ⇒ γs = %.3f — %.0f%% من حديد الاتجاه القصير '
                             'يتركّز بشريط أوسط عرضه %.2f م، والباقي على الأطراف'
@@ -411,4 +411,4 @@ def cantilever(Lc, trib, wD, wL, b, h, fc, fy, cover=40.0, ds=10.0,
                  why='لو تشقّق الوجه العلوي، الحديد السفلي المستمر يمنع '
                      'الانفصال الكامل ويعطي مساراً بديلاً.'),
         ],
-        clause='ACI 318M-14 9.3.1.1 · 9.7.3 · 25.4 · 22.5 · 9.7.7')
+        clause='ACI 318-19 9.3.1.1 · 9.7.3 · 25.4 · 22.5 · 9.7.7')

@@ -1042,7 +1042,9 @@ function detailPanel(r) {
         ${table(['البند', 'التفصيل'], [
           ['كراسي السقف', r.chairs.slab.label + ' — عدد ' + int(r.chairs.slab.n * r.model.floors)],
           ['وزن كراسي السقوف', nf(r.chairs.slab.weight * r.model.floors, 2) + ' طن'],
-          ['كراسي الأساس', r.chairs.found.label + ' — عدد ' + int(r.chairs.found.n)],
+          ['كراسي الأساس', r.chairs.found.n
+            ? r.chairs.found.label + ' — عدد ' + int(r.chairs.found.n)
+            : 'لا كراسي — القاعدة بلا شبكة علوية تُحمَل'],
           ['بسكويت الغطاء السفلي', int(r.chairs.slab.spacers * r.model.floors) + ' قطعة'],
           ['طول السيخ بالسوق', nf(r.model.stock, 0) + ' م — كل ما زاد يُقطّع ويُوصل'],
           ['عكفة بداية السيخ', '<b>20 سم</b> — تُثنى ببداية كل سيخ مستقيم ومضافة لطول القطع بالجدول']].concat(
@@ -3623,10 +3625,22 @@ PAGES.femproj = {
 };
 
 /* ------------------------- الترتيب والمجموعات ---------------------------- */
+/* فحص سريع مستقلّ: نسبة استغلال الأرض ونوع الأساس. منطقه كلّه في
+   `fndpick.js` ليعمل فورياً بلا طلب خادم — وهنا تسجيلٌ فقط. */
+PAGES.fndpick = {
+  ic: '📐', name: 'نوع الأساس السريع', ttl: 'نسبة استغلال الأرض ونوع الأساس',
+  sub: 'ثلاثة مدخلات ونتيجة فورية: A_req = P ÷ σ ثم R = A_req ÷ المسقط — '
+     + 'فحص أولي قبل التصميم (والتصميم نفسه بـ ACI 318-19 الفصل 13)',
+  desc: 'استغلال الأرض + توصية النوع',
+  html: () => (window.FNDPICK ? FNDPICK.html()
+    : '<div class="note">وحدة الفحص غير محمَّلة (fndpick.js).</div>'),
+  init: () => { if (window.FNDPICK) FNDPICK.init(); }
+};
+
 const ORDER = [
   ['المشروع', ['wizard', 'femproj', 'room', 'bbs', 'detail66', 'projects']],
   ['التحليل الإنشائي', ['fem']],
-  ['ما تحت الصفر', ['survey', 'earth', 'soil']],
+  ['ما تحت الصفر', ['survey', 'earth', 'soil', 'fndpick']],
   ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],
   ['مرجع', ['ref', 'home']],
 ];

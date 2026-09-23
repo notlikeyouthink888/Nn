@@ -1006,10 +1006,51 @@ def wizard(p):
                      2 * rf['top']['db'], 2 * rf['bottom']['db'],
                      kind=chair_kind, cov_bot=cov_fb,
                      s_top=rf['top']['s'], s_bot=rf['bottom']['s'])
-    ch_found = (ch_raft if rec == 'raft' else
-                chairs(math.sqrt(sum_foot_area), math.sqrt(sum_foot_area), des_i['h'], cov_ft,
-                       2 * des_i['bar_db'], 2 * des_i['bar_db'], kind=chair_kind,
-                       cov_bot=cov_fb, s_top=des_i.get('s'), s_bot=des_i.get('s')))
+    # كراسي الأسس المنفردة: **لا كرسي بلا شبكة علوية يحمله**. والشبكة العلوية
+    # تلزم حين تغلُظ القاعدة (h ≥ engine.TOP_MAT_H) أو تخرج اللامركزية عن
+    # النواة — و`engine.footing_top_mat` هو من يقرّر. وكان الحساب سابقاً يعدّ
+    # كراسي على مربّعٍ وهمي ضلعه جذر مجموع مساحات الأسس، فيخرج عدد لا يقابله
+    # شيء بالمجسّم. الآن: العدّ **على كل قاعدة بأبعادها**، ثم يُضرب بعددها.
+    ft_top = des_i.get('top') or dict(needed=False)
+    if rec == 'raft':
+        ch_found = ch_raft
+    elif ft_top.get('needed'):
+        ch_one = chairs(des_i['B'], des_i['B'], des_i['h'], ft_top['cover'],
+                        2 * ft_top['db'], 2 * des_i['bar_db'], kind=chair_kind,
+                        cov_bot=cov_fb, s_top=ft_top['s'], s_bot=des_i.get('s'))
+        # القواعد **ليست متساوية**: الركنية أصغر من الداخلية. فعدّ كراسي كل
+        # قاعدة بأبعادها هي لا بأبعاد «القاعدة النموذجية» — وإلّا خرج عدد
+        # مكتوب لا يقابله عدد مرسوم. وشبكة الكراسي هنا **مركزها القاعدة
+        # نفسها** لا مركز المبنى، لأن كل قاعدة تُصبّ وحدها.
+        mg = cov_fb / 1000.0 + ch_one['half_w']
+        mgt = cov_fb / 1000.0 + ch_one['half_d']
+        per = [DT.chair_rows(z['B'], DT.CHAIR_SP, mg)
+               * DT.chair_rows(z['B'], DT.CHAIR_SP, mgt) for z in sizes]
+        n_tot = sum(per) or ch_one['n']
+        n_ft = len(sizes) or len(loads)
+        ch_found = dict(ch_one)
+        ch_found.update(
+            per_footing=per, per_typical=ch_one['n'], footings=n_ft, n=n_tot,
+            weight=ch_one['len_each'] * E.ab(ch_one['db']) / 1e6 * 7850.0 / 1000.0 * n_tot,
+            spacers=int(math.ceil(sum(z['B'] ** 2 for z in sizes) * 4)),
+            note='**%d كرسياً** موزَّعة على %d قاعدة (%s لكل قاعدة حسب أبعادها — '
+                 'القواعد ليست متساوية). شبكة كل قاعدة **مركزها القاعدة نفسها** '
+                 'خطوتها %.2f م، والكرسي يحمل الشبكة العلوية ويحفظ خلوصاً صافياً '
+                 '%d مم بينها وبين السفلى.'
+                 % (n_tot, n_ft, ' · '.join(str(x) for x in sorted(set(per), reverse=True)),
+                    DT.CHAIR_SP, int(ch_one['height'])))
+    else:
+        ch_found = dict(kind=chair_kind, name='—', n=0, nx=0, ny=0,
+                        per_footing=0, footings=0, height=0.0, db=0,
+                        len_each=0.0, weight=0.0, spacers=0,
+                        spacing=DT.CHAIR_SP, half_w=0.0, half_d=0.0,
+                        label='لا كراسي — لا شبكة علوية',
+                        note='**لا كراسي للأسس المنفردة هنا**: سماكة القاعدة '
+                             '%d مم دون عتبة الشبكة العلوية (%d مم) واللامركزية '
+                             'داخل النواة، فالشدّ بالوجه السفلي وحده ولا شبكة '
+                             'علوية تُحمَل. والكرسي يحمل شبكةً علوية — فبلا '
+                             'شبكة لا معنى له.'
+                             % (int(des_i['h']), int(ft_top.get('trigger_h', 600))))
     dbs_used = set([col_rebar['db'], bx['rebar']['bottom']['db'], bx['rebar']['top']['db'],
                     by['rebar']['bottom']['db'], by['rebar']['top']['db'],
                     slab['mesh']['short']['db'], slab['mesh']['long']['db'],

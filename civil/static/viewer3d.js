@@ -1157,7 +1157,12 @@ function Viewer3D(el, M, onPick) {
   const sp2m = v => (v === undefined || v === null ? 1 : +v).toFixed(2);
 
   const CHAIR_SEEN = new Set();
-  function addChairs(x0, z0, lx, lz, sp, H, db, yBot, info, ch, bound, capD, axis) {
+  /* `local` = مركز الشبكة حين تكون الشبكة **محلّية للعنصر** لا عالمية:
+     البلاطة والحصيرة لوح واحد فشبكة كراسيهما مركزها مركز المبنى، أمّا
+     القاعدة المنفردة فتُصبّ وحدها ولا علاقة لها بشبكة المبنى — فمركز
+     شبكتها مركزها هي. وبهذا يطابق العدد المرسوم العدد المحسوب بـ
+     `detail.chair_rows` حرفياً (2·⌊a/s⌋+1 بكل اتجاه). */
+  function addChairs(x0, z0, lx, lz, sp, H, db, yBot, info, ch, bound, capD, axis, local) {
     const pos = [], kind = (ch && ch.kind) || 'z90';
     const foot = (ch && ch.foot) || 100;
     // نصف العرض يُقاس من **المجسم نفسه** لا بحساب تقريبي: قوس الثنية ونصف قطر
@@ -1173,12 +1178,14 @@ function Viewer3D(el, M, onPick) {
     if (xHi < xLo - 1e-9 || zHi < zLo - 1e-9) return 0;   // العنصر أضيق من كرسي واحد
     // نقاط الشبكة العالمية الواقعة داخل [lo,hi] — وإن لم تقع منها نقطة بشريط
     // ضيّق وُضع كرسي واحد بوسطه، فالشريط يحتاج حاملاً ولو خرج عن الشبكة.
-    const lat = (lo, hi) => {
-      const i0 = Math.ceil(lo / sp - 1e-9), i1 = Math.floor(hi / sp + 1e-9), a = [];
-      for (let i = i0; i <= i1; i++) a.push(i * sp);
+    const lat = (lo, hi, c) => {
+      const o = c === undefined ? 0 : c;          // أصل الشبكة: عالمي أو مركز العنصر
+      const i0 = Math.ceil((lo - o) / sp - 1e-9), i1 = Math.floor((hi - o) / sp + 1e-9);
+      const a = [];
+      for (let i = i0; i <= i1; i++) a.push(o + i * sp);
       return a.length ? a : [(lo + hi) / 2];
     };
-    const XS = lat(xLo, xHi), ZS = lat(zLo, zHi);
+    const XS = lat(xLo, xHi, local && local.cx), ZS = lat(zLo, zHi, local && local.cz);
     XS.forEach(X => ZS.forEach(Z => {
       const key = X.toFixed(3) + '|' + Z.toFixed(3) + '|' + yBot.toFixed(3);
       if (CHAIR_SEEN.has(key)) return;            // تقاطع شريطين — كرسي واحد لا اثنان
@@ -1205,8 +1212,11 @@ function Viewer3D(el, M, onPick) {
       pos.forEach(p2 => loc.forEach(o => tp.push(axis === 'z'
         ? [p2[0] + o[2], p2[1] + o[1], p2[2] - o[0]]           // مُدار 90°
         : [p2[0] + o[0], p2[1] + o[1], p2[2] + o[2]])));
+      // الرباط يرث حدّ العنصر من بطاقة الكرسي، وإلّا قاسه التدقيق على مسقط
+      // المبنى فعدّ رباط قاعدةٍ ركنية «خارج الخرسانة» وهو داخلها.
       inst(chairTieGeo(db, capD), 0xe5e9ef, tp, null, G.chairs, 0,
-        { grp: (info && info.grp) || CURG, floor: info && info.floor });
+        { grp: (info && info.grp) || CURG, floor: info && info.floor,
+          ftB: info && info.ftB, ftx: info && info.ftx, ftz: info && info.ftz });
     }
     return im;
   }
@@ -1287,10 +1297,48 @@ function Viewer3D(el, M, onPick) {
         { title: 'تسليح الأساس F' + (k + 1), kind: 'rebar', rows: [['التفصيل', M.foot.label]] },
         null, null, .075));
     } else if (iso && iso.sizes) {
-      iso.sizes.forEach((sz, k) => meshGrid(px(M.loads[k].x) - sz.B / 2, pz(M.loads[k].y) - sz.B / 2,
-        sz.B, sz.B, iso.typical.spacing, iso.typical.bar_db, fb + .075,
-        { title: 'تسليح الأساس F' + (k + 1), kind: 'rebar', rows: [['التفصيل', iso.typical.bars_label]] },
-        null, null, .075));
+      /* الأساس المنفرد: شبكة سفلى دائماً، وشبكة **علوية وكراسي** حين تلزم.
+         وكانت تُرسم شبكة واحدة بغطاء ثابت 75 مم بلا سماكة ولا وجه علوي، فلا
+         يتغيّر بالمجسّم شيء مهما غلُظت القاعدة بارتفاع المبنى. الآن الثلاثة
+         (موضع الشبكتين وارتفاع الكرسي) تُشتقّ من سماكة القاعدة الفعلية. */
+      const ty = iso.typical, tft = (ty.h || 300) / 1000;
+      const cvFB = 0.075;                       // ACI 318-19 §20.5.1.3 صبّ على التربة
+      const tpm = ty.top || { needed: false };
+      const cvFT = (tpm.cover || 40) / 1000;    // الوجه العلوي معرّض لا مصبوب على تربة
+      const fch = (md.found && md.found.chairs) || null;
+      iso.sizes.forEach((sz, k) => {
+        const X = px(M.loads[k].x) - sz.B / 2, Z = pz(M.loads[k].y) - sz.B / 2;
+        meshGrid(X, Z, sz.B, sz.B, ty.spacing, ty.bar_db, fb + cvFB,
+          { title: 'تسليح الأساس F' + (k + 1) + ' — السفلي', kind: 'rebar',
+            rows: [['التفصيل', ty.bars_label],
+                   ['الغطاء السفلي', '75 مم — ACI 318-19 §20.5.1.3 (صبّ على التربة)'],
+                   ['سماكة القاعدة', Math.round(ty.h) + ' مم']] },
+          null, null, cvFB);
+        if (!tpm.needed) return;
+        const yTopBar = fb + tft - cvFT - 1.5 * tpm.db / 1000;
+        meshGrid(X, Z, sz.B, sz.B, tpm.s, tpm.db, yTopBar,
+          { title: 'تسليح الأساس F' + (k + 1) + ' — العلوي', kind: 'rebar',
+            rows: [['التفصيل', tpm.label],
+                   ['لماذا وُضع', tpm.why],
+                   ['البند', tpm.clause],
+                   ['الغطاء العلوي', Math.round(tpm.cover) + ' مم — الوجه معرّض لا مصبوب على التربة']] },
+          null, null, cvFT);
+        if (!fch || !fch.db) return;
+        // ظهر الشبكة السفلى وبطن العلوية — والفرق بينهما هو ارتفاع الكرسي
+        const ybF = fb + cvFB + 2 * ty.bar_db / 1000;
+        const ytF = fb + tft - cvFT - 2 * tpm.db / 1000;
+        const htF = Math.max(.06, ytF - ybF);
+        const infoF = chairInfo('كراسي الأساس F' + (k + 1), fch, htF, 'found', null,
+                    tpm.s, ty.spacing, tpm.db,
+                    [['حدّ القاعدة', sz.B.toFixed(2) + ' × ' + sz.B.toFixed(2) + ' م'],
+                     ['شبكة الكراسي', 'مركزها **هذه القاعدة** لا مركز المبنى — '
+                       + 'القاعدة تُصبّ وحدها']]);
+        // حدّ هذه القاعدة بالذات، ليقيسه `chairAudit` عليه لا على مسقط المبنى
+        infoF.ftB = sz.B; infoF.ftx = X + sz.B / 2; infoF.ftz = Z + sz.B / 2;
+        addChairs(X, Z, sz.B, sz.B, fch.spacing, htF, fch.db, ybF, infoF,
+          fch, { x0: X + cvFB, z0: Z + cvFB, lx: sz.B - 2 * cvFB, lz: sz.B - 2 * cvFB },
+          tpm.db, null, { cx: X + sz.B / 2, cz: Z + sz.B / 2 });
+      });
     }
     CURG = 'piles';
     if (pil) {
@@ -3058,6 +3106,17 @@ function Viewer3D(el, M, onPick) {
     },
     camTo: (c, d) => { cam.position.set(c[0] + d * .75, c[1] + d * .45, c[2] + d * .75);
       ctl.target.set(c[0], c[1], c[2]); ctl.update(); anim = null; },
+    /* عدّ الكراسي **وحدها بلا رباط** بمجموعةٍ ما — للمطابقة مع العدد المحسوب */
+    chairCount: g => { buildRebar();
+      let n = 0;
+      G.chairs.traverse(o => {
+        if (!o.isInstancedMesh || !o.userData) return;
+        if (!/^كراسي/.test(o.userData.title || '')) return;
+        if (g && o.userData.grp !== g) return;
+        n += o.count;
+      });
+      return n;
+    },
     /* تدقيق الكراسي: أبعد نقطة يبلغها أي كرسي مقابل حدّ الخرسانة */
     chairAudit: () => {
       buildRebar();
@@ -3070,10 +3129,21 @@ function Viewer3D(el, M, onPick) {
         w = Math.max(w, g2.max.x - g2.min.x); ht = Math.max(ht, g2.max.y - g2.min.y);
         for (let i = 0; i < o.count; i++) {
           o.getMatrixAt(i, m4); v.setFromMatrixPosition(m4); n++;
-          const raft = (o.userData && o.userData.grp) === 'raft' && rf;
-          const HX = raft ? rf.Lx / 2 : L / 2, HZ = raft ? rf.Ly / 2 : B / 2;
-          const ex = Math.max(Math.abs(v.x) + (g2.max.x - g2.min.x) / 2 - HX,
-                              Math.abs(v.z) + (g2.max.z - g2.min.z) / 2 - HZ);
+          const grp = o.userData && o.userData.grp;
+          const raft = grp === 'raft' && rf;
+          let ex;
+          if (grp === 'found' && o.userData && o.userData.ftB) {
+            /* كرسي القاعدة المنفردة حدّه **قاعدته هي** لا مسقط المبنى: قاعدة
+               العمود الركني تبرز خارج حافة البلاطة بطبيعتها، فقياسه على
+               المسقط يعدّه خارجاً وهو داخل خرسانته تماماً. */
+            const u = o.userData, hb = u.ftB / 2;
+            ex = Math.max(Math.abs(v.x - u.ftx) + (g2.max.x - g2.min.x) / 2 - hb,
+                          Math.abs(v.z - u.ftz) + (g2.max.z - g2.min.z) / 2 - hb);
+          } else {
+            const HX = raft ? rf.Lx / 2 : L / 2, HZ = raft ? rf.Ly / 2 : B / 2;
+            ex = Math.max(Math.abs(v.x) + (g2.max.x - g2.min.x) / 2 - HX,
+                          Math.abs(v.z) + (g2.max.z - g2.min.z) / 2 - HZ);
+          }
           if (ex > 1e-4) { out++; worst = Math.max(worst, ex); }
         }
       });

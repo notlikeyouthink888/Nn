@@ -73,8 +73,12 @@ def schedule(R):
             rows.append(_row('F%d' % (i + 1), 'أساس منفرد F%d (%.2f×%.2f م)' % (i + 1, s['B'], s['B']),
                              t['bar_db'], 'مستقيم بخطاف', s['B'] - 0.15, n, fc, fy))
         ch = m['found']['chairs']
-        rows.append(_row('F-CH', 'أسس منفردة — كراسي (%s)' % ch.get('name', ''), ch['db'],
-                         'كرسي %d°' % ch.get('angle', 90), ch['len_each'], ch['n'], fc, fy))
+        # لا صفّ كراسي بلا كراسي: القاعدة الرقيقة لا شبكة علوية لها فلا كرسي
+        # يحملها، و`db = 0` كان يمرّ إلى حساب طول الوصلة فيقسم على صفر.
+        if ch.get('n') and ch.get('db'):
+            rows.append(_row('F-CH', 'أسس منفردة — كراسي (%s)' % ch.get('name', ''),
+                             ch['db'], 'كرسي %d°' % ch.get('angle', 90),
+                             ch['len_each'], ch['n'], fc, fy))
     else:
         pl = alts['piles']['pile']; npc = len(R['loads'])
         rows.append(_row('P-L', 'ركائز — تسليح طولي', pl['rebar']['db'], 'مستقيم',

@@ -628,6 +628,8 @@ function v3bar(o) {
     <button id="btnAdd" onclick="toggleAddCol()">➕ أضف عمود</button>
     <button id="btnLift" onclick="toggleAddLift()">🛗 أضف مصعد</button>
     <button onclick="V3&&V3.zoomSel()">🔍 تقريب المحدد</button>
+    <button id="btnPerf" onclick="V3SET&&V3SET.toggle()"
+      title="جودة الرسم والأداء — لا يغيّر التصميم">⚙️ العرض والأداء</button>
     <select id="v3floor" onchange="V3&&V3.floor(this.value==='all'?'all':+this.value)"
       style="width:auto;padding:5px 9px;font-size:11.5px">
       <option value="all">كل الطوابق</option>
@@ -3706,6 +3708,7 @@ PAGES.room = {
           <button id="btnRebar" onclick="toggleRebar()">🧵 إظهار التسليح</button>
           <button id="btnXray" onclick="toggleXray()">🩻 وضع الأشعة</button>
           <button onclick="V3&&V3.zoomSel()">🔍 تقريب المحدد</button>
+          <button onclick="V3SET&&V3SET.toggle('#rm3d')">⚙️ العرض والأداء</button>
       </div>
       <div class="v3d"><div id="rm3d" style="min-height:430px"></div>
         <div class="chips" id="v3groups">

@@ -21,9 +21,11 @@ function Viewer3D(el, M, onPick) {
   cam.position.copy(home);
   // preserveDrawingBuffer يسمح بطباعة المجسم وأخذ لقطة له
   const rn = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-  rn.setSize(W, H); rn.setPixelRatio(Math.min(2, devicePixelRatio));
+  rn.setSize(W, H);
+  rn.setPixelRatio(Math.min((window.V3SET ? V3SET.get().dpr : 2), devicePixelRatio));
   rn.localClippingEnabled = true;
-  rn.shadowMap.enabled = true; rn.shadowMap.type = T.PCFSoftShadowMap;
+  rn.shadowMap.enabled = window.V3SET ? !!V3SET.get().shadows : true;
+  rn.shadowMap.type = T.PCFSoftShadowMap;
   el.innerHTML = ''; el.appendChild(rn.domElement);
   const ctl = new T.OrbitControls(cam, rn.domElement);
   const mid = new T.Vector3(0, (nf * hs + fb) / 2, 0);
@@ -59,6 +61,17 @@ function Viewer3D(el, M, onPick) {
   const STEEL = 0xe8443a, TIE = 0xff9f1c, EXTRA = 0x22d3ee, CHAIR = 0x86efac,
     DOWEL = 0xc084fc, CTOP = 0xfacc15, CBOT = 0x60a5fa;
   let built = false, S = { bars: 0, meshes: 0, weight: 0, byGrp: {} }, CURG = 'rebar';
+  /* مقابض الأداء — من `v3set.js` إن وُجد، وإلّا قيمٌ كاملة الجودة. فالمجسّم
+     يعمل بلا الوحدة، ولا يعتمد عليها اعتماد وجود. */
+  const QS = () => (window.V3SET ? V3SET.get()
+    : { seg: 12, floors: 0, ties: true, spacers: true, shadows: true, dpr: 2 });
+  /** عدد أضلاع المقطع الدائري بعد تطبيق مقبض الدقّة (بحدّ أدنى 3). */
+  const qseg = n => Math.max(3, Math.round((n === undefined ? 12 : n) * QS().seg / 12));
+  /** هل يُرسم تسليح هذا الطابق؟ `f` من 1، و`undefined` = ليس تسليح طابق. */
+  const qfloor = f => { const q = QS();
+    if (q.floors === -1) return false;
+    if (!q.floors || !f) return q.floors !== -1;
+    return f <= q.floors; };
   const stock = md.stock || 12.0, LAPS = md.laps || {};
   const lapOf = db => { const l = LAPS[db] || LAPS[String(db)];
     return l ? (typeof l === 'object' ? l.bottom : l) : 0.6; };
@@ -317,8 +330,8 @@ function Viewer3D(el, M, onPick) {
             if (COLS.some(l => Math.abs(px(l.x) - xx) < sd && Math.abs(pz(l.y) - zz) < sd)) continue;
             pos.push([xx, z - th / 2, zz]);
           }
-        if (pos.length && pos.length < 12000) {
-          const im = new T.InstancedMesh(new T.SphereGeometry(dia / 2, 10, 8),
+        if (QS().spacers && pos.length && pos.length < 12000) {
+          const im = new T.InstancedMesh(new T.SphereGeometry(dia / 2, qseg(10), qseg(8)),
             mat(0x30455f, .9), pos.length);
           const mx2 = new T.Matrix4();
           pos.forEach((p, i) => { mx2.makeTranslation(p[0], p[1], p[2]); im.setMatrixAt(i, mx2); });
@@ -1008,7 +1021,8 @@ function Viewer3D(el, M, onPick) {
      الشبكة بمقدار rad·(1−cos(π/n)). باثنتي عشرة ضلعاً يصير الفارق 0.17 مم على
      سيخ Ø10 — أدقّ من أي تفريد بالموقع، وكلفته صفر لأن الكراسي كلها
      InstancedMesh واحدة تتشارك مجسّماً واحداً. */
-  const CH_SEG = 12;
+  const CH_SEG_MAX = 12;
+  const CH_SEG = () => qseg(CH_SEG_MAX);
   /* axis = اتجاه **العرضة**. العرضة يجب أن تكون عموديةً على الأسياخ التي
      تحملها: فوق محاور جسور X يمتدّ الحديد العلوي باتجاه Z فتمتدّ العرضة
      باتجاه X، وفوق محاور جسور Y ينعكس الأمر — فيُدار الكرسي 90°. */
@@ -1033,16 +1047,16 @@ function Viewer3D(el, M, onPick) {
       for (let o = -.5; o <= .5001; o += .125)
         zz.push(new T.Vector3(0, (Math.round((o + .5) / .125) % 2) ? y1 : y0, o));
       const g3 = new T.TubeGeometry(new T.CatmullRomCurve3(zz, false, 'catmullrom', 0),
-        zz.length * 4, rad, CH_SEG, false);
+        zz.length * 4, rad, CH_SEG(), false);
       // سلكا القاعدة المستمرّان بطرفَي القاعدة
       const parts = [g3];
       [-1, 1].forEach(sg => {
-        const c = new T.CylinderGeometry(rad, rad, 1.0, CH_SEG, 1);
+        const c = new T.CylinderGeometry(rad, rad, 1.0, CH_SEG(), 1);
         c.rotateX(Math.PI / 2); c.translate(sg * (t2 * .6 + fz * .1), y0, 0);
         parts.push(c);
       });
       // سلك علوي مستمرّ يربط القمم
-      const topw = new T.CylinderGeometry(rad, rad, 1.0, CH_SEG, 1);
+      const topw = new T.CylinderGeometry(rad, rad, 1.0, CH_SEG(), 1);
       topw.rotateX(Math.PI / 2); topw.translate(0, y1, 0);
       parts.push(topw);
       return mergeGeos(parts);
@@ -1065,7 +1079,7 @@ function Viewer3D(el, M, onPick) {
     push(Bx + run, y0, r);                           // ثنية بمستوى Y–Z
     push(Bx + run, y0, fz);                          // الطرف **الطافر** لقدم B
     return new T.TubeGeometry(new T.CatmullRomCurve3(p, false, 'catmullrom', 0),
-      kind === 's135' ? 40 : 32, rad, CH_SEG, false);
+      kind === 's135' ? 40 : 32, rad, CH_SEG(), false);
   }
 
   /* دمج مجسّمات بسيطة بمجسّم واحد — بلا BufferGeometryUtils (غير محمَّلة). */
@@ -1214,7 +1228,8 @@ function Viewer3D(el, M, onPick) {
         : [p2[0] + o[0], p2[1] + o[1], p2[2] + o[2]])));
       // الرباط يرث حدّ العنصر من بطاقة الكرسي، وإلّا قاسه التدقيق على مسقط
       // المبنى فعدّ رباط قاعدةٍ ركنية «خارج الخرسانة» وهو داخلها.
-      inst(chairTieGeo(db, capD), 0xe5e9ef, tp, null, G.chairs, 0,
+      // وهو **ثلاث قطع بكل كرسي** — أثقل بند بالمشهد، فله مقبض يُطفئه.
+      if (QS().ties) inst(chairTieGeo(db, capD), 0xe5e9ef, tp, null, G.chairs, 0,
         { grp: (info && info.grp) || CURG, floor: info && info.floor,
           ftB: info && info.ftB, ftx: info && info.ftx, ftz: info && info.ftz });
     }
@@ -1374,6 +1389,7 @@ function Viewer3D(el, M, onPick) {
     COLS.forEach((l, k) => {
       const X = px(l.x), Z = pz(l.y);
       for (let s = 0; s < nf; s++) {
+        if (!qfloor(s + 1)) continue;          // مقبض «تسليح كم طابقاً»
         const z0 = s === 0 ? ft : s * hs, z1 = (s + 1) * hs;
         const ix = cb / 2 - cvr, iz = ch / 2 - cvr, pA = [], pB = [];
         let idx = 0;
@@ -1548,6 +1564,7 @@ function Viewer3D(el, M, onPick) {
       });
     } else {
       for (let s = 1; s <= nf; s++) {
+        if (!qfloor(s)) continue;              // مقبض «تسليح كم طابقاً»
         const z = s * hs;
         for (let j = 0; j <= g.ny; j++) for (let i = 0; i < g.nx; i++)
           drawBeam(px((xs[i] + xs[i + 1]) / 2), pz(ys[j]), g.sx - cb, md.beams.x.b / 1000,
@@ -1565,7 +1582,8 @@ function Viewer3D(el, M, onPick) {
       mt = msh.top;
     const cvS = (md.slab.cover || 20) / 1000;
     const shortIsX = L <= B;                       // اتجاه الفرش = البعد الأقصر
-    const floorsList = ROOM ? [1] : Array.from({ length: nf }, (_, i) => i + 1);
+    const floorsList = (ROOM ? [1] : Array.from({ length: nf }, (_, i) => i + 1))
+      .filter(f2 => qfloor(f2));               // مقبض «تسليح كم طابقاً»
     floorsList.forEach(s => {
       const z = ROOM ? hs : s * hs;
       // ---- الفرش (الاتجاه القصير) ثم الغطاء (الطويل) فوقه بقطر سيخ واحد ----
@@ -2908,18 +2926,63 @@ function Viewer3D(el, M, onPick) {
     const fts = footPts();
     const depth = lv.existing - fb;                      // عمق الحفر
     const bl = 0.08;                                     // سماكة الضنبان
-    buildGround(fts.map(f => ({ x: f.x, z: f.z, w: f.B + .6 })));
+    /* ثقوب الأرض المحفورة تتبع نوع الحفر نفسه: ثقب واحد كبير للحصيرة
+       والركائز، وثقب لكل قاعدة بالأسس المنفردة. */
+    const digKind0 = M.recommended || 'isolated';
+    buildGround(
+      digKind0 === 'raft' && rf
+        ? [{ x: 0, z: 0, w: Math.max(rf.Lx, rf.Ly) + 1.2 }]
+        : digKind0 === 'piles'
+          ? [{ x: 0, z: 0, w: Math.max(L, B) + 1.2 }]
+          : fts.map(f => ({ x: f.x, z: f.z, w: f.B + .6 })));
 
-    // ١) الحفر — حفرة لكل أساس
+    /* ١) الحفر — **حسب نوع الأساس، لا حفرة لكل عمود دائماً**
+
+       كان يُحفر مربّع تحت كل عمود مهما كان النظام، وهذا خطأ تنفيذي: الحصيرة
+       لوح واحد فتُحفر حفرة واحدة تحتها كاملة، والركائز يُحفر لها **حفر عام**
+       إلى منسوب بطن الهامات ثمّ تُجرَف الركائز من قاعه. ولا يُحفر مربّع
+       منفصل إلا حيث تكون القاعدة منفصلة فعلاً. */
     const gDig = coGrp('dig');
-    fts.forEach((f, i) => {
-      const w = f.B + .6;
-      C.pit(gDig, w, w, depth, f.x, lv.existing, f.z, { clip: clip,
-        info: { title: 'حفرة أساس F' + (i + 1), kind: 'site', grp: 'site',
-          rows: [['المقاس', w.toFixed(2) + ' × ' + w.toFixed(2) + ' م (الأساس + 30 سم عمل)'],
+    const digKind = M.recommended || 'isolated';
+    // مساحة الحفر العام: امتداد المبنى + 60 سم مجال عمل لكل جهة
+    const workW = 0.6;
+    if (digKind === 'raft' && rf) {
+      const w = rf.Lx + 2 * workW, d2 = rf.Ly + 2 * workW;
+      C.pit(gDig, w, d2, depth, 0, lv.existing, 0, { clip: clip,
+        info: { title: 'الحفر العام — حصيرة', kind: 'site', grp: 'site',
+          rows: [['المقاس', w.toFixed(2) + ' × ' + d2.toFixed(2) + ' م'],
             ['العمق', depth.toFixed(2) + ' م من الأرض الطبيعية'],
-            ['المرحلة', '١ · الحفر']] } });
-    });
+            ['لماذا حفرة واحدة', 'الحصيرة **لوح متّصل** تحت المبنى كلّه، فلا '
+              + 'معنى لحفر مربّعات منفصلة — يُحفر المسقط كاملاً دفعةً واحدة'],
+            ['مجال العمل', (workW * 100).toFixed(0) + ' سم لكل جهة للشدّة والعامل'],
+            ['المساحة المحفورة', (w * d2).toFixed(1) + ' م²'],
+            ['الحجم', (w * d2 * depth).toFixed(1) + ' م³'],
+            ['المرحلة', '٢ · الحفر']] } });
+    } else if (digKind === 'piles') {
+      const w = L + 2 * workW, d2 = B + 2 * workW;
+      C.pit(gDig, w, d2, depth, 0, lv.existing, 0, { clip: clip,
+        info: { title: 'الحفر العام — ركائز', kind: 'site', grp: 'site',
+          rows: [['المقاس', w.toFixed(2) + ' × ' + d2.toFixed(2) + ' م'],
+            ['العمق', depth.toFixed(2) + ' م — إلى منسوب بطن الهامات'],
+            ['لماذا حفرة واحدة', 'الركائز **تُجرَف من قاع الحفر العام** لا من '
+              + 'سطح الأرض: الحفر أولاً إلى منسوب بطن الهامات، ثمّ تنزل '
+              + 'الحفّارة فتثقب الركائز، ثمّ تُصبّ الهامات فوقها'],
+            ['المساحة المحفورة', (w * d2).toFixed(1) + ' م²'],
+            ['الحجم', (w * d2 * depth).toFixed(1) + ' م³'],
+            ['المرحلة', '٢ · الحفر']] } });
+    } else {
+      fts.forEach((f, i) => {
+        const w = f.B + .6;
+        C.pit(gDig, w, w, depth, f.x, lv.existing, f.z, { clip: clip,
+          info: { title: 'حفرة أساس F' + (i + 1), kind: 'site', grp: 'site',
+            rows: [['المقاس', w.toFixed(2) + ' × ' + w.toFixed(2) + ' م (الأساس + 30 سم عمل)'],
+              ['العمق', depth.toFixed(2) + ' م من الأرض الطبيعية'],
+              ['لماذا مربّع منفصل', 'القواعد **منفصلة** فعلاً، فلا يُحفر بينها '
+                + 'ما لا يُبنى عليه — توفير بالحفر والردم معاً'],
+              ['الحجم', (w * w * depth).toFixed(2) + ' م³ لهذه الحفرة'],
+              ['المرحلة', '٢ · الحفر']] } });
+      });
+    }
 
     // ٢) الضنبان (خرسانة النظافة)
     const gBl = coGrp('blind');
@@ -3106,6 +3169,39 @@ function Viewer3D(el, M, onPick) {
     },
     camTo: (c, d) => { cam.position.set(c[0] + d * .75, c[1] + d * .45, c[2] + d * .75);
       ctl.target.set(c[0], c[1], c[2]); ctl.update(); anim = null; },
+    /* مقابض الأداء — ما يمسّ الرسم وحده يُطبَّق فوراً بلا إعادة بناء */
+    renderQuality: q => {
+      q = q || {};
+      if (q.dpr) rn.setPixelRatio(Math.min(q.dpr, devicePixelRatio));
+      if (q.shadows !== undefined) {
+        rn.shadowMap.enabled = !!q.shadows;
+        rn.shadowMap.needsUpdate = true;
+        sc.traverse(o => { if (o.isMesh) { o.castShadow = !!q.shadows;
+          o.receiveShadow = !!q.shadows; } });
+      }
+      return true;
+    },
+    /* إعادة بناء التسليح بعد تغيير مقبض هندسي (الأضلاع · الطوابق · الرباط).
+       الحالة تُحفظ وتُستعاد، فلا يتغيّر ما يراه المستخدم إلا الجودة. */
+    rebuildRebar: () => {
+      const was = G.rebar.visible;
+      ['rebar', 'extra', 'chairs'].forEach(k => {
+        const g2 = G[k];
+        while (g2.children.length) {
+          const c = g2.children.pop();
+          c.traverse(o => { if (o.geometry) o.geometry.dispose();
+            if (o.material) (Array.isArray(o.material) ? o.material : [o.material])
+              .forEach(m2 => m2.dispose()); });
+        }
+      });
+      built = false;
+      S = { bars: 0, meshes: 0, weight: 0, byGrp: {} };
+      CHAIR_SEEN.clear();
+      if (was) { buildRebar(); G.rebar.visible = true;
+        G.extra.visible = on.extra !== 0; G.chairs.visible = on.chairs !== 0; }
+      applyVis();
+      return visStats();
+    },
     /* عدّ الكراسي **وحدها بلا رباط** بمجموعةٍ ما — للمطابقة مع العدد المحسوب */
     chairCount: g => { buildRebar();
       let n = 0;

@@ -154,7 +154,9 @@
       + '<button data-t="res">③ النتائج</button>'
       + '<button data-t="fnd">④ الأساسات</button>'
       + '<button data-t="prf">⑤ دليل الحسابات</button>'
-      + '<button data-t="ver">⑥ التحقّق العلمي</button></div>'
+      + '<button data-t="ver">⑥ التحقّق العلمي</button>'
+      + (MODE === 'project' ? '<button data-t="qty">⑦ من أين جاءت الكميات</button>' : '')
+      + '</div>'
 
       /* ① */
       + (MODE === 'project'
@@ -248,6 +250,13 @@
       + '<span id="f_xst" style="font-size:12px;color:var(--mut)"></span></div>'
       + '<div id="f_xout" style="margin-top:12px"></div></div>'
       + '<div id="f_ver"></div></div>'
+      /* ⑦ من أين جاءت الكميات — بوضع المشروع وحده، لأنه يحتاج تصميم المعالج */
+      + (MODE === 'project'
+        ? '<div class="fp" data-p="qty">'
+          + (global.QTY ? QTY.html()
+            : '<div class="note">وحدة الكميات غير محمَّلة (qty.js).</div>')
+          + '</div>'
+        : '')
       + '</div>';
   }
 
@@ -257,6 +266,8 @@
     var p = document.querySelectorAll('#fem .fp');
     for (i = 0; i < p.length; i++) p[i].classList.toggle('on', p[i].dataset.p === t);
     if (t === 'vw' && VP) setTimeout(function () { VP.fit(); }, 30);
+    // الكميات تُجلب عند فتح تبويبها أول مرّة — لا مع كل تحليل
+    if (t === 'qty' && global.QTY && !QLOADED) { QLOADED = 1; QTY.load(wiz()); }
   }
 
   /* ─────────────── المصدر: حالة · تركيب · غلاف ─────────────── */
@@ -290,6 +301,8 @@
     if (SRC.slice(0, 2) === 'L:') return FR.stations(k, ns, SRC.slice(2));
     return FR.stations(k, ns, 'DEAD');
   }
+
+  var QLOADED = 0;
 
   function dbar() {
     var h = '';
@@ -1062,6 +1075,7 @@
           var cp = $id('f_cmp'); if (cp) cp.innerHTML = cmpHTML();
         }
         $id('f_prf').innerHTML = proofHTML(-1);
+        QLOADED = 0;                     // الكميات تُعاد مع كل تصميم جديد
         if (st) st.innerHTML = '<span class="ok">✓ ' + FR.members.length + ' عنصر · '
           + FR.neq + ' DOF · ' + FR.cases.length + ' حالة · ' + COMBOS.length + ' تركيب · '
           + nf(FR.ms, 0) + ' ms</span>';

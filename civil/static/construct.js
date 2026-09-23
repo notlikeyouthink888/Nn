@@ -192,6 +192,52 @@
    * شدّة عنصر رأسي (عمود أو أساس): أربعة ألواح بليوود حول المقطع مع
    * **الجنائب** الأفقية (البواري) التي تشدّها كل 50 سم — هذا ما يظهر بالموقع.
    */
+  /** تباعد الجنائب رأسياً (م) — وهو تباعد صفوف المرابط أيضاً. */
+  const WALER_SP = 0.55;
+  /** أقصى تباعد بين مربطين (عصفور) على الجنيب الواحد (م). */
+  const CLAMP_SP = 0.60;
+
+  /* مربط الشدّة — «عصفور»: ماسورة شدّ تعبر القالب، وبطرفها صحن وإسفين
+     يُدقّ فيقفل الجنيب على اللوح. هو ما يمنع **انتفاخ** القالب تحت ضغط
+     الخرسانة الطرية: الضغط الجانبي يبلغ عشرات الكيلوباسكالات عند القاع،
+     واللوح وحده لا يقاومه — والانتفاخ يخرج العمود منتفخ الوسط. */
+  function clampAt(gp, x, y, z, nx, nz, clip) {
+    const st = mat('steel', { clip: clip }) || mat('timber', { clip: clip });
+    // الصحن: صفيحة صغيرة على الجنيب
+    slab(gp, nx ? .012 : .075, .075, nz ? .012 : .075, x, y, z, st);
+    // الإسفين المدقوق: قطعة مائلة قصيرة تبرز خارج الصحن
+    const wg = new THREE.Mesh(
+      new THREE.BoxGeometry(nx ? .016 : .05, .05, nz ? .016 : .05),
+      st);
+    wg.position.set(x + (nx ? nx * .022 : 0), y + .012, z + (nz ? nz * .022 : 0));
+    wg.rotation.z = nx ? 0.35 : 0;
+    wg.rotation.x = nz ? 0.35 : 0;
+    gp.add(wg);
+  }
+
+  /* جكّ مائل — دعامة معدنية قابلة للضبط تُثبَّت من الأرض إلى ثلثَي ارتفاع
+     القالب. وظيفتها **الشاقولية والثبات الجانبي** لا مقاومة ضغط الخرسانة:
+     المرابط تمنع الانتفاخ، والجكّ يمنع الميل والانزياح أثناء الصبّ والهزّ.
+     وبلا جكّين متقاطعين على الأقل لكل وجه يخرج العمود مائلاً. */
+  function propAt(gp, x0, y0, z0, x1, y1, z1, clip) {
+    const st = mat('steel', { clip: clip }) || mat('timber', { clip: clip });
+    const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < .05) return;
+    const pr = new THREE.Mesh(new THREE.CylinderGeometry(.022, .022, len, 8, 1), st);
+    pr.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+    pr.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(dx, dy, dz).normalize());
+    gp.add(pr);
+    // صامولة الضبط بوسط الجكّ — هي ما يُطوَّل به ويُقصَّر
+    const nut = new THREE.Mesh(new THREE.CylinderGeometry(.035, .035, .05, 6, 1), st);
+    nut.position.copy(pr.position);
+    nut.quaternion.copy(pr.quaternion);
+    gp.add(nut);
+    // قاعدة الجكّ على الأرض
+    slab(gp, .12, .02, .12, x0, y0 + .01, z0, st);
+  }
+
   function formBox(parent, w, d, h, x, y, z, opt) {
     opt = opt || {};
     const t = opt.t || 0.025;                       // سماكة اللوح
@@ -205,13 +251,48 @@
     slab(gp, t, h, d, -w / 2 - t / 2, 0, 0, pd);
     // الجنائب الأفقية
     const tb = mat('timber', { clip: clip });
-    const n = Math.max(1, Math.floor(h / .55));
+    const n = Math.max(1, Math.floor(h / WALER_SP));
+    const zF = d / 2 + t + .03, xF = w / 2 + t + .03;
     for (let i = 0; i < n; i++) {
       const yy = -h / 2 + (i + .5) * h / n;
-      slab(gp, w + 2 * t + .09, .05, .05, 0, yy, d / 2 + t + .03, tb);
-      slab(gp, w + 2 * t + .09, .05, .05, 0, yy, -d / 2 - t - .03, tb);
-      slab(gp, .05, .05, d + 2 * t + .09, w / 2 + t + .03, yy, 0, tb);
-      slab(gp, .05, .05, d + 2 * t + .09, -w / 2 - t - .03, yy, 0, tb);
+      slab(gp, w + 2 * t + .09, .05, .05, 0, yy, zF, tb);
+      slab(gp, w + 2 * t + .09, .05, .05, 0, yy, -zF, tb);
+      slab(gp, .05, .05, d + 2 * t + .09, xF, yy, 0, tb);
+      slab(gp, .05, .05, d + 2 * t + .09, -xF, yy, 0, tb);
+      if (opt.clamps === false) continue;
+      /* المرابط (العصافير): على كل جنيب، بتباعد ≤ 60 سم — وطرفا الجنيب
+         دائماً مربوطان لأنهما أضعف موضع. */
+      const nX = Math.max(2, Math.ceil((w + 2 * t) / CLAMP_SP) + 1);
+      for (let j = 0; j < nX; j++) {
+        const xx = -(w / 2 + t) + j * (w + 2 * t) / (nX - 1);
+        clampAt(gp, xx, yy, zF + .04, 0, 1, clip);
+        clampAt(gp, xx, yy, -zF - .04, 0, -1, clip);
+      }
+      const nZ = Math.max(2, Math.ceil((d + 2 * t) / CLAMP_SP) + 1);
+      for (let j = 0; j < nZ; j++) {
+        const zz = -(d / 2 + t) + j * (d + 2 * t) / (nZ - 1);
+        clampAt(gp, xF + .04, yy, zz, 1, 0, clip);
+        clampAt(gp, -xF - .04, yy, zz, -1, 0, clip);
+      }
+    }
+    /* الجكّات المائلة: اثنان لكل وجه على ثلثَي الارتفاع، قاعدتهما على
+       الأرض بمسافة تعطي ميلاً نحو 60° — وهو الميل الذي يعطي مركّبة
+       أفقية كافية بلا أن يشغل الممرّ. */
+    if (opt.props !== false && h > .6) {
+      const yTop = h * .16;                        // ثلثا الارتفاع من القاع
+      const reach = h * .55;                       // بُعد القاعدة عن وجه القالب
+      const yBase = -h / 2;
+      [[0, 1], [0, -1], [1, 0], [-1, 0]].forEach(([sx, sz]) => {
+        const fx = sx * (w / 2 + t + .05), fz = sz * (d / 2 + t + .05);
+        const along = sx ? 'z' : 'x';
+        const half = (along === 'z' ? d : w) / 2;
+        [-1, 1].forEach(sg => {
+          const ox = along === 'x' ? sg * half * .6 : 0;
+          const oz = along === 'z' ? sg * half * .6 : 0;
+          propAt(gp, fx + sx * reach + ox, yBase, fz + sz * reach + oz,
+                 fx + ox, yTop, fz + oz, clip);
+        });
+      });
     }
     gp.position.set(x, y, z);
     if (opt.info) gp.userData = opt.info;

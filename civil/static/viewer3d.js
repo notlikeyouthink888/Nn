@@ -2914,6 +2914,11 @@ function Viewer3D(el, M, onPick) {
     gd.add(gh2); picks.push(gh2);
   }
 
+  /** سماكة طبقات السبيس تحت الأساس (م) — مصدر واحد للمجسّم وللنصوص. */
+  function siteSubT() {
+    return Math.max(0.20, ((md.found && md.found.subbase_t) || 300) / 1000);
+  }
+
   /* مواقع الأسس بالمشروع (مركز كل عمود + مقاس الأساس) */
   function footPts() {
     const out = [];
@@ -2935,8 +2940,16 @@ function Viewer3D(el, M, onPick) {
     siteLights();
     const cb2 = md.col.b / 1000, ch2 = md.col.h / 1000;
     const fts = footPts();
-    const depth = lv.existing - fb;                      // عمق الحفر
     const bl = 0.08;                                     // سماكة الضنبان
+    /* عمق الحفر **ليس** إلى بطن الأساس: تحته ضنبان وتحته طبقات سبيس مدكوكة،
+       فيُحفر إلى بطنها هي. وكان يُحفر إلى بطن الأساس تماماً، فلا يبقى مكان
+       للسبيس ولا للضنبان — وكانا يُرسمان تحت قاع الحفرة فلا يُريان. */
+    const SUB_LIFT = 0.20;                               // أقصى سماكة طبقة مدكوكة (م)
+    const subT = siteSubT();
+    const nLift = Math.max(1, Math.ceil(subT / SUB_LIFT - 1e-9));
+    const liftT = subT / nLift;
+    const digBot = fb - bl - subT;                       // منسوب قاع الحفر
+    const depth = lv.existing - digBot;                  // عمق الحفر الكلّي
     /* ثقوب الأرض المحفورة تتبع نوع الحفر نفسه: ثقب واحد كبير للحصيرة
        والركائز، وثقب لكل قاعدة بالأسس المنفردة. */
     const digKind0 = M.recommended || 'isolated';
@@ -3004,10 +3017,6 @@ function Viewer3D(el, M, onPick) {
        وسماكة الطبقة الواحدة محكومة بالدكّ لا بالرغبة: **200 مم مدكوكة**
        أقصى ما يخترقه الحادل فعلياً، وما زاد يبقى رخواً بأسفله. فعدد
        الطبقات = السماكة الكلية ÷ 200 مم مقرَّباً لأعلى. */
-    const SUB_LIFT = 0.20;                       // أقصى سماكة طبقة مدكوكة (م)
-    const subT = Math.max(0.20, ((md.found && md.found.subbase_t) || 300) / 1000);
-    const nLift = Math.max(1, Math.ceil(subT / SUB_LIFT - 1e-9));
-    const liftT = subT / nLift;
     const gSub = coGrp('subbase'), gCmp = coGrp('compact');
     // امتداد السبيس: يتبع شكل الحفر — لوح واحد للحصيرة والركائز، ورقعة لكل قاعدة
     const subAreas = (digKind === 'raft' && rf)
@@ -3611,7 +3620,8 @@ function Viewer3D(el, M, onPick) {
        بالموقع بذلك اليوم، والمشهد ينمو بالتراكم مثل البناء. */
     movieScenes: () => {
       siteBuilt || buildSite();
-      const H = nf * hs, digD = lv.existing - fb;
+      // العمق المعلَن = العمق المحفور فعلاً (إلى بطن السبيس) لا إلى بطن الأساس
+      const H = nf * hs, digD = lv.existing - (fb - .08 - siteSubT());
       const P = (a, b2, c2) => new T.Vector3(a, b2, c2);
       const sc2 = [];
       let acc = [];

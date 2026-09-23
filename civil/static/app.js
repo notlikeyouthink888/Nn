@@ -2591,8 +2591,18 @@ async function loadPlanFile(inp) {
     drawPlan();
     // الرفع = التطبيق. لا زر مخفي: إن كان الاستخراج واثقاً يُبنى المشروع على المخطط فوراً
     const fr = PLD.frame;
-    if (fr && fr.n_cols >= 4) {
-      msg('✓ ' + f.name + ' — يُبنى المشروع على مخططك الآن…');
+    // ومقياس غير موثوق = **لا تطبيق تلقائي**. المخطط بلا أبعاد مكتوبة تخرج
+    // بحوره ومقاطع أعمدته خطأً، وبناء مشروع عليها خطأ أكبر — فيُعرض ويُقرأ
+    // ويبقى القرار للمستخدم، لا أن يُبنى عليه صامتاً.
+    if (PLD.scale_trusted === false) {
+      msg('⚠️ ' + f.name + ' — قرأتُ الملف وعرضتُه، لكن <b>ما طبّقتُه</b>: '
+        + (PLD.n_dims ? 'أبعاده المكتوبة (' + PLD.n_dims + ') لا تكفي للثقة بالمقياس'
+                      : 'لا أبعاد مكتوبة فيه إطلاقاً')
+        + '. راجع التحذير أدناه — وإن كنت تعرف المقياس أدخِله يدوياً من الشريط '
+        + 'ثم اضغط «✅ طبّق على المشروع». المشروع الحالي بقي كما هو.');
+    } else if (fr && fr.n_cols >= 4) {
+      msg('✓ ' + f.name + ' — يُبنى المشروع على مخططك الآن…'
+        + (fr.n_free ? ' (' + fr.n_free + ' عمود غير مرتبط بجسر — معروض منفصلاً)' : ''));
       await applyPlan();
     } else {
       msg('⚠️ قرأت الملف لكن ما تعرّفت على أعمدة كافية (' + ((fr && fr.n_cols) || 0) + ') — '
@@ -2738,6 +2748,13 @@ function renderPlan() {
       ${kpi('اتجاه المخطط', PLD.angle ? nf(PLD.angle, 1) + '° — دُوِّر للمحاور' : 'محاذٍ للمحاور',
             PLD.angle ? 'warn' : 'ok')}
       ${kpi('مخططات بالملف', (PLD.plans || []).length, 'ok')}
+      ${kpi('أعمدة مرتبطة / غير مرتبطة',
+        (PLD.frame ? PLD.frame.n_linked : 0) + ' / ' + (PLD.frame ? PLD.frame.n_free : 0),
+        (PLD.frame && PLD.frame.n_free) ? 'warn' : 'ok')}
+      ${kpi('المقياس موثوق؟', PLD.scale_trusted === false
+        ? '✗ لا — ' + (PLD.n_dims || 0) + ' بُعد مكتوب'
+        : '✓ نعم — ' + (PLD.n_dims || 0) + ' بُعد مكتوب',
+        PLD.scale_trusted === false ? 'bad' : 'ok')}
     </div>
 
     ${g ? `<div class="rec" style="margin-top:12px">
@@ -2746,7 +2763,11 @@ function renderPlan() {
         <li>بحور X الحقيقية: <b>${g.spans_x.map(v => nf(v, 2)).join(' · ')}</b> م ·
             Y: <b>${g.spans_y.map(v => nf(v, 2)).join(' · ')}</b> م</li>
         ${PLD.frame ? `<li>الهيكل: <b>${PLD.frame.n_cols}</b> عمود بمواقعها الحقيقية و<b>${PLD.frame.n_beams}</b> جسر
-          على المحاور الحقيقية — وعليه تُبنى الأسس والسقوف.</li>` : ''}
+          على المحاور الحقيقية — وعليه تُبنى الأسس والسقوف.</li>
+        <li>الارتباط: <b style="color:#34d399">${PLD.frame.n_linked}</b> عمود <b>مرتبط</b> بجسور${
+          PLD.frame.n_free ? ` · <b style="color:#fbbf24">${PLD.frame.n_free}</b> عمود
+          <b>غير مرتبط</b>` : ''} —
+          ${PLD.frame.link_note ? PLD.frame.link_note.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>') : ''}</li>` : ''}
         <li>أقرب شبكة منتظمة للمقارنة: ${g.nx} × ${g.ny} بحر بمسافة ${nf(g.sx, 2)} × ${nf(g.sy, 2)} م ·
             انحراف أعمدتك عنها أقصى <b style="color:${g.regular ? '#34d399' : '#fbbf24'}">${int(g.max_dev * 1000)} مم</b>
             (متوسط ${int(g.rms_dev * 1000)} مم) —

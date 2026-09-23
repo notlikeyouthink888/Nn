@@ -377,7 +377,7 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5, col_layers=None):
     lays = set(col_layers or ())
     lays |= {k for k, v in roles.items() if v == 'col'}
     shaped, items = [], []
-    for e in ents:
+    for ei, e in enumerate(ents):
         if e['l'] not in lays:
             continue
         s = shape_of(e, scale, cmin, cmax)
@@ -387,7 +387,8 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5, col_layers=None):
             shaped.append(dict(x=(x0 + x1) / 2.0 * scale, y=(y0 + y1) / 2.0 * scale,
                                b=round(s['b'] * 1000, 0), h=round(s['h'] * 1000, 0),
                                shape=s['shape'], area=round(s['area'], 4),
-                               D=round(s.get('D', 0) * 1000, 0) or None, n=1))
+                               D=round(s.get('D', 0) * 1000, 0) or None, n=1,
+                               src=[ei]))
             continue
         pts = _seg_points(e)
         if not pts:
@@ -395,7 +396,8 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5, col_layers=None):
         x0, y0, x1, y1 = _bbox(pts)
         if (x1 - x0) * scale > cmax * 1.05 or (y1 - y0) * scale > cmax * 1.05:
             continue                                   # خط إنشاء/جدار طويل لا عمود
-        items.append(dict(kind='poly', pts=pts, r=0.0))
+        # `src` = رقم العنصر الذي رُسم منه — به يُنسب العمود لمخططه **حصراً**
+        items.append(dict(kind='poly', pts=pts, r=0.0, src=ei))
     if not items:
         return _dedupe_cols(shaped)
     # تعنقد بالتجاور: صندوق محيط لكل عنصر ثم دمج المتقاطعة/المتلامسة.
@@ -441,7 +443,8 @@ def detect_columns(ents, roles, scale, cmin=0.15, cmax=1.5, col_layers=None):
             continue
         cols.append(dict(x=(x0 + x1) / 2.0 * scale, y=(y0 + y1) / 2.0 * scale,
                          b=round(b * 1000, 0), h=round(h * 1000, 0),
-                         shape='rect', area=round(b * h, 4), D=None, n=len(idx)))
+                         shape='rect', area=round(b * h, 4), D=None, n=len(idx),
+                         src=sorted({items[k]['src'] for k in idx})))
     return _dedupe_cols(cols)
 
 def _dedupe_cols(cols, tol=0.25):
@@ -450,7 +453,13 @@ def _dedupe_cols(cols, tol=0.25):
     cols.sort(key=lambda c: (-(c['b'] * c['h']), c['y'], c['x']))
     out = []
     for c in cols:
-        if any(abs(c['x'] - o['x']) < tol and abs(c['y'] - o['y']) < tol for o in out):
+        hit = None
+        for o in out:
+            if abs(c['x'] - o['x']) < tol and abs(c['y'] - o['y']) < tol:
+                hit = o; break
+        if hit is not None:
+            # العمود المكرَّر يُدمج مصدره بالمُبقى، فلا يضيع انتماؤه لمخططه
+            hit['src'] = sorted(set(hit.get('src') or []) | set(c.get('src') or []))
             continue
         out.append(c)
     out.sort(key=lambda c: (c['y'], c['x']))
@@ -980,11 +989,33 @@ def build_frame(cols, tol=0.6):
     for bm in beams:
         lines.setdefault((bm['dir'], round(bm['y1'] if bm['dir'] == 'x' else bm['x1'], 2)),
                          []).append(bm['span'])
+    # ---- العمود **المرتبط** والعمود **غير المرتبط** ----
+    # العمود المرتبط تصله جسور فيعمل مع الهيكل ويشارك بمقاومة الأحمال الجانبية.
+    # وغير المرتبط لا يصله جسر: إمّا عمود معلَّق بالمخطط (رسمٌ زائد أو عمود
+    # طابقٍ آخر)، أو عمود جاره أبعد من 14 م أو أقرب من متر فلا يُعقل بينهما
+    # جسر. والفرق ليس تجميلياً: غير المرتبط **لا يُحلَّل ضمن الإطار** لأنه بلا
+    # مسار حمل جانبي، فعدّه مع البقية يعطي هيكلاً أقوى ممّا هو.
+    deg = {}
+    for bm in beams:
+        deg[bm['a']] = deg.get(bm['a'], 0) + 1
+        deg[bm['b']] = deg.get(bm['b'], 0) + 1
+    for n in nodes:
+        n['deg'] = deg.get(n['k'], 0)
+        n['linked'] = n['deg'] > 0
+    linked = [n for n in nodes if n['linked']]
+    free = [n for n in nodes if not n['linked']]
     return dict(nodes=nodes, beams=beams, axes_x=[round(v, 3) for v in ax],
                 axes_y=[round(v, 3) for v in ay],
                 spans=[dict(dir=k[0], at=k[1], spans=v) for k, v in sorted(lines.items())],
                 spans_all=[b['span'] for b in beams],
-                n_cols=len(nodes), n_beams=len(beams))
+                n_cols=len(nodes), n_beams=len(beams),
+                n_linked=len(linked), n_free=len(free),
+                free_cols=[dict(k=n['k'], x=n['x'], y=n['y'], b=n['b'], h=n['h'])
+                           for n in free][:40],
+                link_note=('كل الأعمدة مرتبطة بجسور' if not free else
+                           '%d عمود من %d **غير مرتبط بأي جسر** — لا يصله جسر '
+                           'بمدى معقول (1–14 م) على محوره. يُعرَض منفصلاً ولا '
+                           'يدخل حساب الإطار.' % (len(free), len(nodes))))
 
 # ------------------- أقرب شبكة منتظمة تطابق الأعمدة -------------------
 def fit_grid(cols, axes=None, tol=1.0):
@@ -1089,6 +1120,34 @@ def analyze(p):
                             'الوسيط (%.0f مم) فصار %s.' % (sug['median'], sug['name']))
         else:
             scale = declared; src = 'وحدات الملف'
+    # ---------- هل يُوثَق بهذا المقياس أصلاً؟ ----------
+    #
+    # المخطط بلا أبعاد مكتوبة **لا يُبنى عليه مشروع**. ووحدات الملف المصرّحة
+    # ($INSUNITS) ليست دليلاً: تجربة الملفين هنا أظهرت أنها كذبت في كليهما —
+    # ملف بالمتر يصرّح «قدم» وآخر بالسنتيمتر يصرّح «مليمتر». ومن يرسم بلا
+    # أبعاد لا يضبط وحداته عادةً. فيُقرأ الملف ويُعرض، لكنه **لا يُطبَّق
+    # تلقائياً** على المشروع، ويُقال للمستخدم لماذا وماذا يفعل.
+    trusted = src in ('الأبعاد المكتوبة', 'يدوي')
+    n_dim = sum(1 for e in ents if e['t'] == 'D' and e.get('m', 0) > 0)
+    if not trusted:
+        if n_dim == 0:
+            why = ('**لا يوجد بالملف أي بُعد مكتوب.** المقياس مأخوذ من %s وهو '
+                   'تخمين لا دليل.' % src)
+            fix = 'أضف أبعاداً (DIMENSION) بالأوتوكاد على بحرين على الأقل ثم أعد الرفع.'
+        elif dimc:
+            why = ('بالملف %d بُعد مكتوب لكنها **لا تكفي للثقة**: %d%% منها فقط '
+                   'أرقام مدوّرة و%d%% منها بمدى معقول — والمطلوب 50%% من كلٍّ.'
+                   % (n_dim, int(dimc['round_share'] * 100), int(dimc['ok_share'] * 100)))
+            fix = ('راجع أبعاد المخطط: الأرجح أنها مرسومة بمقاييس مختلفة بورقة '
+                   'واحدة، أو أن قيمها المكتوبة عُدِّلت يدوياً فلم تعد تطابق المرسوم.')
+        else:
+            why = ('بالملف %d بُعد مكتوب فقط — والمقياس يحتاج **خمسة على الأقل** '
+                   'ليُستنتج بثقة.' % n_dim)
+            fix = 'أضف أبعاداً على بحرين على الأقل بالاتجاهين ثم أعد الرفع.'
+        warn.append('⚠️ **لن يُطبَّق هذا المخطط تلقائياً على المشروع.** ' + why
+                    + ' وبلا مقياس موثوق تخرج البحور ومقاطع الأعمدة خطأً، '
+                    + 'والتصميم المبني عليها خطأ أكبر. ' + fix
+                    + ' (وتقدر تُدخل المقياس يدوياً من القائمة إن كنت تعرفه.)')
     # ---------- كل المخططات بالملف (تعنقد على طبقات البنية) ----------
     texts = [e for e in ents if e['t'] == 'T'
              and _TITLE_PAT.search(clean_text(e.get('s')))]
@@ -1116,10 +1175,46 @@ def analyze(p):
                     + ' · '.join('«%s» %d شكل' % (k, v)
                                  for k, v in sorted(promoted.items(), key=lambda t: -t[1])[:4]))
     all_cols = detect_columns(ents, roles, scale, col_layers=promoted.keys())
+    # نسبة كل عمود إلى **مخطط واحد بعينه** — لا إلى كل مخطط يقع داخل صندوقه.
+    #
+    # المخططات المتجاورة بالورقة تتداخل صناديقها المحيطة حتماً (مسقط طابق فوق
+    # مسقط قبو، أو مقطع بجانب مسقط)، فالنسبة بالصندوق كانت تعدّ العمود الواحد
+    # في ثلاثة مخططات — فيخرج «160 عمود» و«158» و«80» لمبنى واحد، وهذا هو
+    # «الخبط» بين المخططات.
+    #
+    # والنسبة الصحيحة **بالمصدر لا بالموقع**: `split_regions` يقسم عناصر الملف
+    # إلى مجموعات متباينة لا تشترك بعنصر واحد، وكل عمود يحمل أرقام العناصر
+    # التي رُسم منها (`src`). فالعمود يتبع المجموعة التي تملك عناصره — واحدةً
+    # لا أكثر. وما لا يُعرف مصدره (نادر) يُنسب لأصغر مخطط يحويه، لأن الأصغر أخصّ.
+    owner = {}
     for r in regions:
-        b = r['bbox']
-        r['cols'] = [c for c in all_cols
-                     if b[0] - 1 <= c['x'] <= b[2] + 1 and b[1] - 1 <= c['y'] <= b[3] + 1]
+        for i in r['idx']:
+            owner[i] = r['i']
+    for r in regions:
+        r['cols'] = []
+    orphan = []
+    for c in all_cols:
+        hit = None
+        for i in (c.get('src') or []):
+            if i in owner:
+                hit = owner[i]
+                break
+        if hit is None:
+            orphan.append(c)
+        else:
+            regions[hit]['cols'].append(c)
+    for c in orphan:
+        best, barea = None, None
+        for r in regions:
+            b = r['bbox']
+            if b[0] - 1 <= c['x'] <= b[2] + 1 and b[1] - 1 <= c['y'] <= b[3] + 1:
+                a2 = r['w'] * r['h']
+                if barea is None or a2 < barea:
+                    barea, best = a2, r
+        if best is not None:
+            best['cols'].append(c)
+    for r in regions:
+        r['cols'].sort(key=lambda c: (c['y'], c['x']))
         r['ncol'] = len(r['cols'])
     regions.sort(key=lambda r: (-r['ncol'], -(r['w'] * r['h'])))
     for k, r in enumerate(regions):
@@ -1192,6 +1287,7 @@ def analyze(p):
                 plot=plot,
                 insunits=insunits, unit=unit_name(insunits), scale=scale,
                 scale_src=src, dim_scale=dimc,
+                scale_trusted=trusted, n_dims=n_dim,
                 angle=round(ang, 3), angle_share=round(ang_share, 3),
                 declared_scale=declared, suggested=sug, plans=plans, plan_index=pick,
                 window=win, extents=ext, n_ents=len(ents), warnings=warn,

@@ -575,7 +575,7 @@ def clean_text(s):
 _TITLE_PAT = re.compile(r'(مسقط|مخطط|طابق|أرضي|ارضي|أول|اول|ثاني|سطح|أساس|اساس|تسليح|'
                         r'plan|floor|ground|first|second|roof|found|layout|section|elev)', re.I)
 
-def split_regions(ents, roles, scale, cell=2.5):
+def split_regions(ents, roles, scale, cell=2.5, extra=None):
     """ملف DWG واحد يحوي عادةً عدة مخططات جنب بعض (طوابق ومقاطع وواجهات).
 
     التعنقد يكون على **طبقات البنية فقط** (جدران وأعمدة) — لأن طبقات الأبعاد والنصوص
@@ -586,14 +586,19 @@ def split_regions(ents, roles, scale, cell=2.5):
     أما المخطط الإنشائي فأعمدة متباعدة بحراً كاملاً بلا جدران تصلها — فلو بقيت الخلية
     صغيرة لتفتّت المبنى الواحد إلى شرائح.
     """
-    idx = [i for i, e in enumerate(ents) if roles.get(e['l']) in ('wall', 'col')]
+    # `extra` = عناصر رُسمت منها أعمدة على طبقة لا تسمّي نفسها «أعمدة» (الطبقة
+    # «0» غالباً). بدونها لا يراها التقسيم أصلاً، فتبقى أعمدتها بلا مخطط.
+    extra = set(extra or ())
+    idx = [i for i, e in enumerate(ents)
+           if roles.get(e['l']) in ('wall', 'col') or i in extra]
     if not idx:
         idx = [i for i, e in enumerate(ents)
                if roles.get(e['l']) not in ('off', 'frame', 'axis')]
     if not idx:
         return []
     nw = sum(len(_seg_points(e)) for e in ents if roles.get(e['l']) == 'wall')
-    nc = sum(len(_seg_points(e)) for e in ents if roles.get(e['l']) == 'col')
+    nc = sum(len(_seg_points(e)) for i, e in enumerate(ents)
+             if roles.get(e['l']) == 'col' or i in extra)
     if nw < 0.2 * (nw + nc):                              # مخطط إنشائي: أعمدة بلا جدران
         cell = max(cell, 5.0)
     step = cell / scale                                   # حجم الخلية بوحدات الرسم
@@ -620,6 +625,118 @@ def split_regions(ents, roles, scale, cell=2.5):
         groups.append(sorted(members))
     groups.sort(key=lambda g: -len(g))
     return groups
+
+def split_by_layer(groups, ents, cols, scale, k=5, major_min=8, major_share=0.15,
+                   overlap_max=0.35, align_reach=12.0):
+    """مبنيان متجاوران على ورقة واحدة كلٌّ بطبقة: يُفصلان.
+
+    التقسيم بالمسافة وحدها يعجز حين تكون الفجوة بين المبنيين بحراً عادياً
+    (4–5 م): القطعتان تلتحمان مجموعةً واحدة. لكن الرسّام حين يضع مبنىً على
+    طبقة «COLS» وآخر على «0» فهو يقول إنهما مبنيان — وهذا الدليل الذي تفقده
+    المسافة.
+
+    ولا يُقسَم بالطبقة حرفياً: قد تقع بضعة عناصر من طبقة الأول داخل الثاني
+    (نواة مصعد رُسمت على «0» داخل مبنى «COLS»). فكل عمود **يصوّت مع أقرب k
+    جيران له**، فيتبع ما يحيط به لا طبقته وحدها. ثم لا يُنفَّذ القطع إلا إذا
+    خرجت المنطقتان **منفصلتين** مكانياً — فالمبنى الواحد المرسوم على طبقتين
+    متداخلتين (أعمدة قائمة وأعمدة جديدة مثلاً) يبقى واحداً.
+
+    يرجع (المجموعات بعد القطع، عدد ما قُطع)."""
+    def lay(c):
+        cnt = {}
+        for i in c.get('src') or []:
+            L = ents[i]['l']
+            cnt[L] = cnt.get(L, 0) + 1
+        return max(cnt, key=cnt.get) if cnt else None
+    lay_of = [lay(c) for c in cols]
+    owner = {}
+    for gi, g in enumerate(groups):
+        for i in g:
+            owner[i] = gi
+    mem_of = {}
+    for ci, c in enumerate(cols):
+        for i in c.get('src') or []:
+            if i in owner:
+                mem_of.setdefault(owner[i], []).append(ci)
+                break
+    out, ncut = [], 0
+    for gi, g in enumerate(groups):
+        mem = mem_of.get(gi, [])
+        cnt = {}
+        for m in mem:
+            cnt[lay_of[m]] = cnt.get(lay_of[m], 0) + 1
+        major = [L for L, n in cnt.items()
+                 if L is not None and n >= major_min and n >= major_share * len(mem)]
+        if len(major) < 2:
+            out.append(g)
+            continue
+        P = [(cols[m]['x'], cols[m]['y']) for m in mem]
+        terr = {}
+        for a, m in enumerate(mem):
+            near = sorted(((P[a][0] - P[b][0]) ** 2 + (P[a][1] - P[b][1]) ** 2, b)
+                          for b in range(len(mem)) if b != a)[:k]
+            v = {}
+            if lay_of[m] in major:
+                v[lay_of[m]] = 1.0
+            for _, b in near:
+                L = lay_of[mem[b]]
+                if L in major:
+                    v[L] = v.get(L, 0.0) + 1.0
+            # رفاق **المحور**: من يقع على نفس الصفّ أو نفس الخطّ (±35 سم) ضمن
+            # بحرين. العمود ينتمي لمحوره قبل أن ينتمي لأقرب جار: صفّ المبنى
+            # الثاني العلوي يبعد 3.7 م فقط عن صفّ الأول السفلي، فأقرب الجيران
+            # بالمسافة يسحبه للأول وهو على محور الثاني.
+            for b in range(len(mem)):
+                if b == a:
+                    continue
+                dx = abs(P[a][0] - P[b][0]); dy = abs(P[a][1] - P[b][1])
+                if (dy <= 0.35 and dx <= align_reach) or (dx <= 0.35 and dy <= align_reach):
+                    L = lay_of[mem[b]]
+                    if L in major:
+                        v[L] = v.get(L, 0.0) + 1.5
+            terr[m] = max(v, key=v.get) if v else major[0]
+        bb = {}
+        for m, L in terr.items():
+            x, y = cols[m]['x'], cols[m]['y']
+            b = bb.setdefault(L, [x, y, x, y])
+            b[0] = min(b[0], x); b[1] = min(b[1], y)
+            b[2] = max(b[2], x); b[3] = max(b[3], y)
+        area = lambda b: max(1e-6, (b[2] - b[0]) * (b[3] - b[1]))
+        def ov(p, q):
+            w = min(p[2], q[2]) - max(p[0], q[0]); h = min(p[3], q[3]) - max(p[1], q[1])
+            return max(0.0, w) * max(0.0, h)
+        keys = [L for L in major if L in bb]
+        apart = all(ov(bb[p], bb[q]) / min(area(bb[p]), area(bb[q])) <= overlap_max
+                    for i2, p in enumerate(keys) for q in keys[i2 + 1:])
+        if not apart:
+            out.append(g)                      # مبنى واحد على طبقتين — لا يُقطع
+            continue
+        # عناصر المجموعة: مصدر العمود يتبع عموده، وغيره يتبع أقرب عمود
+        src_terr = {}
+        for m in mem:
+            for i in cols[m].get('src') or []:
+                src_terr[i] = terr[m]
+        sub = {L: [] for L in keys}
+        for i in g:
+            L = src_terr.get(i)
+            if L is None:
+                pts = _seg_points(ents[i])
+                if pts:
+                    x0, y0, x1, y1 = _bbox(pts)
+                    # نقاط الرسم بوحدات الملف، ومواقع الأعمدة بالمتر
+                    cx, cy = (x0 + x1) / 2.0 * scale, (y0 + y1) / 2.0 * scale
+                    best, bd = None, None
+                    for m in mem:
+                        dd = (cols[m]['x'] - cx) ** 2 + (cols[m]['y'] - cy) ** 2
+                        if bd is None or dd < bd:
+                            bd, best = dd, terr[m]
+                    L = best
+            sub.setdefault(L if L in sub else keys[0], []).append(i)
+        parts = [sorted(v) for v in sub.values() if v]
+        out.extend(parts)
+        ncut += len(parts) - 1
+    out.sort(key=lambda g2: -len(g2))
+    return out, ncut
 
 def region_info(ents, group, scale, texts=None):
     """وصف منطقة: أبعادها وطبقاتها واسمها المقترح من أقرب نص عنوان."""
@@ -787,6 +904,8 @@ def detect_boundary(ents, roles, scale, win=None, margin=6.0):
     def inwin(pts):
         if not win:
             return True
+        if not pts:
+            return False
         xs = [q[0] * scale for q in pts]; ys = [q[1] * scale for q in pts]
         return (min(xs) >= win[0] - margin and max(xs) <= win[2] + margin and
                 min(ys) >= win[1] - margin and max(ys) <= win[3] + margin)
@@ -971,20 +1090,26 @@ def build_frame(cols, tol=0.6):
         nodes.append(dict(k=k, x=round(c['x'], 3), y=round(c['y'], 3),
                           b=c['b'], h=c['h'], shape=c.get('shape', 'rect'),
                           D=c.get('D'), i=snap(c['x'], ax), j=snap(c['y'], ay)))
+    # كل عمود يُوصَل بأقرب عمود **أمامه** على خطّه (±tol عرضياً). وحين يتساوى
+    # مرشّحان بالبعد (عمودان توأمان بفاصل تمدّد) يُختار الأقلّ انحرافاً، فيأخذ
+    # كل توأم خطّه. وأقرب من متر أمامه = عمود ملاصق (فاصل تمدّد) فلا جسر
+    # يعبره — ولا يُقفز فوقه لما بعده.
     beams = []
-    for key, other in (('j', 'i'), ('i', 'j')):
-        rows = {}
-        for n in nodes:
-            rows.setdefault(n[key], []).append(n)
-        for r, arr in rows.items():
-            arr.sort(key=lambda n: n[other])
-            for a, b in zip(arr, arr[1:]):
-                L = math.hypot(b['x'] - a['x'], b['y'] - a['y'])
-                if L < 1.0 or L > 14.0:
-                    continue
-                beams.append(dict(dir='x' if key == 'j' else 'y', a=a['k'], b=b['k'],
-                                  x1=a['x'], y1=a['y'], x2=b['x'], y2=b['y'],
-                                  span=round(L, 3)))
+    for d, (u, v) in (('x', ('x', 'y')), ('y', ('y', 'x'))):
+        for a in nodes:
+            ahead = [(b[u] - a[u], abs(b[v] - a[v]), b) for b in nodes
+                     if b is not a and abs(b[v] - a[v]) <= tol
+                     and b[u] - a[u] > abs(b[v] - a[v])]
+            if not ahead:
+                continue
+            m = min(t[0] for t in ahead)
+            du, _, b = min((t for t in ahead if t[0] <= m + 0.3), key=lambda t: (t[1], t[0]))
+            L = math.hypot(b['x'] - a['x'], b['y'] - a['y'])
+            if m < 1.0 or L > 14.0:
+                continue
+            beams.append(dict(dir=d, a=a['k'], b=b['k'],
+                              x1=a['x'], y1=a['y'], x2=b['x'], y2=b['y'],
+                              span=round(L, 3)))
     lines = {}
     for bm in beams:
         lines.setdefault((bm['dir'], round(bm['y1'] if bm['dir'] == 'x' else bm['x1'], 2)),
@@ -1151,7 +1276,17 @@ def analyze(p):
     # ---------- كل المخططات بالملف (تعنقد على طبقات البنية) ----------
     texts = [e for e in ents if e['t'] == 'T'
              and _TITLE_PAT.search(clean_text(e.get('s')))]
-    groups = split_regions(ents, roles, scale)
+    # الأعمدة تُكتشف **قبل** التقسيم: ليرى التقسيم عناصرها ولو كانت على طبقة
+    # لا تسمّي نفسها «أعمدة»، وليُقسَم الملف بطبقات أعمدته حين يحوي مبنيين.
+    promoted = promote_column_layers(ents, roles, scale)
+    all_cols = detect_columns(ents, roles, scale, col_layers=promoted.keys())
+    col_src = set(i for c in all_cols for i in (c.get('src') or []))
+    groups = split_regions(ents, roles, scale, extra=col_src)
+    groups, n_layer_cut = split_by_layer(groups, ents, all_cols, scale)
+    if n_layer_cut:
+        warn.append('الملف يحوي %d مباني متجاورة فُصلت عن بعضها: كلٌّ مرسوم بطبقة '
+                    'أعمدة مختلفة ويشغل منطقة مستقلّة. والفجوة بينها بحرٌ عادي، '
+                    'فالمسافة وحدها كانت تدمجها مبنىً واحداً.' % (n_layer_cut + 1))
     regions = []
     for gi, gidx in enumerate(groups):
         info = region_info(ents, gidx, scale, texts)
@@ -1168,13 +1303,11 @@ def analyze(p):
                    if not set(r['idx']).issubset(frames)]
         for k, r in enumerate(regions):
             r['i'] = k
-    # طبقات تحمل أشكال أعمدة ولا تسمّي نفسها «أعمدة» (الطبقة «0» غالباً) تُرقّى
-    promoted = promote_column_layers(ents, roles, scale)
+    # طبقات تحمل أشكال أعمدة ولا تسمّي نفسها «أعمدة» (الطبقة «0» غالباً) رُقّيت أعلاه
     if promoted:
         warn.append('طبقات ما سمّت نفسها «أعمدة» لكنها تحمل أشكال أعمدة فأُخذت: '
                     + ' · '.join('«%s» %d شكل' % (k, v)
                                  for k, v in sorted(promoted.items(), key=lambda t: -t[1])[:4]))
-    all_cols = detect_columns(ents, roles, scale, col_layers=promoted.keys())
     # نسبة كل عمود إلى **مخطط واحد بعينه** — لا إلى كل مخطط يقع داخل صندوقه.
     #
     # المخططات المتجاورة بالورقة تتداخل صناديقها المحيطة حتماً (مسقط طابق فوق

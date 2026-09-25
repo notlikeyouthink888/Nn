@@ -133,14 +133,39 @@ class TestBlock4(unittest.TestCase):
 
     def test_schedules(self):
         S = self.R['schedules']
-        self.assertEqual(S['beams']['B1']['b'], 350)
-        self.assertEqual(S['beams']['B3']['h'], 800)
-        self.assertEqual(S['beams']['B3']['b'], 400)
-        self.assertEqual(S['beams']['B1']['bot']['cont'], dict(n=3, d=25))
-        self.assertEqual(S['beams']['B2']['stir']['mid'], dict(d=10, s=250, sets=None))
+        self.assertEqual(len(S['beam_tables']), 3)
+        # جدول الجناح (قرب مفاتيح جسور الطوابق العليا): B1/B2 350X800 · B3 400X800
+        wing = [t for t in S['beam_tables'] if t['beams'].get('B1', {}).get('b') == 350]
+        self.assertEqual(len(wing), 1)
+        W = wing[0]['beams']
+        self.assertEqual((W['B2']['b'], W['B2']['h']), (350, 800))
+        self.assertEqual((W['B3']['b'], W['B3']['h']), (400, 800))
+        self.assertEqual(W['B1']['bot']['cont'], dict(n=3, d=25))
+        self.assertEqual(W['B3']['bot']['cont'], dict(n=4, d=25))
+        self.assertEqual(W['B2']['stir']['end'], dict(d=10, s=150, sets=None))
+        self.assertEqual(W['B2']['stir']['mid'], dict(d=10, s=250, sets=None))
+        self.assertEqual(W['B1']['side'], dict(n=2, d=16))
         cols = S['columns']
-        self.assertIn('C1', cols)
+        self.assertEqual(len(cols), 15)
         self.assertEqual(len(cols['C1']), 5)
+        self.assertEqual(cols["C3B'"]['ground']['main'], dict(n=12, d=32))
+
+    def test_columns_marked_per_floor(self):
+        for b in self.R['buildings']:
+            for f in b['floors']:
+                self.assertTrue(f['columns'])
+                self.assertTrue(all(c.get('mark') for c in f['columns']), f['key'])
+                self.assertTrue(all(c.get('rebar') for c in f['columns']), f['key'])
+
+    def test_wing_first_floor(self):
+        B = [b for b in self.R['buildings'] if len(b['grid']['x']) == 2][0]
+        f = [f for f in B['floors'] if f['key'] == 'first'][0]
+        at = sorted((c['ax'], c['ay']) for c in f['columns'])
+        for ay in ('H', 'I', "J'", "K'", "L'", 'M'):
+            self.assertIn(('17', ay), at)
+        self.assertEqual([o['between']['y'] for o in f['slab']['openings']], [("L'", "I'")])
+        marks = set(bm['mark'] for bm in f['beams'] if bm['mark'])
+        self.assertTrue({'B1', 'B2', 'B3'} <= marks)
 
     def test_openings(self):
         n = sum(len(f['slab']['openings']) for b in self.R['buildings'] for f in b['floors'])

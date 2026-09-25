@@ -13,6 +13,7 @@ import bbs as BBS
 import detail as DT
 import slabs as SL
 import plan as PL
+import cadread as CAD
 import aci as ACI
 import beamtype as BT
 import mnl66 as MN
@@ -101,6 +102,7 @@ ROUTES = {
     'lab': PJ.lab,
     'plan/parse': PL.analyze,
     'plan/dxf': PL.parse_dxf,
+    'cad/read': lambda p: CAD.read_set(p, p.get('opts')),
     'lab/sweep': PJ.lab_sweep,
     'slabtypes': PJ.slabtypes,
     'slabtype': lambda p: SL.design(p.get('kind', 'hordi'), p),

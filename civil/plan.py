@@ -510,7 +510,12 @@ def scale_from_dims(ents):
     LO, HI, MID = 80.0, 15000.0, 1200.0                    # مم
     best = None
     for sc, nm in SCALES:
-        mm = [v * lfac * sc * 1000.0 for v in vals]
+        # القيمة المكتوبة (vals) هي الطول الحقيقي بوحدة المرشَّح (sc) مباشرة —
+        # DIMLFAC (lfac) لا دخل له هنا؛ محلّه فقط بمقياس الإحداثيات الخام أدناه
+        # (raw = مكتوب ÷ DIMLFAC، فمقياس الخام النهائي = sc × lfac). ضربه هنا
+        # ثانيةً كان يضخّم كل القيم بمقدار DIMLFAC فيخرجها كلّها عن المدى
+        # المعقول ويُسقط أي ملف يستعمل DIMLFAC فعلياً (شائع بالمخططات الإنشائية).
+        mm = [v * sc * 1000.0 for v in vals]
         good = [x for x in mm if LO <= x <= HI]
         if len(good) < max(5, 0.30 * len(mm)):
             continue

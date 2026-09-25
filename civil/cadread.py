@@ -904,12 +904,23 @@ def read_set(d, opts=None):
         for m, v in bs['beams'].items():
             beams_all.setdefault(m, v)
     # تعريفات المستخدم والملف تتقدّم على الجدول/الافتراضي
-    user_defs = opts.get('definitions') or []
-    for df in defs + list(user_defs):
+    user_defs = []
+    for x in (opts.get('definitions') or []):     # نص «C1 = 400x600» أو قاموس جاهز
+        df = K.parse_definition(x) if isinstance(x, str) else x
+        if isinstance(df, dict) and df.get('mark'):
+            df['user'] = True
+            user_defs.append(df)
+    col_defs = {}
+    for df in defs + user_defs:
+        if df.get('kind') == 'col' and df.get('size'):
+            col_defs[df['mark']] = df['size']
+    for df in defs + user_defs:
         if df.get('kind') == 'beam' and df.get('size'):
             rec = beams_all.setdefault(df['mark'], dict(mark=df['mark'], bot=dict(cont=None, extra=None),
                                                          top=dict(cont=None, sup=None),
                                                          stir=dict(end=None, mid=None), side=None))
+            if df.get('user'):                    # تعريف المستخدم: نسخة مستقلة تتقدّم على كل الجداول
+                rec = beams_all[df['mark']] = dict(rec, bot=dict(rec['bot']), user=True)
             rec['b'], rec['h'] = df['size']['b'], df['size']['h']
             if df.get('bars'):
                 rec['bot']['cont'] = df['bars']
@@ -948,7 +959,7 @@ def read_set(d, opts=None):
     buildings = []
     for gi, grp in enumerate(groups):
         b = stage('تركيب مبنى', lambda g=grp, gi=gi: _assemble(
-            gi, g, beam_scheds, beams_all, col_sched, materials, opts, warn, key_names), None)
+            gi, g, beam_scheds, beams_all, col_sched, materials, opts, warn, key_names, col_defs), None)
         if b:
             buildings.append(b)
 
@@ -974,7 +985,7 @@ def read_set(d, opts=None):
                                beam_tables=[dict(id=i, x=round(bs['x'], 2), y=round(bs['y'], 2), beams=bs['beams'],
                                                  near=next((dw['id'] for dw in drawings if dw.get('beam_sched') == i), None))
                                             for i, bs in enumerate(beam_scheds)]),
-                definitions=defs, materials=materials, merged=merge,
+                definitions=defs + user_defs, materials=materials, merged=merge,
                 can_merge=(not merge and len(groups) > 1 and same_bld),
                 warnings=warn, stages=stages, dictionary=K.dictionary())
 
@@ -1020,7 +1031,8 @@ def _register(dw, master):
     return tx, ty, res
 
 
-def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn, key_names=None):
+def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn, key_names=None,
+              col_defs=None):
     master = max(grp, key=lambda d: (d['kind'] == 'cols_key', len(d['ax']['x']) * len(d['ax']['y'])))
     # الشبكة الموحّدة = اتحاد محاور كل الرسمات بعد التسجيل
     grid = {'x': {}, 'y': {}}
@@ -1079,7 +1091,8 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
         beams = []
         for s in (src_b['beams'] if src_b else []):
             mk = s.get('mark')
-            rec = sched.get(mk) if mk else None
+            rec = beams_all.get(mk) if mk and beams_all.get(mk, {}).get('user') else None
+            rec = rec or (sched.get(mk) if mk else None)
             rec = rec or (beams_all.get(mk) if mk else None)
             if s['o'] == 'h':
                 x1, y1 = T(src_b, s['a'], s['c'])
@@ -1119,6 +1132,9 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             if mk and fk in entry and entry[fk] is None:
                 continue                          # NOT PRESENT بهذا الطابق
             rb = entry.get(fk) if mk else None
+            dfs = (col_defs or {}).get(mk) if mk else None
+            if dfs:                               # تعريف المهندس/المستخدم يتقدّم على الرسم
+                c = dict(c, b=dfs['b'], h=dfs['h'], shape=dfs.get('shape', c.get('shape', 'rect')))
             cols.append(dict(x=round(c['x'], 3), y=round(c['y'], 3), b=int(c['b']), h=int(c['h']),
                              shape=c.get('shape', 'rect'), mark=mk, ax=c.get('ax'), ay=c.get('ay'),
                              rebar=rb, how=c.get('how'), src=c.get('src')))

@@ -2571,6 +2571,8 @@ const planWhy = () => `<ul style="padding-right:18px;font-size:12.5px;color:var(
 
 function planHead(msg) {
   return `<div class="card"><h3>📐 الأوتوكاد</h3>
+      <div class="note" style="margin-bottom:8px">عندك ملف إنشائي بعدة لوحات (سقوف · جسور · أعمدة · جداول)؟
+        <button class="btn" onclick="go('cad')" style="margin-inline-start:6px">🧩 افتح قسم الأوتوكاد الكامل</button></div>
       <div class="f"><div><label>ملف DWG أو DXF</label>
         <input type="file" id="pl_file" accept=".dwg,.dxf" onchange="loadPlanFile(this)"></div></div>
       <div id="pl_msg" class="note" style="margin-top:10px">${msg || 'لم يُرفع مخطط بعد.'}</div>
@@ -3708,6 +3710,14 @@ PAGES.femproj = {
   init: () => { if (window.FEM3D && FEM3D.projPage) FEM3D.projPage.init(); }
 };
 
+PAGES.cad = {
+  ic: '🧩', name: 'الأوتوكاد', ttl: 'قسم الأوتوكاد — من مجموعة المخططات إلى مبنى كامل',
+  sub: 'يقرأ لوحات DWG الإنشائية كلها: المحاور والعناوين والجداول والأعمدة والجسور والفتحات، ثم يركّب المبنى طابقاً طابقاً بحديده',
+  desc: 'ارفع ملف المخططات فيُركَّب المبنى ثلاثي الأبعاد بمقاسات وحديد كل عنصر',
+  html: () => (window.CADPAGE ? CADPAGE.html() : `<div class="card">وحدة الأوتوكاد غير محمَّلة.</div>`),
+  init: () => { if (window.CADPAGE) CADPAGE.init(); }
+};
+
 /* ------------------------- الترتيب والمجموعات ---------------------------- */
 /* فحص سريع مستقلّ: نسبة استغلال الأرض ونوع الأساس. منطقه كلّه في
    `fndpick.js` ليعمل فورياً بلا طلب خادم — وهنا تسجيلٌ فقط. */
@@ -3722,7 +3732,7 @@ PAGES.fndpick = {
 };
 
 const ORDER = [
-  ['المشروع', ['wizard', 'femproj', 'room', 'bbs', 'detail66', 'projects']],
+  ['المشروع', ['wizard', 'femproj', 'cad', 'room', 'bbs', 'detail66', 'projects']],
   ['التحليل الإنشائي', ['fem']],
   ['ما تحت الصفر', ['survey', 'earth', 'soil', 'fndpick']],
   ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],

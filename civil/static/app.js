@@ -2582,6 +2582,19 @@ function planHead(msg) {
 const PLAN_KIND_OPTS = [['struct', 'إنشائي (أعمدة)'], ['arch', 'معماري'], ['found', 'أساس'],
   ['rebar_top', 'تسليح علوي'], ['rebar_bot', 'تسليح سفلي'], ['rebar', 'تسليح'],
   ['facade', 'واجهة'], ['slab', 'سقف / بلاطة'], ['open', 'ساحة فارغة']];
+// نص عرض واحد لبند تسليح مستخرَج من ملف الأوتوكاد: القطر ثم التباعد إن وُجد
+// ثم الموضع (علوي/سفلي/كلاهما) ثم عدد الأسياخ أو الأتريات بالمجموعة، وأخيراً
+// كم مرة تكرر هذا البند بالذات (نفس القطر والتباعد والموضع معاً) بالمخطط.
+const REBAR_POS_AR = { T: 'علوي', B: 'سفلي', 'B&T': 'علوي وسفلي' };
+function fmtRebar(x) {
+  let s = (x.role === 'tie' ? 'أتريات ⌀' : '⌀') + x.d + 'مم';
+  if (x.sp) s += '@' + x.sp + 'مم';
+  if (x.pos) s += ' ' + (REBAR_POS_AR[x.pos] || x.pos);
+  if (x.count) s += ' (' + x.count + ' سيخ)';
+  if (x.nset) s += ' (' + x.nset + '/مجموعة)';
+  return s + ' — ×' + x.n;
+}
+
 async function setPlanKind(i, kind) {
   window.__plan_kinds = window.__plan_kinds || {};
   window.__plan_kinds[i] = kind;
@@ -2818,7 +2831,7 @@ function renderPlan() {
              style="width:auto;padding:3px 8px;font-size:11px">
             ${PLAN_KIND_OPTS.map(([k, t]) => `<option value="${k}" ${k === p.kind ? 'selected' : ''}>${t}</option>`).join('')}
            </select>${(p.rebar || []).length ? '<div class="note" style="margin-top:4px">أقطار مكتشَفة: '
-             + p.rebar.map(x => x.d + 'مم (×' + x.n + ')').join(' · ') + '</div>' : ''}`,
+             + p.rebar.slice(0, 10).map(fmtRebar).join(' · ') + '</div>' : ''}`,
           `<b style="color:${p.n >= 4 ? '#34d399' : 'var(--mut)'}">${p.n}</b>`,
           nf(p.w, 1) + ' × ' + nf(p.h, 1) + ' م', int(p.nent),
           p.i === PLD.plan_index ? '<span class="tag t-ok">المختار ✓</span>'
@@ -2827,7 +2840,8 @@ function renderPlan() {
       <div class="note">ملف الأوتوكاد الواحد يحوي عادةً عدة مخططات جنب بعض: أساس، وربما فرعين
         للتسليح (علوي وسفلي)، وواجهات، وسقوف، وساحات فارغة بلا بناء. فُصلت كلها بالتعنقد على
         طبقات الجدران والأعمدة، ونوع كلٍّ مخمَّن من اسمه وطبقاته — وتقدر تصحّحه من القائمة.
-        الأقطار المكتشَفة بمخطط تسليح تُقرأ من رموز الأسياخ (⌀12 · T16) أو رقمٍ مجرد بجانبها.</div></details>
+        الأقطار المكتشَفة بمخطط تسليح تُقرأ من صيغة الأوتوكاد <code>%%C16@200 T</code> (قطر ·
+        تباعد · موضع)، أو من رمز مباشر (⌀12 · T16)، أو رقمٍ مجرد بجانبها.</div></details>
 
     <details class="fold"><summary>🗂️ طبقات المخطط ودورها (${PLD.layers.length})</summary>
       <div style="max-height:340px;overflow:auto">${table(['الطبقة', 'العناصر', 'الدور'],

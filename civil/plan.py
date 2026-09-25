@@ -152,7 +152,11 @@ ROLES = [('col', 'أعمدة'), ('wall', 'جدران'), ('axis', 'محاور'),
 _COL_PAT = re.compile(r'(^|[^a-z])(col|column|عمود|اعمدة|أعمدة)', re.I)
 _WALL_PAT = re.compile(r'(wall|جدار|جدران|حائط|block|brick)', re.I)
 _AXIS_PAT = re.compile(r'(axis|axes|grid|محور|محاور|شبكة)', re.I)
-_NOISE_PAT = re.compile(r'(hatch|dim|text|txt|defpoints|title|جداول|numbers)', re.I)
+#  «dim» وحدها (أو DIM/Dimension) هي طبقة أبعاد قياس عادية فتُهمَل، لكن طبقة
+#  مشروع اسمها يبدأ بـ«dim-» (مثل dim-col أو dim-reinf-bot: «تفصيل عمود»
+#  و«تفصيل تسليح سفلي» باصطلاح بعض المكاتب) تحمل رسماً إنشائياً حقيقياً —
+#  فالنفي السلبي بعدها يمنع طيّها مع طبقات الأبعاد الفعلية.
+_NOISE_PAT = re.compile(r'(hatch|dim(?!-)|text|txt|defpoints|title|جداول|numbers)', re.I)
 # طبقات تشكيلية أو تشطيبية: أشكالها بمقاس عمود أحياناً لكنها ليست بنية —
 # تُمنع من الترقية التلقائية إلى «أعمدة» مهما كانت هندستها
 _NONSTRUCT_PAT = re.compile(
@@ -615,28 +619,65 @@ def classify_plan_kind(name, layers, ncol, override=None):
 _DIA_SET = {6, 8, 10, 12, 14, 16, 18, 20, 22, 25, 28, 32, 36, 40}
 _DIA_PAT = re.compile(r'(?:[⌀øØφΦ]|\bT|\bD)\s*-?\s*(\d{1,2})\b')
 _BARE_NUM_PAT = re.compile(r'^\s*(\d{1,2})\s*(?:مم|mm)?\s*$', re.I)
+# صيغة الأوتوكاد: `%%C` هي كود الرمز Ø (القطر) حين يُصدَّر النص خاماً — وهي
+# الصيغة الشائعة فعلاً بمخططات التسليح الاحترافية (لا ⌀/Ø المباشرة).
+# تُقرأ منها: العدد قبلها مباشرة = عدد الأسياخ («Main Bars 12%%C32»)،
+# و@ أو / بعدها = التباعد مم («%%C16@200»)، وB&T/T/B بعدها = الموضع
+# (سفلي وعلوي معاً / علوي / سفلي)، و«Ties» قبلها = أتريات لا حديداً رئيسياً،
+# و(n/Set) = عدد الأتريات بالمجموعة الواحدة.
+_CALLOUT_PAT = re.compile(
+    r'(?P<prefix>main\s*bars?|ties)?\s*'
+    r'(?:(?P<count>\d{1,3})\s*)?'
+    r'%%c\s*(?P<dia>\d{1,2})\b'
+    r'(?:\s*[@/]\s*(?P<sp>\d{2,4}))?'
+    r'(?:\s*\(\s*(?P<nset>\d{1,2})\s*/\s*set\s*\))?'
+    r'(?:\s*(?P<pos>b\s*&\s*t|top|bottom|\bt\b|\bb\b))?', re.I)
+
+def parse_rebar_callout(s):
+    """يحلّل نص واحد بصيغة `%%C` كاملة الوصف: القطر والتباعد والموضع وعدد
+    الأسياخ ونوعه (رئيسي/أتريات). يرجع None إن لم يحمل النص رمز `%%C` أصلاً."""
+    m = _CALLOUT_PAT.search(s or '')
+    if not m:
+        return None
+    g = m.groupdict()
+    pos = (g['pos'] or '').upper().replace(' ', '')
+    pos = {'TOP': 'T', 'BOTTOM': 'B'}.get(pos, pos) or None
+    role = 'tie' if g['prefix'] and 'tie' in g['prefix'].lower() else 'main'
+    return dict(dia=int(g['dia']), sp=int(g['sp']) if g['sp'] else None, pos=pos, role=role,
+                count=int(g['count']) if g['count'] else None,
+                nset=int(g['nset']) if g['nset'] else None)
 
 def rebar_diameters(texts, win, scale):
-    """أقطار حديد التسليح المكتوبة كنص قرب الأسياخ داخل حدود مخطط واحد (win):
-    إمّا برمز معروف (⌀12 · T16 · D12) أو رقماً مجرداً وحده بالخانة — وبعض
-    المهندسين يكتفون برقمٍ مجرد ليدل على القطر. الرقم المجرد فخّ خارج سياق
-    مخطط تسليح (قد يكون رقم غرفة أو مقاساً آخر)، فمن يستدعي هذه الدالة يقتصر
-    على مخطط صُنِّف تسليحاً أصلاً."""
-    counts = {}
+    """أقطار حديد التسليح المكتوبة قرب الأسياخ داخل حدود مخطط واحد (win)،
+    مجمَّعة حسب (القطر · التباعد · الموضع · النوع) لا القطر وحده — فـ«⌀16@200
+    علوي» غير «⌀16@150 سفلي» وإن تشابه القطر. تُقرأ ثلاث صيغ بالترتيب:
+    ١) صيغة الأوتوكاد الكاملة `%%C` (الأغنى معلومة)، ٢) رمز معروف مباشر
+    (⌀12 · T16 · D12)، ٣) رقم مجرد وحده بالخانة — وهذا الأخير فخّ خارج سياق
+    مخطط تسليح، فمن يستدعي هذه الدالة يقتصر على مخطط صُنِّف تسليحاً أصلاً."""
+    groups = {}
     for t in texts:
         if win:
             x, y = t['p'][0] * scale, t['p'][1] * scale
             if not (win[0] - 1 <= x <= win[2] + 1 and win[1] - 1 <= y <= win[3] + 1):
                 continue
         s = clean_text(t.get('s'))
-        m = _DIA_PAT.search(s) or _BARE_NUM_PAT.match(s)
-        if not m:
+        rec = parse_rebar_callout(s)
+        if rec is None:
+            m = _DIA_PAT.search(s) or _BARE_NUM_PAT.match(s)
+            if not m:
+                continue
+            rec = dict(dia=int(m.group(1)), sp=None, pos=None, role='main', count=None, nset=None)
+        if rec['dia'] not in _DIA_SET:
             continue
-        d = int(m.group(1))
-        if d not in _DIA_SET:
-            continue
-        counts[d] = counts.get(d, 0) + 1
-    return [dict(d=d, n=n) for d, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+        key = (rec['dia'], rec['sp'], rec['pos'], rec['role'])
+        g2 = groups.setdefault(key, dict(d=rec['dia'], sp=rec['sp'], pos=rec['pos'],
+                                         role=rec['role'], n=0, count=None, nset=None))
+        g2['n'] += 1
+        if rec['count'] is not None:
+            g2['count'] = max(g2['count'] or 0, rec['count'])
+        if rec['nset'] is not None:
+            g2['nset'] = max(g2['nset'] or 0, rec['nset'])
+    return sorted(groups.values(), key=lambda g2: -g2['n'])
 
 def split_regions(ents, roles, scale, cell=2.5, extra=None):
     """ملف DWG واحد يحوي عادةً عدة مخططات جنب بعض (طوابق ومقاطع وواجهات).

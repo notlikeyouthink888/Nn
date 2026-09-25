@@ -2601,10 +2601,22 @@ async function setPlanKind(i, kind) {
   await replan({ plan_kinds: window.__plan_kinds });
 }
 
+// انتماء الطبقة (أساس/سلاب/أعمدة/تسليح/واجهة/أخرى) — نظام منفصل عن «الدور»
+// الهندسي (col/wall/axis/...): الدور يقول كيف تُقرأ هندسة الطبقة، والانتماء
+// يقول لأي نظام إنشائي بالمبنى تخصّ. تعديل المستخدم هنا يقين دائماً.
+const LAYER_SUBSYS_OPTS = [['found', 'أساس'], ['slab', 'سلاب / سقف'], ['col', 'أعمدة'],
+  ['rebar', 'تسليح'], ['facade', 'واجهة'], ['other', 'أخرى']];
+async function setLayerSubsystem(name, sub) {
+  window.__layer_subsystems = window.__layer_subsystems || {};
+  window.__layer_subsystems[name] = sub;
+  await replan({ layer_subsystems: window.__layer_subsystems });
+}
+
 async function loadPlanFile(inp) {
   const f = inp.files && inp.files[0];
   if (!f) return;
   window.__plan_kinds = {};
+  window.__layer_subsystems = {};
   const msg = t => { const e = $('#pl_msg'); if (e) e.textContent = t; };
   try {
     msg('قراءة الملف… (' + (f.size / 1048576).toFixed(1) + ' ميغا)');
@@ -2647,7 +2659,8 @@ async function replan(patch) {
   const body = Object.assign({}, PLR, {
     roles: Object.fromEntries((PLD.layers || []).map(l => [l.name, l.role])),
     scale: PLD.scale, plan_index: PLD.plan_index, angle: PLD.angle,
-    plan_kinds: window.__plan_kinds || {} });
+    plan_kinds: window.__plan_kinds || {},
+    layer_subsystems: window.__layer_subsystems || {} });
   Object.assign(body, patch || {});
   const name = PLD.name;
   PLD = await post('plan/parse', body);
@@ -2824,34 +2837,51 @@ function renderPlan() {
         <span id="pl_stat" style="font-size:11px;color:var(--acc2)"></span>
       </div></details>
 
-    <details class="fold"><summary>📚 المخططات الموجودة بالملف (${(PLD.plans || []).length})</summary>
-      ${table(['#', 'الاسم بالمخطط', 'النوع', 'الأعمدة', 'الأبعاد', 'العناصر', ''],
-        (PLD.plans || []).map(p => [p.i + 1, p.name || '—',
-          `<select onchange="setPlanKind(${p.i},this.value)"
-             style="width:auto;padding:3px 8px;font-size:11px">
-            ${PLAN_KIND_OPTS.map(([k, t]) => `<option value="${k}" ${k === p.kind ? 'selected' : ''}>${t}</option>`).join('')}
-           </select>${(p.rebar || []).length ? '<div class="note" style="margin-top:4px">أقطار مكتشَفة: '
-             + p.rebar.slice(0, 10).map(fmtRebar).join(' · ') + '</div>' : ''}`,
-          `<b style="color:${p.n >= 4 ? '#34d399' : 'var(--mut)'}">${p.n}</b>`,
-          nf(p.w, 1) + ' × ' + nf(p.h, 1) + ' م', int(p.nent),
-          p.i === PLD.plan_index ? '<span class="tag t-ok">المختار ✓</span>'
-            : `<button class="btn gh" style="padding:3px 10px;font-size:11px"
-                 onclick="replan({plan_index:${p.i}})">اختره</button>`]))}
-      <div class="note">ملف الأوتوكاد الواحد يحوي عادةً عدة مخططات جنب بعض: أساس، وربما فرعين
-        للتسليح (علوي وسفلي)، وواجهات، وسقوف، وساحات فارغة بلا بناء. فُصلت كلها بالتعنقد على
-        طبقات الجدران والأعمدة، ونوع كلٍّ مخمَّن من اسمه وطبقاته — وتقدر تصحّحه من القائمة.
-        الأقطار المكتشَفة بمخطط تسليح تُقرأ من صيغة الأوتوكاد <code>%%C16@200 T</code> (قطر ·
-        تباعد · موضع)، أو من رمز مباشر (⌀12 · T16)، أو رقمٍ مجرد بجانبها.</div></details>
+    <!-- قسم واحد: مخططات الملف وطبقاته، بشرح صريح للفرق بين «النوع/الانتماء» و«الدور» -->
+    <div class="rec" style="margin-top:12px">
+      <h3>🛠️ الأوتوكاد — مخططات الملف وطبقاته</h3>
+      <div class="note" style="margin-bottom:8px">ملف الأوتوكاد الواحد يحوي عادةً عدة مخططات:
+        أساس، وربما فرعين للتسليح (علوي وسفلي)، وواجهات، وسقوف، وساحات فارغة بلا بناء —
+        وأحياناً كلها مرسومة فوق بصمة المبنى نفسها، كل جانب على طبقته الخاصة (لا جنب بعض
+        بالورقة). فيه هنا نظامان منفصلان تماماً، لا تعارض بينهما: <b>«الدور»</b> يقول للطبقة
+        هندسة الرسم (أعمدة/جدران/محاور/تجاهل) وتُبنى عليه كل عمليات الاستخراج، و<b>«ينتمي لـ»</b>
+        يقول لأي نظام إنشائي بالمبنى تخصّ الطبقة (أساس/سلاب/أعمدة/تسليح/واجهة). كلاهما تلقائي
+        من اسم الطبقة، وتقدر تصحّح أيّهما يدوياً من القوائم أدناه — تصحيحك يُعتمد يقيناً دائماً،
+        وتخمين النظام حين لا يجد دليلاً («تخمين — تأكد») لا يُستعمل لاستثناء أي طبقة من حساب
+        قائم، فلا يخرّب نتيجة موثوقة.</div>
 
-    <details class="fold"><summary>🗂️ طبقات المخطط ودورها (${PLD.layers.length})</summary>
-      <div style="max-height:340px;overflow:auto">${table(['الطبقة', 'العناصر', 'الدور'],
-        PLD.layers.map(l => [l.name, int(l.n),
-          `<select onchange="setRole('${l.name.replace(/'/g, "\\'")}',this.value)"
-             style="width:auto;padding:3px 8px;font-size:11.5px">
-            ${(PLD.roles || []).map(r => `<option value="${r.k}" ${r.k === l.role ? 'selected' : ''}>${r.name}</option>`).join('')}
-           </select>`]))}</div>
-      <div class="note">غيّر دور أي طبقة ثم سيُعاد التحليل تلقائياً. الأدوار المقترحة من أسماء
-        الطبقات: <code>col</code> أعمدة · <code>wall</code> جدران · <code>axis</code> محاور.</div></details>
+      <details class="fold" open><summary>📚 المخططات الموجودة بالملف (${(PLD.plans || []).length})</summary>
+        ${table(['#', 'الاسم بالمخطط', 'النوع', 'الأعمدة', 'الأبعاد', ''],
+          (PLD.plans || []).map(p => [p.i + 1, p.name || '—',
+            `<select onchange="setPlanKind(${p.i},this.value)"
+               style="width:auto;padding:3px 8px;font-size:11px">
+              ${PLAN_KIND_OPTS.map(([k, t]) => `<option value="${k}" ${k === p.kind ? 'selected' : ''}>${t}</option>`).join('')}
+             </select> ${p.kind_trusted ? '<span class="tag t-ok" style="font-size:10px">تلقائي ✓</span>'
+               : '<span class="tag t-warn" style="font-size:10px">تخمين — تأكد</span>'}
+             ${(p.rebar || []).length ? '<div class="note" style="margin-top:4px">أقطار مكتشَفة: '
+               + p.rebar.slice(0, 10).map(fmtRebar).join(' · ') + '</div>' : ''}`,
+            `<b style="color:${p.n >= 4 ? '#34d399' : 'var(--mut)'}">${p.n}</b>`,
+            nf(p.w, 1) + ' × ' + nf(p.h, 1) + ' م',
+            p.i === PLD.plan_index ? '<span class="tag t-ok">المختار ✓</span>' : '']))}
+        <div class="note">اختيار المخطط المبني عليه المشروع من قائمة «المخطط داخل الملف» بالشريط
+          أعلاه — هذا الجدول للتصفّح وتصحيح نوع كلٍّ فقط.</div></details>
+
+      <details class="fold"><summary>🗂️ طبقات الملف: دورها وانتماؤها (${PLD.layers.length})</summary>
+        <div style="max-height:340px;overflow:auto">${table(['الطبقة', 'العناصر', 'الدور', 'ينتمي لـ'],
+          PLD.layers.map(l => [l.name, int(l.n),
+            `<select onchange="setRole('${l.name.replace(/'/g, "\\'")}',this.value)"
+               style="width:auto;padding:3px 8px;font-size:11.5px">
+              ${(PLD.roles || []).map(r => `<option value="${r.k}" ${r.k === l.role ? 'selected' : ''}>${r.name}</option>`).join('')}
+             </select>`,
+            `<select onchange="setLayerSubsystem('${l.name.replace(/'/g, "\\'")}',this.value)"
+               style="width:auto;padding:3px 8px;font-size:11.5px">
+              ${LAYER_SUBSYS_OPTS.map(([k, t]) => `<option value="${k}" ${k === l.subsystem ? 'selected' : ''}>${t}</option>`).join('')}
+             </select> ${l.subsystem_trusted ? '<span class="tag t-ok" style="font-size:10px">تلقائي ✓</span>'
+               : '<span class="tag t-warn" style="font-size:10px">تخمين</span>'}`]))}</div>
+        <div class="note">«الدور» يُعاد التحليل عند تغييره تلقائياً (أعمدة/جدران/محاور). «ينتمي لـ»
+          وصفي فقط حالياً: يوضّح أي نظام إنشائي تخصّ كل طبقة (أساس/سلاب/أعمدة/تسليح/واجهة)
+          بلا تغيير أي حساب قائم — تصحيحه يبقى محفوظاً طالما الملف مفتوحاً.</div></details>
+    </div>
 
     <details class="fold"><summary>🪜 الدرج والمصاعد المكتشَفة (${(PLD.stairs || []).length} · ${(PLD.shafts || []).length})</summary>
       ${(PLD.stairs || []).length ? table(['#', 'الاتجاه', 'الدرجات', 'النائمة', 'عرض القلبة', 'طول القلبة', ''],
@@ -2872,9 +2902,7 @@ function renderPlan() {
       <div style="max-height:340px;overflow:auto">${table(['#', 'X (م)', 'Y (م)', 'المقطع (مم)'],
         (PLD.columns || []).map((c, i) => [i + 1, nf(c.x - (g ? g.x0 : 0), 2),
           nf(c.y - (g ? g.y0 : 0), 2), int(c.b) + ' × ' + int(c.h)]))}</div>
-      <div class="note">${PLD.note}</div></details>
-
-    <details class="fold"><summary>❔ كيف يُقرأ الملف وماذا يُستخرج منه</summary>${planWhy()}</details>`;
+      <div class="note">${PLD.note}</div></details>`;
 }
 
 async function clearPlanGrid() {

@@ -16,7 +16,7 @@
 
 ثم يُستخرج: الأعمدة · المحاور · حدّ البناء · وأقرب شبكة منتظمة تطابق الأعمدة الحقيقية.
 """
-import math, base64, re
+import math, base64, binascii, re
 
 # ------------------------- الوحدات (DXF $INSUNITS) -------------------------
 UNITS = {0: ('غير محددة', 0.001), 1: ('إنش', 0.0254), 2: ('قدم', 0.3048),
@@ -24,14 +24,27 @@ UNITS = {0: ('غير محددة', 0.001), 1: ('إنش', 0.0254), 2: ('قدم', 0
          8: ('مايكرون', 1e-6), 9: ('مليمتر', 0.001), 10: ('يارد', 0.9144),
          14: ('ديسيمتر', 0.1)}
 
+def _safe_int(v, default=0):
+    """تحويل رقمي لا يُفشل الطلب كله على قيمة تالفة (نص غير رقمي، None، ...)."""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+def _safe_float(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
 def units_scale(insunits, override=None):
     """معامل التحويل إلى المتر."""
     if override:
-        return float(override)
-    return UNITS.get(int(insunits or 0), UNITS[4])[1]
+        return _safe_float(override, 1.0)
+    return UNITS.get(_safe_int(insunits), UNITS[4])[1]
 
 def unit_name(insunits):
-    return UNITS.get(int(insunits or 0), UNITS[4])[0]
+    return UNITS.get(_safe_int(insunits), UNITS[4])[0]
 
 # ------------------------------ قارئ DXF ------------------------------
 def _pairs(text):
@@ -136,8 +149,32 @@ def _finish(cur, kind):
         return dict(t='C', l=lay, p=[xs[0], ys[0], 0.0])
     return None
 
+# عناصر الأوتوكاد تصل من مصدرين لا يضمنان شكلها: المتصفح (JSON من المستخدم
+# مباشرة عبر /api/plan/parse، بلا فحص مخطط) وDXF نصي قد يكون مبتوراً. بقية
+# الملف يفهرس `p` مباشرة (p[0], p[2], ...) بلا تحقق من طولها، فعنصر ناقص أو
+# ملف صغير/تالف كان يُسقط الطلب كله بـKeyError/IndexError بدل نتيجة متدرّجة
+# كباقي فلسفة هذا الملف. أقل طول لـ`p` مطلوب لكل نوع، حسب الصيغة الموحّدة أعلاه:
+_MIN_P_LEN = {'L': 4, 'P': 4, 'C': 3, 'A': 5, 'T': 2, 'D': 4}
+
+def sanitize_ents(ents):
+    """يُسقط أي عنصر مشوَّه (بلا مفاتيح t/l/p سليمة، أو p أقصر من المطلوب
+    لنوعه) بدل أن يُفشل التحليل كله. يرجع (العناصر السليمة، عدد المُسقَط)."""
+    out, dropped = [], 0
+    for e in (ents or []):
+        if (not isinstance(e, dict) or not isinstance(e.get('l'), str)
+                or not isinstance(e.get('p'), (list, tuple))):
+            dropped += 1; continue
+        need = _MIN_P_LEN.get(e.get('t'))
+        if need is None or len(e['p']) < need:
+            dropped += 1; continue
+        out.append(e)
+    return out, dropped
+
 def read_dxf_b64(b64):
-    raw = base64.b64decode(b64)
+    try:
+        raw = base64.b64decode(b64)
+    except (binascii.Error, TypeError, ValueError):
+        raise ValueError('الملف تالف أو غير مكتمل — تعذّر فكّ ترميزه')
     for enc in ('utf-8', 'cp1256', 'latin-1'):
         try:
             return read_dxf(raw.decode(enc))
@@ -485,14 +522,14 @@ def scale_from_dims(ents):
       ٢) وإن تساوتا (الشائع) فالحكم بتوزيع القيم: الوحدة الصحيحة هي التي تجعل
          أغلب الأبعاد مضاعفات 5 سم وضمن مدى معماري معقول (0.3 – 20 م).
     """
-    dims = [e for e in ents if e['t'] == 'D' and e.get('m', 0) > 0]
+    dims = [e for e in ents if e['t'] == 'D' and _safe_float(e.get('m')) > 0]
     if len(dims) < 5:
         return None
     ratios, vals = [], []
     for e in dims:
         p = e['p']
         geo = math.hypot(p[2] - p[0], p[3] - p[1])
-        m = float(e['m'])
+        m = _safe_float(e['m'])
         vals.append(m)
         if geo > 1e-9:
             ratios.append(m / geo)
@@ -610,14 +647,51 @@ _KIND_PATS = [
 
 def classify_plan_kind(name, layers, ncol, override=None):
     """يرجّح نوع مخطط واحد: تفضيل يدوي أولاً، ثم اسمه القريب وأسماء طبقاته،
-    وإلا فتراضي حسب وجود أعمدة (إنشائي) أو لا (معماري)."""
+    وإلا فتراضي حسب وجود أعمدة (إنشائي) أو لا (معماري). يرجع (النوع، بثقة؟) —
+    التفضيل اليدوي والمطابقة الاسمية «بثقة»، والتخمين الافتراضي الأخير لا.
+    التمييز يُعرض للمستخدم فقط (شارة «تخمين») ولا يُستعمل هنا لأي استثناء تلقائي."""
     if override and override in KIND_NAMES:
-        return override
+        return override, True
     hay = (name or '') + ' ' + ' '.join(l for l, _ in (layers or []))
     for k, pat in _KIND_PATS:
         if pat.search(hay):
-            return k
-    return 'struct' if ncol >= 4 else 'arch'
+            return k, True
+    return ('struct' if ncol >= 4 else 'arch'), False
+
+# ------------- انتماء كل طبقة: أساس · سلاب/سقف · أعمدة · تسليح · واجهة · أخرى -------------
+# «نوع المخطط» أعلاه يصنّف مخططاً كاملاً (مجموعة عناصر)، وهذا يصنّف **طبقة واحدة**
+# — وهذا هو المطلوب فعلاً لملف يرسم فيه المصمم الأعمدة والتسليح والواجهة كلها فوق
+# نفس بصمة المبنى، كل جانب على طبقته الخاصة (حالة Block_4 الحقيقية التي اختُبر عليها).
+LAYER_SUBSYS_NAMES = {
+    'found': 'أساس', 'slab': 'سلاب / سقف', 'col': 'أعمدة',
+    'rebar': 'تسليح', 'facade': 'واجهة', 'other': 'أخرى',
+}
+_LAYER_SUBSYS_PATS = [
+    ('rebar', re.compile(r'(تسليح|حديد\s*(تسليح|مسلح)|rebar|reinforce'
+                         r'|steel\s*(plan|layout|detail)|bar\s*bend|bbs|dim-reinf)', re.I)),
+    ('found', re.compile(r'(أساس|اساس|قواعد|فوندشن|foundation|footing|raft|pile)', re.I)),
+    ('slab', re.compile(r'(سقف|بلاطة|بلاط\b|slab|roof)', re.I)),
+    ('facade', re.compile(r'(واجهة|واجهات|نظر[ةه]|elevation|facade|front\s*view)', re.I)),
+    ('col', re.compile(r'(عمود|اعمدة|أعمدة|col(?!or)|column|dim-col)', re.I)),
+]
+
+def classify_layer_subsystem(layer_name, role, override=None):
+    """أي نظام إنشائي تخصّه طبقة واحدة، ودرجة الثقة بهذا التصنيف.
+
+    الترتيب: تفضيل يدوي (تعديل المستخدم = يقين دائماً) ← اسم الطبقة نفسه ←
+    دورها الهندسي الحالي (طبقة أعمدة فعلية = أعمدة بثقة، بلا حاجة لاسم). ما لا
+    يحمل أي دليل حقيقي يبقى «أخرى» غير موثوق — وهذا هو التخمين الآمن الذي طلبه
+    المستخدم: يُعرض للمستخدم بصراحة («تخمين — تأكد») ولا يُستعمل بذاته لأي
+    استثناء تلقائي من مساحة أو حساب، فلا يخرّب نتيجة موثوقة بتخمين خاطئ.
+    يرجع (الانتماء، بثقة؟)."""
+    if override and override in LAYER_SUBSYS_NAMES:
+        return override, True
+    for k, pat in _LAYER_SUBSYS_PATS:
+        if pat.search(layer_name or ''):
+            return k, True
+    if role == 'col':
+        return 'col', True
+    return 'other', False
 
 # أقطار حديد التسليح الشائعة بالتصميم (مم) — أي رقم خارج هذه المجموعة يُهمَل
 # لأنه على الأرجح رقم آخر (غرفة، مقاس أثاث) لا قطراً.
@@ -885,7 +959,7 @@ def detect_frames(ents, roles, scale, regions):
     boxes = [r['bbox'] for r in regions if r]
     out = set()
     for i, e in enumerate(ents):
-        if roles.get(e['l']) in ('off',):
+        if roles.get(e['l']) in ('off', 'frame'):
             continue
         pts = _seg_points(e)
         if len(pts) < 2:
@@ -994,7 +1068,7 @@ def plot_from_dims(ents, scale, win=None, lo=15.0):
         if e['t'] != 'D' or not e.get('m'):
             continue
         p = e['p']
-        v = float(e['m']) * scale
+        v = _safe_float(e['m']) * scale
         if v < lo:
             continue
         if abs(p[2] - p[0]) >= abs(p[3] - p[1]):
@@ -1041,7 +1115,7 @@ def detect_boundary(ents, roles, scale, win=None, margin=6.0):
             if inwin(q): pts += q
     if not pts:
         for e in ents:
-            if roles.get(e['l']) != 'off':
+            if roles.get(e['l']) not in ('off', 'frame'):
                 q = _seg_points(e)
                 if inwin(q): pts += q
     if not pts:
@@ -1295,7 +1369,7 @@ def dim_spans(ents, scale, win=None, tol=0.12):
         if win and not (win[0] - 3 <= mx <= win[2] + 3 and win[1] - 3 <= my <= win[3] + 3):
             continue
         dx = abs(p[2] - p[0]) * scale; dy = abs(p[3] - p[1]) * scale
-        L = float(e['m']) * scale
+        L = _safe_float(e['m']) * scale
         if L < 0.5 or L > 25.0:
             continue
         if dy < tol and dx > tol:
@@ -1307,25 +1381,33 @@ def dim_spans(ents, scale, win=None, tol=0.12):
     return out
 
 def analyze(p):
-    """p = {ents, layers, insunits, roles?, scale?, ...} من المتصفح أو من read_dxf."""
-    ents = p.get('ents') or []
+    """p = {ents, layers, insunits, roles?, scale?, plan_index?, plan_kinds?,
+    layer_subsystems?, angle?, ...} من المتصفح أو من read_dxf."""
+    ents, n_dropped = sanitize_ents(p.get('ents'))
     insunits = p.get('insunits', 4)
     counts = {}
     for e in ents:
         counts[e['l']] = counts.get(e['l'], 0) + 1
     given = p.get('roles') or {}
+    given_sub = p.get('layer_subsystems') or {}
     layers = []
     for name in sorted(counts, key=lambda k: -counts[k]):
-        layers.append(dict(name=name, n=counts[name],
-                           role=given.get(name) or suggest_role(name),
-                           suggested=suggest_role(name)))
+        role = given.get(name) or suggest_role(name)
+        sub, sub_trusted = classify_layer_subsystem(name, role, override=given_sub.get(name))
+        layers.append(dict(name=name, n=counts[name], role=role,
+                           suggested=suggest_role(name),
+                           subsystem=sub, subsystem_name=LAYER_SUBSYS_NAMES.get(sub, sub),
+                           subsystem_trusted=sub_trusted))
     roles = {l['name']: l['role'] for l in layers}
     warn = []
+    if n_dropped:
+        warn.append('تجاوزت %d عنصراً مشوَّهاً بالملف (بيانات ناقصة أو غير سليمة) '
+                    'وحُلِّل باقي الملف عادياً.' % n_dropped)
     # ---------- المخطط المائل يُدار لمحاور المبنى قبل أي كشف ----------
     ang, ang_share = plan_angle(ents, roles)
     off_axis = abs((ang + 45.0) % 90.0 - 45.0)         # بُعد الزاوية عن المحاور
     if p.get('angle') is not None:
-        ang = float(p['angle']); off_axis = abs((ang + 45.0) % 90.0 - 45.0)
+        ang = _safe_float(p['angle'], ang); off_axis = abs((ang + 45.0) % 90.0 - 45.0)
         ang_share = 1.0
     if ang_share >= 0.5 and off_axis > 1.0:
         ents = rotate_ents(ents, ang)
@@ -1336,10 +1418,11 @@ def analyze(p):
         ang = 0.0
     # ---------- المقياس: يدوي · ثم من الأبعاد المكتوبة · ثم من مقطع العمود ----------
     declared = units_scale(insunits)
-    dimc = None if p.get('scale') else scale_from_dims(ents)
+    manual_scale = _safe_float(p.get('scale'), 0.0) if p.get('scale') else 0.0
+    dimc = None if manual_scale > 0 else scale_from_dims(ents)
     sug = None
-    if p.get('scale'):
-        scale = float(p['scale']); src = 'يدوي'
+    if manual_scale > 0:
+        scale = manual_scale; src = 'يدوي'
     elif dimc and dimc['ok']:
         scale = dimc['scale']; src = 'الأبعاد المكتوبة'
         warn.append(dimc['why'] + (' — ووحدات الملف المصرّحة «%s» مخالفة فأُهملت.'
@@ -1362,7 +1445,7 @@ def analyze(p):
     # أبعاد لا يضبط وحداته عادةً. فيُقرأ الملف ويُعرض، لكنه **لا يُطبَّق
     # تلقائياً** على المشروع، ويُقال للمستخدم لماذا وماذا يفعل.
     trusted = src in ('الأبعاد المكتوبة', 'يدوي')
-    n_dim = sum(1 for e in ents if e['t'] == 'D' and e.get('m', 0) > 0)
+    n_dim = sum(1 for e in ents if e['t'] == 'D' and _safe_float(e.get('m')) > 0)
     if not trusted:
         if n_dim == 0:
             why = ('**لا يوجد بالملف أي بُعد مكتوب.** المقياس مأخوذ من %s وهو '
@@ -1406,8 +1489,29 @@ def analyze(p):
     # إطارات الورقة والمربعات الكبيرة تُستبعد
     frames = detect_frames(ents, roles, scale, regions)
     if frames:
+        # الإطار/البرواز المكتشَف هندسياً يُعاد له دور «إطار ورقة» فعلاً (لا يبقى
+        # كما رُقِّي بالغلط) — بتعديل roles و layers معاً ليتّسق ما تراه الواجهة
+        # مع ما استُبعد فعلاً. setdefault لا يكفي: كل الطبقات موجودة بـroles أصلاً.
+        #
+        # لكن الطبقة كاملة لا تُعاد تصنيفها لمجرّد عنصر إطاري واحد فيها: ملف
+        # كبير متعدد المخططات (63 مخططاً بملف Block_4 الحقيقي) يُنتج عناصر
+        # قليلة مُعلَّمة إطاراً بطبقات أعمدة/تسليح حقيقية (٪0–29 من الطبقة) —
+        # فيصير شرط إعادة التصنيف غالبية العناصر (≥60%) لا أيّ عنصر، وإلا
+        # فُقدت طبقة COLOMS/Column الحقيقية بالغلط (رُصد فعلاً وأُصلح هنا).
+        by_lay, tot_lay = {}, {}
         for i in frames:
-            roles.setdefault(ents[i]['l'], 'other')
+            by_lay[ents[i]['l']] = by_lay.get(ents[i]['l'], 0) + 1
+        for e in ents:
+            tot_lay[e['l']] = tot_lay.get(e['l'], 0) + 1
+        frame_layers = {lay for lay, c in by_lay.items()
+                        if roles.get(lay) != 'frame'
+                        and c / float(tot_lay.get(lay, 1)) >= 0.6}
+        for lay in frame_layers:
+            roles[lay] = 'frame'
+        if frame_layers:
+            for l in layers:
+                if l['name'] in frame_layers:
+                    l['role'] = 'frame'
         regions = [r for r in regions
                    if not set(r['idx']).issubset(frames)]
         for k, r in enumerate(regions):
@@ -1466,18 +1570,17 @@ def analyze(p):
     all_texts = [e for e in ents if e['t'] == 'T']
     for r in regions:
         ov = plan_kinds.get(str(r['i']), plan_kinds.get(r['i']))
-        r['kind'] = classify_plan_kind(r['name'], r['layers'], r['ncol'], override=ov)
+        r['kind'], r['kind_trusted'] = classify_plan_kind(r['name'], r['layers'], r['ncol'], override=ov)
         r['kind_name'] = KIND_NAMES.get(r['kind'], r['kind'])
         r['rebar'] = (rebar_diameters(all_texts, r['bbox'], scale)
                       if r['kind'] in ('rebar', 'rebar_top', 'rebar_bot') else [])
-    pick = int(p.get('plan_index', 0))
-    if pick >= len(regions):
-        pick = 0
+    pick = _safe_int(p.get('plan_index', 0))
+    pick = max(0, min(pick, len(regions) - 1)) if regions else 0
     cols = regions[pick]['cols'] if regions else []
     win = regions[pick]['bbox'] if regions else None
     plans = [dict(i=r['i'], n=r['ncol'], nent=r['n'], name=r['name'], bbox=r['bbox'],
                   w=r['w'], h=r['h'], kind=r['kind'], kind_name=r['kind_name'],
-                  rebar=r['rebar'],
+                  kind_trusted=r['kind_trusted'], rebar=r['rebar'],
                   layers=[dict(name=a, n=b2) for a, b2 in r['layers']]) for r in regions]
     if len(plans) > 1:
         kc = {}

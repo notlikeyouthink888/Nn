@@ -199,6 +199,10 @@ def resolve_axes(bubs, E, SG, segs):
         sx = max(b['x'] for b in allg) - min(b['x'] for b in allg)
         sy = max(b['y'] for b in allg) - min(b['y'] for b in allg)
         o = 'x' if sx >= sy else 'y'
+        # الأولى: اتجاه محاور الفئة نفسها المقروءة من خطوطها (أرقام أفقية ⇒ الباقي أفقي)
+        seen = [t[0] for bb in allg for t in det.get(bb['name'], ()) if t[4]]
+        if seen:
+            o = 'x' if seen.count('x') * 2 >= len(seen) else 'y'
         for b in grp:
             det.setdefault(b['name'], []).append((o, b['x'] if o == 'x' else b['y'], None, None, False))
     ax = {'x': {}, 'y': {}}
@@ -742,6 +746,170 @@ def _merge_rects(rects):
     return out
 
 
+# ------------------------------------------------------------------ لوحات بلا فقاعات
+_SKIP_LAYER = re.compile(r'(hatch|^dim|dimension|text|txt|frame|border|title|numbers|جداول|print|defpoints)', re.I)
+_WALL_LAYER = re.compile(r'(wall|جدار|جدران|حائط|block|brick|بلوك)', re.I)
+_TABLE_TITLE = re.compile(r'^\s*(جدول|المحتويات|contents|schedule|legend|مفتاح\s*الرموز)', re.I)
+
+
+def _components(E, segs, cell=0.8):
+    """عناقيد الرسم المتصلة (شبكة إشغال 8-جوار) — كل رسمة بالورقة عنقود أو أكثر."""
+    occ = set()
+    for s in segs:
+        e = E[s[4]]
+        if _SKIP_LAYER.search(e.get('l') or '') or e.get('hatch'):
+            continue
+        L = math.hypot(s[2] - s[0], s[3] - s[1])
+        if L > 60:
+            continue
+        n = max(1, int(L / cell))
+        for i in range(n + 1):
+            x = s[0] + (s[2] - s[0]) * i / n
+            y = s[1] + (s[3] - s[1]) * i / n
+            occ.add((int(math.floor(x / cell)), int(math.floor(y / cell))))
+    seen, comps = set(), []
+    for c0 in occ:
+        if c0 in seen:
+            continue
+        stack, cells = [c0], []
+        seen.add(c0)
+        while stack:
+            c = stack.pop()
+            cells.append(c)
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    q = (c[0] + dx, c[1] + dy)
+                    if q in occ and q not in seen:
+                        seen.add(q)
+                        stack.append(q)
+        xs = [c[0] for c in cells]
+        ys = [c[1] for c in cells]
+        comps.append(dict(x0=min(xs) * cell, y0=min(ys) * cell, x1=(max(xs) + 1) * cell,
+                          y1=(max(ys) + 1) * cell, n=len(cells)))
+    return comps
+
+
+def _overlap(a, b):
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    sa = max((a[2] - a[0]) * (a[3] - a[1]), 1e-6)
+    sb = max((b[2] - b[0]) * (b[3] - b[1]), 1e-6)
+    return ix * iy / min(sa, sb)
+
+
+def titled_drawing(t, comps, taken):
+    """الرسمة التي فوق عنوانها مباشرة (العنوان يُكتب تحت الرسمة): أكبر عنقود يقع
+    فوقه ويغطي موضعه أفقياً، ثم تُضم إليه قطعه المتناثرة ضمن حدوده الموسّعة."""
+    tx, ty, h = t['p'][0], t['p'][1], max(t['p'][2], 0.1)
+    cand = [c for c in comps if c['x0'] - 2.5 <= tx <= c['x1'] + 2.5
+            and ty - 1.5 * h <= c['y0'] <= ty + 9.0 and c['n'] >= 6]
+    if not cand:
+        return None
+    main = max(cand, key=lambda c: c['n'])
+    r = [main['x0'], main['y0'], main['x1'], main['y1']]
+    grow = True
+    while grow:
+        grow = False
+        for c in comps:
+            cr = [c['x0'], c['y0'], c['x1'], c['y1']]
+            if c['y0'] < ty - 1.5 * h:
+                continue
+            inside = cr[0] >= r[0] and cr[2] <= r[2] and cr[1] >= r[1] and cr[3] <= r[3]
+            if not inside and cr[0] >= r[0] - 1.2 and cr[2] <= r[2] + 1.2 and cr[1] >= r[1] - 1.2 and cr[3] <= r[3] + 1.2:
+                r = [min(r[0], cr[0]), min(r[1], cr[1]), max(r[2], cr[2]), max(r[3], cr[3])]
+                grow = True
+    if any(_overlap(r, q) > 0.45 for q in taken):
+        return None
+    return r
+
+
+def detect_walls(E, segs, rect):
+    """الجدران: خطّان متوازيان بفاصل 7–50 سم على طبقات الجدران (مسقط معماري)."""
+    x0, y0, x1, y1 = rect
+    lines = {'h': [], 'v': []}
+    for s in segs:
+        e = E[s[4]]
+        if not _WALL_LAYER.search(e.get('l') or '') or e.get('hatch'):
+            continue
+        sx0, sy0, sx1, sy1 = s[:4]
+        L = math.hypot(sx1 - sx0, sy1 - sy0)
+        if L < 0.3:
+            continue
+        mx, my = (sx0 + sx1) / 2, (sy0 + sy1) / 2
+        if not (x0 <= mx <= x1 and y0 <= my <= y1):
+            continue
+        if abs(sy1 - sy0) <= 0.01 * L:
+            lines['h'].append((min(sx0, sx1), max(sx0, sx1), (sy0 + sy1) / 2))
+        elif abs(sx1 - sx0) <= 0.01 * L:
+            lines['v'].append((min(sy0, sy1), max(sy0, sy1), (sx0 + sx1) / 2))
+    out = []
+    for o in ('h', 'v'):
+        L = sorted(lines[o], key=lambda t: t[2])
+        used = set()
+        pieces = []
+        for i, a in enumerate(L):
+            for j in range(i + 1, len(L)):
+                b = L[j]
+                gap = b[2] - a[2]
+                if gap > 0.5:
+                    break
+                if gap < 0.07 or j in used:
+                    continue
+                ov0, ov1 = max(a[0], b[0]), min(a[1], b[1])
+                if ov1 - ov0 >= 0.3:
+                    pieces.append(((a[2] + b[2]) / 2, ov0, ov1, gap))
+                    used.add(j)
+                    break
+        pieces.sort(key=lambda p: (round(p[0], 2), p[1]))
+        mine = []
+        for c, a0, a1, t in pieces:
+            m = mine[-1] if mine else None
+            if m and abs(m['c'] - c) <= 0.04 and a0 <= m['b'] + 0.05:
+                m['b'] = max(m['b'], a1)
+                continue
+            mine.append(dict(o=o, c=c, a=a0, b=a1, t=round(t * 1000)))
+        out += mine
+    return out
+
+
+def _reg_by_cols(dw, master):
+    """إزاحة تطابق أكبر عدد من الأعمدة (±20 سم) — لمخطط بلا محاور مشتركة."""
+    A = [(c['x'], c['y']) for c in master.get('columns', [])]
+    Bc = [(c['x'], c['y']) for c in dw.get('columns', [])]
+    if len(A) < 3 or len(Bc) < 3:
+        return None
+    cell = 0.2
+    H = {}
+    for x, y in A:
+        H.setdefault((round(x / cell), round(y / cell)), []).append((x, y))
+
+    def hits(tx, ty):
+        n, err = 0, []
+        for x, y in Bc:
+            X, Y = x + tx, y + ty
+            k = (round(X / cell), round(Y / cell))
+            best = None
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for a in H.get((k[0] + dx, k[1] + dy), ()):
+                        d = math.hypot(a[0] - X, a[1] - Y)
+                        if d <= 0.2 and (best is None or d < best):
+                            best = d
+            if best is not None:
+                n += 1
+                err.append(best)
+        return n, (max(err) if err else 9.9)
+    best = (0, None)
+    for a in A[:80]:
+        for b in Bc[:80]:
+            n, e = hits(a[0] - b[0], a[1] - b[1])
+            if n > best[0]:
+                best = (n, (a[0] - b[0], a[1] - b[1], e))
+    if best[0] >= 3:
+        return best[1] + (best[0],)
+    return None
+
+
 # ------------------------------------------------------------------ الرسم المصغّر
 def _sketch(segs, E, rect, cap=2500):
     x0, y0, x1, y1 = rect
@@ -861,17 +1029,27 @@ def read_set(d, opts=None):
                 continue
             if best is None or sc < best[0]:
                 best = (sc, t)
-        info = K.parse_title(best[1].get('s')) if best else dict(text=None, kind=None, floor=None,
-                                                                   thickness=None, scale=None, building=None)
-        ov = (opts.get('drawings') or {}).get(str(dw['id'])) or {}
-        if ov.get('kind'):
-            info['kind'] = ov['kind']
-        if ov.get('floor') and ov['floor'] in K.FLOOR_ORDER:
-            info['floor'] = dict(key=ov['floor'], order=K.FLOOR_ORDER[ov['floor']],
-                                 name=K.FLOOR_NAMES[ov['floor']], roof_of=True)
-        dw.update(title=info['text'], kind=info['kind'], kind_name=K.SHEET_NAMES.get(info['kind']),
-                  floor=info['floor'], thickness=info['thickness'], scale_note=info['scale'],
-                  building_name=info['building'], title_trusted=bool(best))
+        dw['_t'] = best[1] if best else None
+        _title_info(dw, best[1] if best else None, opts)
+
+    # لوحات بلا فقاعات محاور (مساقط معمارية · واجهات · مقاطع · تفاصيل): كل عنوان
+    # لوحة لم تأخذه رسمة بمحاور → الرسمة المتصلة فوقه مباشرة.
+    used_t = set(id(dw['_t']) for dw in drawings if dw.get('_t'))
+    comps = stage('عناقيد الرسم', lambda: _components(E, segs), [])
+    for t in sorted(titles, key=lambda t: (-t['p'][1], t['p'][0])):
+        if id(t) in used_t:
+            continue
+        k = K.sheet_kind(t.get('s'))
+        if k in ('beam_sched', 'col_sched', 'foot_sched', 'slab_sched') or _TABLE_TITLE.search(K.clean_text(t.get('s'))):
+            continue
+        r = titled_drawing(t, comps, [dw['rect'] for dw in drawings])
+        if not r:
+            continue
+        dw = dict(id=len(drawings), ax={'x': {}, 'y': {}}, rect=[r[0] - 0.3, r[1] - 0.3, r[2] + 0.3, r[3] + 0.3],
+                  bub=list(r), n_bubbles=0, _t=t)
+        _title_info(dw, t, opts)
+        drawings.append(dw)
+        used_t.add(id(t))
 
     # ---- ٤) الجداول ----
     beam_scheds, col_sched = [], {}
@@ -928,16 +1106,23 @@ def read_set(d, opts=None):
     # ---- ٥) العناصر بكل رسمة ----
     for dw in drawings:
         r = dw['rect']
-        dw['openings'] = stage('فتحات السقف', lambda r=r: detect_openings(
-            [segs[k] for k in SG.query(*r)], E, r), [])
-        dw['columns'] = stage('الأعمدة', lambda r=r, dw=dw: detect_columns(
-            E, [segs[k] for k in SG.query(*r)], r, dw['ax']), [])
-        label_columns(dw['columns'], E, TG, r)
-        dw['beams'] = stage('الجسور', lambda r=r, dw=dw: detect_beams(
-            E, [segs[k] for k in SG.query(*r)], r, dw['ax'], dw['columns']), [])
-        label_beams(dw['beams'], E, TG, r)
-        dw['callouts'] = stage('تسليح البلاطة', lambda r=r: slab_callouts(E, TG, r), [])
-        dw['sketch'] = _sketch([segs[k] for k in SG.query(*r)], E, r)
+        dw['openings'], dw['columns'], dw['beams'], dw['callouts'], dw['walls'] = [], [], [], [], []
+        view_only = dw['kind'] in ('elev', 'section', 'detail', 'site')
+        if not view_only:
+            dw['openings'] = stage('فتحات السقف', lambda r=r: detect_openings(
+                [segs[k] for k in SG.query(*r)], E, r), [])
+            dw['columns'] = stage('الأعمدة', lambda r=r, dw=dw: detect_columns(
+                E, [segs[k] for k in SG.query(*r)], r, dw['ax']), [])
+            if dw['kind'] == 'arch':
+                dw['columns'] = _arch_columns(dw['columns'])
+            label_columns(dw['columns'], E, TG, r)
+            if dw['kind'] != 'arch':               # المسقط المعماري: خطوط متوازية = جدران لا جسور
+                dw['beams'] = stage('الجسور', lambda r=r, dw=dw: detect_beams(
+                    E, [segs[k] for k in SG.query(*r)], r, dw['ax'], dw['columns']), [])
+                label_beams(dw['beams'], E, TG, r)
+            dw['callouts'] = stage('تسليح البلاطة', lambda r=r: slab_callouts(E, TG, r), [])
+            dw['walls'] = stage('الجدران', lambda r=r: detect_walls(E, [segs[k] for k in SG.query(*r)], r), [])
+        dw['sketch'] = _sketch([segs[k] for k in SG.query(*r)], E, r, cap=4000 if view_only else 2500)
         for c in dw['columns']:
             ax_ = _snap(c['x'], dw['ax']['x'].values(), 0.9)
             ay_ = _snap(c['y'], dw['ax']['y'].values(), 0.9)
@@ -977,6 +1162,10 @@ def read_set(d, opts=None):
                               key=lambda a: a['pos']) for o in ('x', 'y')}
         dw['rect'] = [round(v, 2) for v in dw['rect']]
         dw['bub'] = [round(v, 2) for v in dw['bub']]
+        dw.pop('_t', None)
+        for w in dw.get('walls', []):
+            for k2 in ('c', 'a', 'b'):
+                w[k2] = round(w[k2], 3)
 
     same_bld = len(set(dw['building_name'] for dw in drawings if dw['building_name'])) == 1
     return dict(ok=bool(buildings), scale=scale, scale_src=src, angle=round(ang, 2),
@@ -990,6 +1179,54 @@ def read_set(d, opts=None):
                 warnings=warn, stages=stages, dictionary=K.dictionary())
 
 
+def _arch_columns(cols):
+    """المسقط المعماري يرسم أعمدته بمقاس موحّد تقريباً: المقاس الغالب (≥4 أعمدة) هو العمود،
+    وما سواه (مربعات درج/أثاث صغيرة، أو خطّا جدار) يُستبعد، ثم يُزال المكرّر المتقارب."""
+    if len(cols) < 4:
+        return cols
+    key = lambda c: (int(round(min(c['b'], c['h']) / 50.0)), int(round(max(c['b'], c['h']) / 50.0)))
+    cnt = {}
+    for c in cols:
+        if c.get('how') in ('block', 'outline'):
+            cnt[key(c)] = cnt.get(key(c), 0) + 1
+    if not cnt:
+        return cols
+    mode, n = max(cnt.items(), key=lambda kv: kv[1])
+    if n < 4 or n * 2 < len(cols) * 0.8:
+        return cols
+    ok = lambda c: (c.get('how') in ('block', 'outline')
+                    and abs(key(c)[0] - mode[0]) <= 1 and abs(key(c)[1] - mode[1]) <= 1)
+    keep = []
+    for c in sorted(cols, key=lambda c: (key(c) != mode, c.get('how') != 'outline')):
+        if not ok(c) or any(math.hypot(c['x'] - k['x'], c['y'] - k['y']) < 0.7 for k in keep):
+            continue
+        keep.append(c)
+    return keep
+
+
+def _title_info(dw, t, opts):
+    info = K.parse_title(t.get('s')) if t else dict(text=None, kind=None, floor=None,
+                                                    thickness=None, scale=None, building=None)
+    ov = (opts.get('drawings') or {}).get(str(dw['id'])) or {}
+    if ov.get('kind'):
+        info['kind'] = ov['kind']
+    if ov.get('floor') and ov['floor'] in K.FLOOR_ORDER:
+        info['floor'] = dict(key=ov['floor'], order=K.FLOOR_ORDER[ov['floor']],
+                             name=K.FLOOR_NAMES[ov['floor']], roof_of=True)
+    txt = info['text'] or ''
+    view = None
+    if info['kind'] in ('elev', 'section'):
+        for key, rx in (('S', r'south|جنوب'), ('N', r'north|شمال'), ('E', r'east|شرق'), ('W', r'west|غرب')):
+            if re.search(rx, txt, re.I):
+                view = key
+                break
+    if info['kind'] in ('detail', 'site') and not ov.get('floor'):
+        info['floor'] = None        # «TYPICAL DETAIL» ليست طابقاً متكرراً
+    dw.update(title=info['text'], kind=info['kind'], kind_name=K.SHEET_NAMES.get(info['kind']),
+              floor=info['floor'], thickness=info['thickness'], scale_note=info['scale'],
+              building_name=info['building'], title_trusted=bool(t), view=view)
+
+
 def _between(op, ax):
     """اسم الفتحة بالمحاور: «I'→L' × 17→18»."""
     def rng(lo, hi, axes):
@@ -999,13 +1236,20 @@ def _between(op, ax):
     return dict(x=rng(op['x0'], op['x1'], ax['x'].values()), y=rng(op['y0'], op['y1'], ax['y'].values()))
 
 
+VIEW_KINDS = ('elev', 'section', 'detail', 'site')
+
+
 def _group_drawings(drawings, merge):
     """الرسمات بمبانٍ: نظام المحاور نفسه (تشابه أسماء المحاور بالاتجاهين) = مبنى واحد.
-    الدمج (باختيار المستخدم): يكفي اسم مشترك بكل اتجاه."""
+    الدمج (باختيار المستخدم): يكفي اسم مشترك بكل اتجاه. المسقط بلا محاور ينضم للمبنى
+    الذي تنطبق أعمدته على أعمدته. الواجهات والمقاطع تُلحق بالمبنى «مناظرَ» له."""
     def names(dw, o):
         return set(dw['ax'][o].keys())
+    plans = [dw for dw in drawings if dw['kind'] not in VIEW_KINDS]
+    views = [dw for dw in drawings if dw['kind'] in VIEW_KINDS]
+    axd = [dw for dw in plans if dw['ax']['x'] and dw['ax']['y']]
     groups = []
-    for dw in sorted(drawings, key=lambda d: -(len(d['ax']['x']) * len(d['ax']['y']))):
+    for dw in sorted(axd, key=lambda d: -(len(d['ax']['x']) * len(d['ax']['y']))):
         placed = False
         for g in groups:
             m = g[0]
@@ -1019,100 +1263,131 @@ def _group_drawings(drawings, merge):
                 break
         if not placed:
             groups.append([dw])
-    return groups
+    for dw in sorted([p for p in plans if p not in axd], key=lambda d: -len(d['columns'])):
+        best = None
+        for g in groups:
+            r = _reg_by_cols(dw, g[0])
+            if r and (best is None or r[3] > best[0]):
+                best = (r[3], g)
+        if best:
+            best[1].append(dw)
+        else:
+            groups.append([dw])
+    for v in views:
+        if not groups:
+            groups.append([])
+        g = next((g for g in groups if v.get('building_name') and
+                  any(d.get('building_name') == v['building_name'] for d in g)), groups[0])
+        g.append(v)
+    return [g for g in groups if any(d['kind'] not in VIEW_KINDS for d in g)] or groups
 
 
 def _register(dw, master):
-    """إزاحة الرسمة إلى إحداثيات الرسمة الرئيسية بأسماء المحاور المشتركة."""
+    """إزاحة الرسمة إلى إحداثيات الرسمة الرئيسية: بأسماء المحاور المشتركة إن انطبقت،
+    وإلا بتطابق الأعمدة، وإلا بمحاذاة حدود الرسمة (يُحذَّر منها)."""
+    if dw is master:
+        return 0.0, 0.0, 0.0, 'master'
     dx = [master['ax']['x'][n]['pos'] - a['pos'] for n, a in dw['ax']['x'].items() if n in master['ax']['x']]
     dy = [master['ax']['y'][n]['pos'] - a['pos'] for n, a in dw['ax']['y'].items() if n in master['ax']['y']]
-    tx, ty = _med(dx), _med(dy)
-    res = max([abs(v - tx) for v in dx] + [abs(v - ty) for v in dy] + [0.0])
-    return tx, ty, res
+    if dx and dy:
+        tx, ty = _med(dx), _med(dy)
+        res = max([abs(v - tx) for v in dx] + [abs(v - ty) for v in dy] + [0.0])
+        if res <= 0.3:
+            return tx, ty, res, 'axes'
+    rc = _reg_by_cols(dw, master)
+    if rc:
+        return rc[0], rc[1], rc[2], 'cols'
+    if dx and dy:
+        return tx, ty, res, 'axes'
+    return master['bub'][0] - dw['bub'][0], master['bub'][1] - dw['bub'][1], 9.9, 'bbox'
+
+
+def _clusters1(vals, tol=0.3):
+    out = []
+    for v in sorted(vals):
+        if out and v - out[-1][-1] <= tol:
+            out[-1].append(v)
+        else:
+            out.append([v])
+    return [sum(c) / len(c) for c in out]
 
 
 def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn, key_names=None,
               col_defs=None):
-    master = max(grp, key=lambda d: (d['kind'] == 'cols_key', len(d['ax']['x']) * len(d['ax']['y'])))
-    # الشبكة الموحّدة = اتحاد محاور كل الرسمات بعد التسجيل
-    grid = {'x': {}, 'y': {}}
-    for dw in grp:
-        tx, ty, res = _register(dw, master)
-        dw['reg'] = dict(dx=round(tx, 3), dy=round(ty, 3), residual=round(res, 3))
-        if res > 0.25:
+    plans = [d for d in grp if d['kind'] not in VIEW_KINDS]
+    views = [d for d in grp if d['kind'] in VIEW_KINDS]
+    if not plans:
+        return None
+    master = max(plans, key=lambda d: (d['kind'] == 'cols_key', len(d['ax']['x']) * len(d['ax']['y']),
+                                       len(d['columns'])))
+    for dw in plans:
+        tx, ty, res, how = _register(dw, master)
+        dw['reg'] = dict(dx=round(tx, 3), dy=round(ty, 3), residual=round(res, 3), how=how)
+        if how == 'bbox':
+            warn.append('الرسمة %d بلا محاور ولا أعمدة مشتركة — وُضعت بمحاذاة حدودها (تقريبي).' % (dw['id'] + 1))
+        elif how == 'axes' and res > 0.25:
             warn.append('الرسمة %d لا تنطبق على الشبكة بدقة (انحراف %.2f م) — راجع محاورها.' % (dw['id'] + 1, res))
-        for o, t in (('x', tx), ('y', ty)):
+    # ---- الحدود بإحداثيات الرسمة الرئيسية ثم الأصل ----
+    xs_all, ys_all = [], []
+    grid = {'x': {}, 'y': {}}
+    for dw in plans:
+        R = dw['reg']
+        for o, t in (('x', R['dx']), ('y', R['dy'])):
             for n, a in dw['ax'][o].items():
                 grid[o].setdefault(n, []).append(a['pos'] + t)
-    gx = sorted(({'name': n, 'pos': _med(v), 'prime': n.endswith("'")} for n, v in grid['x'].items()),
+                (xs_all if o == 'x' else ys_all).append(a['pos'] + t)
+        for c in dw['columns']:
+            xs_all.append(c['x'] + R['dx']); ys_all.append(c['y'] + R['dy'])
+        for w in dw.get('walls', []):
+            if w['o'] == 'h':
+                xs_all += [w['a'] + R['dx'], w['b'] + R['dx']]; ys_all.append(w['c'] + R['dy'])
+            else:
+                ys_all += [w['a'] + R['dy'], w['b'] + R['dy']]; xs_all.append(w['c'] + R['dx'])
+    if not xs_all or not ys_all:
+        return None
+    ox, oy = min(xs_all), min(ys_all)
+    gx = sorted(({'name': n, 'pos': round(_med(v) - ox, 3), 'prime': n.endswith("'")} for n, v in grid['x'].items()),
                 key=lambda a: a['pos'])
-    gy = sorted(({'name': n, 'pos': _med(v), 'prime': n.endswith("'")} for n, v in grid['y'].items()),
+    gy = sorted(({'name': n, 'pos': round(_med(v) - oy, 3), 'prime': n.endswith("'")} for n, v in grid['y'].items()),
                 key=lambda a: a['pos'])
-    ox, oy = gx[0]['pos'], gy[0]['pos']
-    for a in gx:
-        a['pos'] = round(a['pos'] - ox, 3)
-    for a in gy:
-        a['pos'] = round(a['pos'] - oy, 3)
-    for i, a in enumerate(gx):
-        a['next'] = round(gx[i + 1]['pos'] - a['pos'], 3) if i + 1 < len(gx) else None
-    for i, a in enumerate(gy):
-        a['next'] = round(gy[i + 1]['pos'] - a['pos'], 3) if i + 1 < len(gy) else None
+    for arr in (gx, gy):
+        for i, a in enumerate(arr):
+            a['next'] = round(arr[i + 1]['pos'] - a['pos'], 3) if i + 1 < len(arr) else None
 
     def T(dw, x, y):
         return (x + dw['reg']['dx'] - ox, y + dw['reg']['dy'] - oy)
 
-    # ---- أعمدة مرجعية بعلاماتها من مفتاح الأعمدة ----
     key_cols = []
-    for dw in grp:
+    for dw in plans:
         if dw['kind'] == 'cols_key':
             for c in dw['columns']:
                 x, y = T(dw, c['x'], c['y'])
                 key_cols.append(dict(c, x=x, y=y))
 
     by_floor = {}
-    for dw in grp:
+    for dw in plans:
         fl = dw.get('floor')
-        if dw['kind'] in ('slab_rft', 'beams_key') and fl:
+        if dw['kind'] in ('slab_rft', 'beams_key', 'arch', 'found') and fl:
             by_floor.setdefault(fl['key'], {})[dw['kind']] = dw
-    if not by_floor and grp:                        # لوحات بلا عناوين طوابق: طابق واحد افتراضي
-        by_floor['ground'] = {('slab_rft' if master['kind'] == 'slab_rft' else 'beams_key'): master}
+    if not by_floor:                                # لوحات بلا عناوين طوابق: طابق واحد افتراضي
+        by_floor['ground'] = {(master['kind'] if master['kind'] in ('slab_rft', 'beams_key', 'arch') else 'arch'): master}
         warn.append('ما لقيت أسماء طوابق بعناوين المبنى %d — عُرض طابقاً واحداً (تقدر تحدد الطابق لكل لوحة).' % (gi + 1))
     order = sorted(by_floor, key=lambda k: K.FLOOR_ORDER.get(k, 0))
     hmap = opts.get('floor_h') or {}
-    level = 0.0
+    hs = [PL._safe_float(hmap.get(fk), 0.0) or 3.5 for fk in order]
+    # منسوب الصفر = الطابق الأرضي (أو أول طابق فوقه)، وما تحته بالسالب (سرداب/قبو)
+    g0 = next((i for i, fk in enumerate(order) if K.FLOOR_ORDER.get(fk, 0) >= 0), 0)
+    levels = [(-sum(hs[i:g0]) if i < g0 else sum(hs[g0:i])) for i in range(len(order))]
     floors = []
-    for fk in order:
+    for fi, fk in enumerate(order):
         sheets = by_floor[fk]
-        sl, bk = sheets.get('slab_rft'), sheets.get('beams_key')
+        sl, bk, ar = sheets.get('slab_rft'), sheets.get('beams_key'), sheets.get('arch')
         src_b = bk or sl
-        h = PL._safe_float(hmap.get(fk), 0.0) or 3.5
-        # جسور الطابق
+        h = hs[fi]
         sched = beam_scheds[src_b['beam_sched']]['beams'] if src_b and src_b.get('beam_sched') is not None else beams_all
-        beams = []
-        for s in (src_b['beams'] if src_b else []):
-            mk = s.get('mark')
-            rec = beams_all.get(mk) if mk and beams_all.get(mk, {}).get('user') else None
-            rec = rec or (sched.get(mk) if mk else None)
-            rec = rec or (beams_all.get(mk) if mk else None)
-            if s['o'] == 'h':
-                x1, y1 = T(src_b, s['a'], s['c'])
-                x2, y2 = T(src_b, s['b'], s['c'])
-            else:
-                x1, y1 = T(src_b, s['c'], s['a'])
-                x2, y2 = T(src_b, s['c'], s['b'])
-            bw = rec['b'] if rec and rec.get('b') else s['w']
-            bh = rec['h'] if rec and rec.get('h') else None
-            guess = bh is None
-            if guess:
-                depths = [v['h'] for v in sched.values() if v.get('h')]
-                bh = _med(depths, 600)
-            beams.append(dict(x1=round(x1, 3), y1=round(y1, 3), x2=round(x2, 3), y2=round(y2, 3),
-                              b=int(bw), h=int(bh), mark=mk, axis=s.get('axis'), o=s['o'],
-                              span=round(abs(s['b'] - s['a']), 3), cant=s.get('cant', False),
-                              rebar=_beam_rebar(rec), guess=guess, src=src_b['id']))
-        # الأعمدة
+        # ---- الأعمدة ----
         cand = []
-        for dw in (bk, sl):
+        for dw in (bk, sl, ar):
             if dw:
                 for c in dw['columns']:
                     x, y = T(dw, c['x'], c['y'])
@@ -1138,10 +1413,52 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             cols.append(dict(x=round(c['x'], 3), y=round(c['y'], 3), b=int(c['b']), h=int(c['h']),
                              shape=c.get('shape', 'rect'), mark=mk, ax=c.get('ax'), ay=c.get('ay'),
                              rebar=rb, how=c.get('how'), src=c.get('src')))
-        # البلاطة
-        sdw = sl or bk
+        # ---- الجسور: من مفتاح الجسور، وإلا تُفترض بين الأعمدة المتجاورة (مُعلَّمة تخميناً) ----
+        beams = []
+        for s in (src_b['beams'] if src_b else []):
+            mk = s.get('mark')
+            rec = beams_all.get(mk) if mk and beams_all.get(mk, {}).get('user') else None
+            rec = rec or (sched.get(mk) if mk else None)
+            rec = rec or (beams_all.get(mk) if mk else None)
+            if s['o'] == 'h':
+                x1, y1 = T(src_b, s['a'], s['c']); x2, y2 = T(src_b, s['b'], s['c'])
+            else:
+                x1, y1 = T(src_b, s['c'], s['a']); x2, y2 = T(src_b, s['c'], s['b'])
+            bw = rec['b'] if rec and rec.get('b') else s['w']
+            bh = rec['h'] if rec and rec.get('h') else None
+            guess = bh is None
+            if guess:
+                bh = _med([v['h'] for v in sched.values() if v.get('h')], 600)
+            beams.append(dict(x1=round(x1, 3), y1=round(y1, 3), x2=round(x2, 3), y2=round(y2, 3),
+                              b=int(bw), h=int(bh), mark=mk, axis=s.get('axis'), o=s['o'],
+                              span=round(abs(s['b'] - s['a']), 3), cant=s.get('cant', False),
+                              rebar=_beam_rebar(rec), guess=guess, src=src_b['id']))
+        assumed = False
+        if not beams and len(cols) >= 2:
+            fr = PL.build_frame([dict(x=c['x'], y=c['y'], b=c['b'], h=c['h']) for c in cols])
+            for bm in (fr or {}).get('beams', []):
+                L = bm['span']
+                o = 'h' if bm['dir'] == 'x' else 'v'
+                bh = int(min(900, max(450, math.ceil(L * 1000 / 12 / 50.0) * 50)))
+                beams.append(dict(x1=bm['x1'], y1=bm['y1'], x2=bm['x2'], y2=bm['y2'], b=250, h=bh, mark=None,
+                                  axis=None, o=o, span=round(L, 3), cant=False, rebar=None, guess=True, src=None))
+            assumed = bool(beams)
+        # ---- الجدران (مسقط معماري) ----
+        walls = []
+        for dw in (ar,):
+            if not dw:
+                continue
+            for w in dw.get('walls', []):
+                if w['o'] == 'h':
+                    a, b = T(dw, w['a'], w['c']), T(dw, w['b'], w['c'])
+                else:
+                    a, b = T(dw, w['c'], w['a']), T(dw, w['c'], w['b'])
+                walls.append(dict(x1=round(a[0], 3), y1=round(a[1], 3), x2=round(b[0], 3), y2=round(b[1], 3),
+                                  t=w['t'], o=w['o']))
+        # ---- البلاطة ----
+        sdw = sl or bk or ar
         opens, calls = [], []
-        for dw in (sl, bk):                      # علامات X من لوحة السقف ولوحة الجسور معاً
+        for dw in (sl, bk, ar):
             if not dw:
                 continue
             for op in dw['openings']:
@@ -1156,31 +1473,47 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             for c in sdw['callouts']:
                 x, y = T(sdw, c['x'], c['y'])
                 calls.append(dict(c, x=round(x, 3), y=round(y, 3)))
-        loc_ax = {'x': {a['name']: dict(a) for a in gx}, 'y': {a['name']: dict(a) for a in gy}}
-        loc_spans = []
+        spans = []
         for bm in beams:
             if bm['o'] == 'h':
-                loc_spans.append(dict(o='h', c=bm['y1'], a=min(bm['x1'], bm['x2']), b=max(bm['x1'], bm['x2'])))
+                spans.append(dict(o='h', c=bm['y1'], a=min(bm['x1'], bm['x2']), b=max(bm['x1'], bm['x2'])))
             else:
-                loc_spans.append(dict(o='v', c=bm['x1'], a=min(bm['y1'], bm['y2']), b=max(bm['y1'], bm['y2'])))
-        rects = slab_panels(loc_ax, loc_spans, opens, calls)
+                spans.append(dict(o='v', c=bm['x1'], a=min(bm['y1'], bm['y2']), b=max(bm['y1'], bm['y2'])))
+        for w in walls:
+            if w['o'] == 'h':
+                spans.append(dict(o='h', c=w['y1'], a=min(w['x1'], w['x2']), b=max(w['x1'], w['x2'])))
+            else:
+                spans.append(dict(o='v', c=w['x1'], a=min(w['y1'], w['y2']), b=max(w['y1'], w['y2'])))
+        if gx and gy:
+            loc_ax = {'x': {a['name']: dict(a) for a in gx}, 'y': {a['name']: dict(a) for a in gy}}
+        else:                                      # بلا محاور: خطوط الأعمدة والجدران تقسم الألواح
+            px = _clusters1([c['x'] for c in cols] + [sp['c'] for sp in spans if sp['o'] == 'v'])
+            py = _clusters1([c['y'] for c in cols] + [sp['c'] for sp in spans if sp['o'] == 'h'])
+            loc_ax = {'x': {str(i): dict(name=str(i), pos=v) for i, v in enumerate(px)},
+                      'y': {str(i): dict(name=str(i), pos=v) for i, v in enumerate(py)}}
+        rects = slab_panels(loc_ax, spans, opens, calls)
         t = (sl or {}).get('thickness') or (bk or {}).get('thickness') or 200
-        mesh = _slab_mesh(calls)
-        floors.append(dict(key=fk, name=K.FLOOR_NAMES.get(fk, fk), level=round(level, 3), h=h,
-                           columns=cols, beams=beams,
+        floors.append(dict(key=fk, name=K.FLOOR_NAMES.get(fk, fk), level=round(levels[fi], 3), h=h,
+                           columns=cols, beams=beams, walls=walls, beams_assumed=assumed,
                            slab=dict(t=t, rects=[[round(v, 3) for v in r] for r in rects],
-                                     openings=opens, callouts=calls, mesh=mesh,
+                                     openings=opens, callouts=calls, mesh=_slab_mesh(calls),
                                      t_from_title=bool((sl or {}).get('thickness'))),
-                           sheets=dict(slab=sl['id'] if sl else None, beams=bk['id'] if bk else None)))
-        level += h
+                           sheets=dict(slab=sl['id'] if sl else None, beams=bk['id'] if bk else None,
+                                       arch=ar['id'] if ar else None)))
+        if assumed:
+            warn.append('سقف %s: لا مخطط جسور — افتُرضت جسور 250 مم بين الأعمدة المتجاورة (عمقها ≈ البحر/12)، '
+                        'معلَّمة «تخمين».' % K.FLOOR_NAMES.get(fk, fk))
     footings = _footings(floors, materials, opts, warn)
-    ext = [gx[-1]['pos'] if gx else 0, gy[-1]['pos'] if gy else 0]
+    ext = [round(max(xs_all) - ox, 2), round(max(ys_all) - oy, 2)]
     names = sorted(set(dw['building_name'] for dw in grp if dw['building_name']))
+    vout = [dict(id=v['id'], title=v['title'], kind=v['kind'], view=v.get('view'), rect=v['rect'],
+                 sketch=v['sketch']) for v in views]
     return dict(id=gi, name=(names[0] if names else 'مبنى %d' % (gi + 1)),
-                axes_sig='%s→%s × %s→%s' % (gx[0]['name'], gx[-1]['name'], gy[0]['name'], gy[-1]['name']),
-                grid=dict(x=gx, y=gy), size=[round(v, 2) for v in ext],
-                drawings=[dw['id'] for dw in grp], floors=floors, footings=footings,
-                height=round(level, 3))
+                axes_sig=('%s→%s × %s→%s' % (gx[0]['name'], gx[-1]['name'], gy[0]['name'], gy[-1]['name'])
+                          if gx and gy else 'بلا محاور'),
+                grid=dict(x=gx, y=gy), size=ext,
+                drawings=[dw['id'] for dw in grp], floors=floors, footings=footings, views=vout,
+                height=round(sum(hs[g0:]), 3), depth=round(sum(hs[:g0]), 3))
 
 
 def _beam_rebar(rec):
@@ -1216,7 +1549,17 @@ def _footings(floors, materials, opts, warn):
     fy = PL._safe_float(opts.get('fy'), 0.0) or materials.get('fy') or 420.0
     LL = PL._safe_float(opts.get('LL'), 0.0) or 3.0           # إداري kN/m²
     SDL = PL._safe_float(opts.get('SDL'), 0.0) or 2.5         # تشطيب + قواطع
-    base = floors[0]['columns']
+    # قاعدة الأعمدة: أعمدة الطابق الأسفل + كل عمود يبدأ بطابق منسوبه ≤ 0 وليس تحته عمود
+    # (مثل أعمدة المدخل خارج حدود السرداب) — كلٌّ عند منسوب طابقه. العمود المبتدئ بطابق علوي لا أساس له.
+    lv0 = floors[0].get('level', 0.0) or 0.0
+    base = [dict(c, _z=lv0) for c in floors[0]['columns']]
+    for f in floors[1:]:
+        lv = f.get('level', 0.0) or 0.0
+        if lv > 0.01:
+            break
+        for c in f['columns']:
+            if not any(math.hypot(q['x'] - c['x'], q['y'] - c['y']) < 0.6 for q in base):
+                base.append(dict(c, _z=lv))
     PD = [0.0] * len(base)
     PLv = [0.0] * len(base)
     step = 0.75
@@ -1226,8 +1569,13 @@ def _footings(floors, materials, opts, warn):
             continue
         # مطابقة أعمدة الطابق بأعمدة الأساس (نفس الموقع)
         idx = []
+        lvf = f.get('level', 0.0) or 0.0
         for c in cols:
-            j = min(range(len(base)), key=lambda k: math.hypot(base[k]['x'] - c['x'], base[k]['y'] - c['y']))
+            j = min(range(len(base)), key=lambda k: (base[k]['_z'] > lvf + 0.01,
+                                                     math.hypot(base[k]['x'] - c['x'], base[k]['y'] - c['y'])))
+            if base[j]['_z'] > lvf + 0.01:
+                idx.append(None)
+                continue
             idx.append(j if math.hypot(base[j]['x'] - c['x'], base[j]['y'] - c['y']) < 0.6 else None)
         area = [0.0] * len(cols)
         for r in f['slab']['rects']:
@@ -1263,5 +1611,5 @@ def _footings(floors, materials, opts, warn):
             continue
         out.append(dict(x=c['x'], y=c['y'], col=c.get('mark'), B=r['B'], h=r['h'], PD=round(PD[j], 1),
                         PL=round(PLv[j], 1), Pu=round(r['Pu'], 1), bars=r['bars_label'], db=r['bar_db'],
-                        s=r['spacing'], ok=r['ok'], designed=True))
+                        s=r['spacing'], ok=r['ok'], designed=True, z=c['_z']))
     return out

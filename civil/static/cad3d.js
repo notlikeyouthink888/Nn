@@ -9,7 +9,7 @@ const CAD3D = (() => {
   const T = () => window.THREE;
   const COL = { col: 0x9aa4b2, beam: 0x7f8ea6, slab: 0xcfd8e3, foot: 0xa8a29e, stub: 0x8c96a4,
                 main: 0xef4444, tie: 0xf59e0b, meshB: 0x3b82f6, meshT: 0x22c55e, side: 0xa855f7,
-                axis: 0x38bdf8, sel: 0xfacc15 };
+                axis: 0x38bdf8, sel: 0xfacc15, wall: 0xd8cfc0, elev: 0xfbbf24 };
 
   function mount(host, B, opts) {
     const THREE = T();
@@ -96,6 +96,13 @@ const CAD3D = (() => {
                                 : box(b, h - t, L, P(mx, my, top - t - (h - t) / 2), mat('beam'), info, conc);
         if (bm.guess) me.material = mat('beamG', { color: 0xb8894a });
       });
+      (f.walls || []).forEach(w => {
+        const L = Math.hypot(w.x2 - w.x1, w.y2 - w.y1), th = Math.max(w.t, 80) / 1000, H = f.h - t;
+        const mx = (w.x1 + w.x2) / 2, my = (w.y1 + w.y2) / 2;
+        const info = { kind: 'wall', floor: f.name, t: w.t, L: L };
+        if (w.o === 'h') box(L, H, th, P(mx, my, f.level + H / 2), mat('wall', { transparent: true, opacity: 0.9 }), info, conc);
+        else box(th, H, L, P(mx, my, f.level + H / 2), mat('wall', { transparent: true, opacity: 0.9 }), info, conc);
+      });
       (f.slab.rects || []).forEach(r => {
         const w = r[2] - r[0], d = r[3] - r[1];
         box(w, t, d, P((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, top - t / 2),
@@ -107,20 +114,22 @@ const CAD3D = (() => {
     // ---------------- الأساسات ----------------
     const found = new THREE.Group();
     root.add(found);
-    const Df = 1.5;
+    const Df = 1.5, z0f = (fl[0] ? fl[0].level : 0);
     (B.footings || []).forEach(ft => {
       const hh = ft.h / 1000;
-      box(ft.B, hh, ft.B, P(ft.x, ft.y, -Df + hh / 2), mat('foot'),
+      const zt = (typeof ft.z === 'number') ? ft.z : z0f;      // منسوب طابق العمود المرتكز
+      box(ft.B, hh, ft.B, P(ft.x, ft.y, zt - Df + hh / 2), mat('foot'),
           { kind: 'foot', mark: ft.col, size: ft.B.toFixed(2) + '×' + ft.B.toFixed(2) + ' م × ' + ft.h + ' مم',
             PD: ft.PD, PL: ft.PL, Pu: ft.Pu, bars: ft.bars, ok: ft.ok }, found);
     });
-    const base = fl[0];
-    if (base) (base.columns || []).forEach(c => {       // رقبة العمود من الأساس للأرض
+    fl.filter(f => f === fl[0] || f.level <= 0.01).forEach(base => (base.columns || []).forEach(c => {  // رقبة العمود من الأساس للأرض
       const ft = (B.footings || []).find(q => Math.abs(q.x - c.x) < 0.3 && Math.abs(q.y - c.y) < 0.3);
       if (!ft) return;
-      const z0 = -Df + ft.h / 1000;
-      box(c.b / 1000, -z0, c.h / 1000, P(c.x, c.y, z0 / 2), mat('stub'), null, found);
-    });
+      const zt = (typeof ft.z === 'number') ? ft.z : z0f;
+      if (Math.abs(zt - base.level) > 0.01 && base !== fl[0]) return;
+      const z0 = zt - Df + ft.h / 1000;
+      box(c.b / 1000, zt - z0, c.h / 1000, P(c.x, c.y, (z0 + zt) / 2), mat('stub'), null, found);
+    }));
 
     // ---------------- المحاور بأسمائها ----------------
     const axG = new THREE.Group();
@@ -154,8 +163,40 @@ const CAD3D = (() => {
     });
     const grd = keep(new THREE.PlaneGeometry(sx + 16, sy + 16));
     const gm = new THREE.Mesh(grd, keep(new THREE.MeshStandardMaterial({ color: 0x142033, roughness: 1, transparent: true, opacity: 0.85 })));
-    gm.rotation.x = -Math.PI / 2; gm.position.y = -0.01;
+    gm.rotation.x = -Math.PI / 2; gm.position.y = Math.min(0, z0f) - 0.01;
     root.add(gm);
+
+    // ---------------- الواجهات: رسمة الواجهة تُسقَط على وجهها من المبنى ----------------
+    // خط الأرض = أطول خط أفقي بأسفل الرسمة؛ العرض يُطابَق مع عرض المبنى على ذلك الوجه
+    // (من اليسار لليمين كما يراه الواقف أمام الواجهة)، والارتفاع من خط الأرض.
+    const views = new THREE.Group();
+    root.add(views);
+    (B.views || []).forEach(v => {
+      if (!v.view || !(v.sketch || []).length) return;
+      const L = v.sketch;
+      const hl = L.filter(l => Math.abs(l[3] - l[1]) < 0.01);
+      const wmax = Math.max(...L.map(l => Math.max(l[0], l[2]))) - Math.min(...L.map(l => Math.min(l[0], l[2])));
+      const longH = hl.filter(l => Math.abs(l[2] - l[0]) > 0.4 * wmax).sort((a, b) => a[1] - b[1]);
+      if (!longH.length) return;
+      const g = longH[0];
+      const gy = g[1], ex0 = Math.min(g[0], g[2]), ex1 = Math.max(g[0], g[2]);
+      const face = (v.view === 'S' || v.view === 'N') ? sx : sy;
+      const k = Math.abs((ex1 - ex0) - face) < 0.25 * face ? face / (ex1 - ex0) : 1;
+      const off = Math.abs((ex1 - ex0) - face) < 0.25 * face ? 0 : (face - (ex1 - ex0)) / 2;
+      const pts = [];
+      const map = (ex, ey) => {
+        const u = (ex - ex0) * k + off, z = (ey - gy);
+        if (v.view === 'S') return P(u, -0.25, z);
+        if (v.view === 'N') return P(sx - u, sy + 0.25, z);
+        if (v.view === 'E') return P(sx + 0.25, u, z);
+        return P(-0.25, sy - u, z);
+      };
+      L.forEach(l => { if (l[1] >= gy - 0.05 && l[3] >= gy - 0.05) { pts.push(map(l[0], l[1]), map(l[2], l[3])); } });
+      if (!pts.length) return;
+      const geo = keep(new THREE.BufferGeometry().setFromPoints(pts));
+      views.add(new THREE.LineSegments(geo, keep(new THREE.LineBasicMaterial({ color: COL.elev, transparent: true, opacity: 0.85 }))));
+    });
+    views.visible = false;
 
     // ---------------- الحديد (يُبنى عند الطلب لكل طابق) ----------------
     const cyl = keep(new THREE.CylinderGeometry(1, 1, 1, 6));
@@ -293,6 +334,7 @@ const CAD3D = (() => {
         if (vis) bx.expandByObject(o);
       } });
       if (bx.isEmpty()) bx.setFromCenterAndSize(new THREE.Vector3(0, Htot / 2, 0), new THREE.Vector3(sx, Htot, sy));
+      if (views.visible) bx.expandByObject(views);
       const c = bx.getCenter(new THREE.Vector3()), r = bx.getSize(new THREE.Vector3()).length() / 2;
       const fov = cam.fov * Math.PI / 180, asp = Math.min(1, cam.aspect);
       const dist = r / Math.sin(fov / 2) / Math.max(0.55, asp) * 0.82;
@@ -362,6 +404,8 @@ const CAD3D = (() => {
       rebar(on) { rebarOn = !!on; apply(); },
       only(on) { onlyBars = !!on; apply(); },
       xray(on) { xrayOn = !!on; apply(); },
+      views(on) { views.visible = !!on; draw(); },
+      hasViews: () => views.children.length > 0,
       reset,
       stats() { return { floors: floorsG.length, pick: pickables.length, bars: nBars }; },
       canvas: () => rn.domElement,

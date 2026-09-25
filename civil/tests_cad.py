@@ -117,8 +117,13 @@ class TestBlock4(unittest.TestCase):
 
     def test_drawings(self):
         R = self.R
-        self.assertEqual(len(R['drawings']), 11)
-        kinds = sorted(dw['kind'] or '-' for dw in R['drawings'])
+        import cadread
+        plans = [dw for dw in R['drawings'] if dw['kind'] not in cadread.VIEW_KINDS]
+        self.assertEqual(len(plans), 11)
+        views = [dw['kind'] for dw in R['drawings'] if dw['kind'] in cadread.VIEW_KINDS]
+        self.assertIn('elev', views)
+        self.assertIn('section', views)
+        kinds = sorted(dw['kind'] or '-' for dw in plans)
         self.assertEqual(kinds.count('slab_rft'), 5)
         self.assertEqual(kinds.count('beams_key'), 5)
         self.assertEqual(kinds.count('cols_key'), 1)

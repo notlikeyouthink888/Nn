@@ -245,9 +245,14 @@ const CADPAGE = (() => {
         </div>
         <div class="t">${E(dw.title || '—')}</div>
         ${sheetSvg(dw)}
-        <div class="note" style="margin-top:6px">${dw.ax.x.length}×${dw.ax.y.length} محور · ${dw.columns.length} عمود ·
+        ${['elev', 'section', 'detail', 'site'].includes(dw.kind)
+          ? `<div class="note" style="margin-top:6px">${dw.kind === 'elev'
+              ? 'واجهة' + ({ S: ' جنوبية', N: ' شمالية', E: ' شرقية', W: ' غربية' }[dw.view] || '') +
+                (dw.view ? ' — تظهر على المبنى بالمجسم (🏛️ الواجهات على المبنى)' : ' — حدّد جهتها بعنوانها لتُركَّب على المبنى')
+              : 'لوحة عرض (مقطع/تفصيلة) — مرجع للقراءة، لا تدخل تركيب العناصر'}</div>`
+          : `<div class="note" style="margin-top:6px">${dw.ax.x.length}×${dw.ax.y.length} محور · ${dw.columns.length} عمود ·
           ${dw.beams.length} بحر جسر (${dw.beams.filter(b => b.mark).length} بعلامة) · ${dw.openings.length} فتحة ·
-          ${dw.callouts.length} نداء تسليح${dw.thickness ? ' · بلاطة ' + dw.thickness + ' مم' : ''}</div>
+          ${dw.callouts.length} نداء تسليح${(dw.walls || []).length && dw.kind === 'arch' ? ' · ' + dw.walls.length + ' جدار' : ''}${dw.thickness ? ' · بلاطة ' + dw.thickness + ' مم' : ''}</div>`}
       </div>`;
     return `<div class="card">${bsel()}
       <div class="legend" style="margin:8px 0"><span><i style="background:#ef4444"></i>عمود</span>
@@ -314,10 +319,12 @@ const CADPAGE = (() => {
     return `<div class="card">${bsel()}</div>` + B.floors.map(f => {
       const s = f.slab, m = s.mesh || {};
       return `<div class="card" style="margin-top:10px"><h3>سقف الطابق ${E(f.name)}
-        <span class="tag t-ok">منسوب ${N(f.level, 2)} م</span></h3>
+        <span class="tag t-ok">منسوب ${f.level >= 0 ? '+' : ''}${N(f.level, 2)} م</span></h3>
         <div class="f" style="margin-bottom:8px"><div><label>ارتفاع الطابق (م)</label>
           <input type="number" step="0.05" min="2.4" max="12" class="sm" data-fh="${f.key}" value="${f.h}"></div></div>
-        <div class="kg">${kpi('أعمدة', f.columns.length)}${kpi('بحور جسور', f.beams.length)}
+        ${f.beams_assumed ? '<div class="note" style="margin-bottom:6px">⚠️ لا مخطط جسور لهذا السقف — الجسور مفترضة بين الأعمدة (250 مم، عمق ≈ البحر/12) ومعلَّمة «تخمين». ارفع مخطط الجسور أو عرّفها بتبويب «التعريفات».</div>' : ''}
+        <div class="kg">${kpi('أعمدة', f.columns.length)}${kpi('بحور جسور', f.beams.length, f.beams_assumed ? 'warn' : '')}
+          ${(f.walls || []).length ? kpi('جدران', f.walls.length) : ''}
           ${kpi('بلاطة', s.t + ' مم', s.t_from_title ? 'ok' : 'warn')}${kpi('فتحات', s.openings.length)}
           ${kpi('شبكة سفلية', m.bot ? 'Ø' + m.bot.d + '@' + m.bot.s : '—')}${kpi('شبكة علوية', m.top ? 'Ø' + m.top.d + '@' + m.top.s : '—')}</div>
         ${s.openings.length ? `<div class="note" style="margin-top:6px">الفتحات: ${s.openings.map(o =>
@@ -392,7 +399,9 @@ const CADPAGE = (() => {
         <select id="cad_fl" style="width:auto;padding:5px 8px"><option value="all">كل الطوابق</option>
           ${B.floors.map(f => `<option value="${f.key}">سقف ${E(f.name)}</option>`).join('')}</select>
         <button data-v="rebar">🧵 إظهار التسليح</button><button data-v="only">🔩 التسليح فقط</button>
-        <button data-v="xray">🩻 أشعة</button><button data-v="reset">🎯 إعادة الكاميرا</button>
+        <button data-v="xray">🩻 أشعة</button>
+        ${(B.views || []).some(v => v.view) ? '<button data-v="views">🏛️ الواجهات على المبنى</button>' : ''}
+        <button data-v="reset">🎯 إعادة الكاميرا</button>
       </div>
       <div id="cad3d"></div>
       <div class="pick" id="cad_pick">اضغط على أي عمود أو جسر أو بلاطة أو أساس لترى علامته ومقطعه وحديده.</div>
@@ -406,7 +415,7 @@ const CADPAGE = (() => {
     const B = cur(), host = q('#cad3d');
     if (!B || !host || VIEW || !window.CAD3D) return;
     VIEW = CAD3D.mount(host, B, { onPick: pick });
-    const st = { rebar: false, only: false, xray: false };
+    const st = { rebar: false, only: false, xray: false, views: false };
     qa('#cad .bar3d button').forEach(b => b.addEventListener('click', () => {
       const v = b.dataset.v;
       if (v === 'reset') return VIEW && VIEW.reset();
@@ -435,6 +444,7 @@ const CADPAGE = (() => {
           : 'لا حديد بالجدول لهذه العلامة'}`,
       slab: () => `⬜ <b>بلاطة سقف ${E(u.floor)}</b> · ${u.t} مم · سفلي ${u.mesh && u.mesh.bot ? 'Ø' + u.mesh.bot.d + '@' + u.mesh.bot.s : '—'}
         · علوي ${u.mesh && u.mesh.top ? 'Ø' + u.mesh.top.d + '@' + u.mesh.top.s : '—'}`,
+      wall: () => `🧱 <b>جدار</b> · سماكة ${u.t} مم · طول ${N(u.L, 2)} م · طابق ${E(u.floor)}`,
       foot: () => `🟫 <b>أساس ${E(u.mark || '')}</b> · ${E(u.size)} · PD ${N(u.PD, 0)} / PL ${N(u.PL, 0)} كن · Pu ${N(u.Pu, 0)} كن ·
         ${E(u.bars)} · ${u.ok ? '✓ القص مقبول' : '✗ راجع'} <span class="tag t-warn">مصمَّم بالكود</span>`
     }[u.kind];

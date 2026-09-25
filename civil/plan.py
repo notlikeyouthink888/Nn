@@ -575,6 +575,69 @@ def clean_text(s):
 _TITLE_PAT = re.compile(r'(مسقط|مخطط|طابق|أرضي|ارضي|أول|اول|ثاني|سطح|أساس|اساس|تسليح|'
                         r'plan|floor|ground|first|second|roof|found|layout|section|elev)', re.I)
 
+# ------------------- نوع كل مخطط: أساس · تسليح · واجهة · سقف · ساحة -------------------
+# الملف الواحد يحوي غالباً أكثر من مخطط: أساس، وربما فرعين للتسليح (علوي وسفلي)،
+# وواجهات معمارية، وأحياناً سقوف أو ساحات فارغة (كملاعب المدارس) مرسومة كحدٍّ
+# بلا أعمدة لأنها بلا بناء فوقها. يُخمَّن النوع من اسم المخطط القريب (نفس نص
+# العنوان الذي يعطي `region_info['name']`) ومن أسماء طبقاته، ويقبل تفضيلاً
+# يدوياً من الواجهة (تحكم المستخدم بالطبقة) يتقدّم على التخمين دائماً.
+KIND_NAMES = {
+    'found': 'أساس', 'rebar_top': 'تسليح علوي', 'rebar_bot': 'تسليح سفلي',
+    'rebar': 'تسليح', 'facade': 'واجهة', 'slab': 'سقف / بلاطة',
+    'open': 'ساحة فارغة', 'struct': 'إنشائي (أعمدة)', 'arch': 'معماري',
+}
+_KIND_PATS = [
+    ('rebar_top', re.compile(r'(تسليح\s*علو|علو[يى].{0,6}تسليح|top\s*(steel|bar|rein)'
+                             r'|reinforce\w*\s*top|بوتم|توب.{0,6}تسليح)', re.I)),
+    ('rebar_bot', re.compile(r'(تسليح\s*سفل|سفل[يى].{0,6}تسليح|bottom\s*(steel|bar|rein)'
+                             r'|reinforce\w*\s*bottom|بوتوم.{0,6}تسليح)', re.I)),
+    ('rebar', re.compile(r'(تسليح|حديد\s*(تسليح|مسلح)|steel\s*(plan|layout|detail)'
+                         r'|rebar|reinforce|bar\s*bend|bbs)', re.I)),
+    ('found', re.compile(r'(أساس|اساس|قواعد|فوندشن|foundation|footing)', re.I)),
+    ('facade', re.compile(r'(واجهة|واجهات|نظر[ةه]|elevation|facade|front\s*view)', re.I)),
+    ('slab', re.compile(r'(سقف|بلاطة|بلاط\b|slab|roof\s*plan)', re.I)),
+    ('open', re.compile(r'(ساحة|فناء|ملعب|يارد|court\w*|playground|open\s*area)', re.I)),
+]
+
+def classify_plan_kind(name, layers, ncol, override=None):
+    """يرجّح نوع مخطط واحد: تفضيل يدوي أولاً، ثم اسمه القريب وأسماء طبقاته،
+    وإلا فتراضي حسب وجود أعمدة (إنشائي) أو لا (معماري)."""
+    if override and override in KIND_NAMES:
+        return override
+    hay = (name or '') + ' ' + ' '.join(l for l, _ in (layers or []))
+    for k, pat in _KIND_PATS:
+        if pat.search(hay):
+            return k
+    return 'struct' if ncol >= 4 else 'arch'
+
+# أقطار حديد التسليح الشائعة بالتصميم (مم) — أي رقم خارج هذه المجموعة يُهمَل
+# لأنه على الأرجح رقم آخر (غرفة، مقاس أثاث) لا قطراً.
+_DIA_SET = {6, 8, 10, 12, 14, 16, 18, 20, 22, 25, 28, 32, 36, 40}
+_DIA_PAT = re.compile(r'(?:[⌀øØφΦ]|\bT|\bD)\s*-?\s*(\d{1,2})\b')
+_BARE_NUM_PAT = re.compile(r'^\s*(\d{1,2})\s*(?:مم|mm)?\s*$', re.I)
+
+def rebar_diameters(texts, win, scale):
+    """أقطار حديد التسليح المكتوبة كنص قرب الأسياخ داخل حدود مخطط واحد (win):
+    إمّا برمز معروف (⌀12 · T16 · D12) أو رقماً مجرداً وحده بالخانة — وبعض
+    المهندسين يكتفون برقمٍ مجرد ليدل على القطر. الرقم المجرد فخّ خارج سياق
+    مخطط تسليح (قد يكون رقم غرفة أو مقاساً آخر)، فمن يستدعي هذه الدالة يقتصر
+    على مخطط صُنِّف تسليحاً أصلاً."""
+    counts = {}
+    for t in texts:
+        if win:
+            x, y = t['p'][0] * scale, t['p'][1] * scale
+            if not (win[0] - 1 <= x <= win[2] + 1 and win[1] - 1 <= y <= win[3] + 1):
+                continue
+        s = clean_text(t.get('s'))
+        m = _DIA_PAT.search(s) or _BARE_NUM_PAT.match(s)
+        if not m:
+            continue
+        d = int(m.group(1))
+        if d not in _DIA_SET:
+            continue
+        counts[d] = counts.get(d, 0) + 1
+    return [dict(d=d, n=n) for d, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+
 def split_regions(ents, roles, scale, cell=2.5, extra=None):
     """ملف DWG واحد يحوي عادةً عدة مخططات جنب بعض (طوابق ومقاطع وواجهات).
 
@@ -1352,18 +1415,33 @@ def analyze(p):
     regions.sort(key=lambda r: (-r['ncol'], -(r['w'] * r['h'])))
     for k, r in enumerate(regions):
         r['i'] = k
+    # ---- نوع كل مخطط: تفضيل يدوي من الواجهة أولاً، وإلا تخمين من الاسم والطبقات ----
+    plan_kinds = p.get('plan_kinds') or {}
+    all_texts = [e for e in ents if e['t'] == 'T']
+    for r in regions:
+        ov = plan_kinds.get(str(r['i']), plan_kinds.get(r['i']))
+        r['kind'] = classify_plan_kind(r['name'], r['layers'], r['ncol'], override=ov)
+        r['kind_name'] = KIND_NAMES.get(r['kind'], r['kind'])
+        r['rebar'] = (rebar_diameters(all_texts, r['bbox'], scale)
+                      if r['kind'] in ('rebar', 'rebar_top', 'rebar_bot') else [])
     pick = int(p.get('plan_index', 0))
     if pick >= len(regions):
         pick = 0
     cols = regions[pick]['cols'] if regions else []
     win = regions[pick]['bbox'] if regions else None
     plans = [dict(i=r['i'], n=r['ncol'], nent=r['n'], name=r['name'], bbox=r['bbox'],
-                  w=r['w'], h=r['h'],
+                  w=r['w'], h=r['h'], kind=r['kind'], kind_name=r['kind_name'],
+                  rebar=r['rebar'],
                   layers=[dict(name=a, n=b2) for a, b2 in r['layers']]) for r in regions]
     if len(plans) > 1:
-        warn.append('الملف يحوي %d مخططاً منفصلاً — معروضة كلها بالجدول. المختار حالياً '
+        kc = {}
+        for r in regions:
+            kc[r['kind_name']] = kc.get(r['kind_name'], 0) + 1
+        kind_txt = (' (' + ' · '.join('%d %s' % (v, k)
+                    for k, v in sorted(kc.items(), key=lambda t: -t[1])) + ')') if len(kc) > 1 else ''
+        warn.append('الملف يحوي %d مخططاً منفصلاً — معروضة كلها بالجدول%s. المختار حالياً '
                     'رقم %d (%d عمود · %.1f × %.1f م%s).'
-                    % (len(plans), pick + 1, plans[pick]['n'], plans[pick]['w'],
+                    % (len(plans), kind_txt, pick + 1, plans[pick]['n'], plans[pick]['w'],
                        plans[pick]['h'],
                        ' · ' + plans[pick]['name'] if plans[pick]['name'] else ''))
     if frames:

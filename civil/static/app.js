@@ -594,14 +594,14 @@ function planStrip() {
         (WZ.model && WZ.model.stairs && WZ.model.stairs.flights || []).length
           ? ' · ' + (WZ.model.stairs.flights || []).length + ' قلبة درج' : ''}</span>
       <span class="sp"></span>
-      <button class="btn gh" onclick="wtab('plan')">📐 تبويب المخطط</button>
+      <button class="btn gh" onclick="wtab('plan')">📐 تبويب الأوتوكاد</button>
       <button class="btn gh" onclick="clearPlanGrid()">↩️ رجّع التلقائي</button></div>`;
   }
   return `<div class="pstrip" id="pstrip">
     <span>الشبكة <b>تلقائية من المساحة</b> — ${int(g.cols)} عمود · ${g.nx} × ${g.ny} بحر
       بمسافة ${nf(g.sx, 2)} × ${nf(g.sy, 2)} م. ارفع مخطط DWG/DXF ليُبنى المشروع على أعمدتك الحقيقية.</span>
     <span class="sp"></span>
-    <button class="btn" onclick="wtab('plan')">📐 ارفع مخططك</button></div>`;
+    <button class="btn" onclick="wtab('plan')">📐 الأوتوكاد</button></div>`;
 }
 /* ------- شريط أدوات المجسم: تعريف واحد يُستعمل بكل المساحات ------- */
 function v3bar(o) {
@@ -970,7 +970,7 @@ let PLAN_ON = false;
 function togglePlan() {
   if (!V3 || !V3.plan) return;
   if (!V3.planHas()) {
-    if (!PLD) { wtab('plan'); return alert('ارفع مخطط DWG أو DXF أولاً من تبويب «📐 المخطط»'); }
+    if (!PLD) { wtab('plan'); return alert('ارفع مخطط DWG أو DXF أولاً من تبويب «📐 الأوتوكاد»'); }
     drawPlan();
   }
   PLAN_ON = !PLAN_ON; V3.plan(PLAN_ON); tgl('btnPlan', PLAN_ON);
@@ -2570,16 +2570,28 @@ const planWhy = () => `<ul style="padding-right:18px;font-size:12.5px;color:var(
 </ul>`;
 
 function planHead(msg) {
-  return `<div class="card"><h3>ارفع المخطط</h3>
+  return `<div class="card"><h3>📐 الأوتوكاد</h3>
       <div class="f"><div><label>ملف DWG أو DXF</label>
         <input type="file" id="pl_file" accept=".dwg,.dxf" onchange="loadPlanFile(this)"></div></div>
       <div id="pl_msg" class="note" style="margin-top:10px">${msg || 'لم يُرفع مخطط بعد.'}</div>
       <details class="fold"><summary>ليش المخطط؟ وكيف تُقرأ الملفات</summary>${planWhy()}</details></div>`;
 }
 
+// أنواع المخطط: تفضيل يدوي من القائمة يتقدّم دائماً على تخمين plan.py.
+// يُصفَّر مع كل ملف جديد لئلا يبقى تفضيل ملفٍ سابق عالقاً على ملف مختلف.
+const PLAN_KIND_OPTS = [['struct', 'إنشائي (أعمدة)'], ['arch', 'معماري'], ['found', 'أساس'],
+  ['rebar_top', 'تسليح علوي'], ['rebar_bot', 'تسليح سفلي'], ['rebar', 'تسليح'],
+  ['facade', 'واجهة'], ['slab', 'سقف / بلاطة'], ['open', 'ساحة فارغة']];
+async function setPlanKind(i, kind) {
+  window.__plan_kinds = window.__plan_kinds || {};
+  window.__plan_kinds[i] = kind;
+  await replan({ plan_kinds: window.__plan_kinds });
+}
+
 async function loadPlanFile(inp) {
   const f = inp.files && inp.files[0];
   if (!f) return;
+  window.__plan_kinds = {};
   const msg = t => { const e = $('#pl_msg'); if (e) e.textContent = t; };
   try {
     msg('قراءة الملف… (' + (f.size / 1048576).toFixed(1) + ' ميغا)');
@@ -2621,7 +2633,8 @@ async function replan(patch) {
   if (!PLR) return;
   const body = Object.assign({}, PLR, {
     roles: Object.fromEntries((PLD.layers || []).map(l => [l.name, l.role])),
-    scale: PLD.scale, plan_index: PLD.plan_index, angle: PLD.angle });
+    scale: PLD.scale, plan_index: PLD.plan_index, angle: PLD.angle,
+    plan_kinds: window.__plan_kinds || {} });
   Object.assign(body, patch || {});
   const name = PLD.name;
   PLD = await post('plan/parse', body);
@@ -2799,16 +2812,22 @@ function renderPlan() {
       </div></details>
 
     <details class="fold"><summary>📚 المخططات الموجودة بالملف (${(PLD.plans || []).length})</summary>
-      ${table(['#', 'الاسم بالمخطط', 'الأعمدة', 'الأبعاد', 'العناصر', 'الطبقات', ''],
+      ${table(['#', 'الاسم بالمخطط', 'النوع', 'الأعمدة', 'الأبعاد', 'العناصر', ''],
         (PLD.plans || []).map(p => [p.i + 1, p.name || '—',
+          `<select onchange="setPlanKind(${p.i},this.value)"
+             style="width:auto;padding:3px 8px;font-size:11px">
+            ${PLAN_KIND_OPTS.map(([k, t]) => `<option value="${k}" ${k === p.kind ? 'selected' : ''}>${t}</option>`).join('')}
+           </select>${(p.rebar || []).length ? '<div class="note" style="margin-top:4px">أقطار مكتشَفة: '
+             + p.rebar.map(x => x.d + 'مم (×' + x.n + ')').join(' · ') + '</div>' : ''}`,
           `<b style="color:${p.n >= 4 ? '#34d399' : 'var(--mut)'}">${p.n}</b>`,
           nf(p.w, 1) + ' × ' + nf(p.h, 1) + ' م', int(p.nent),
-          (p.layers || []).map(l => l.name).slice(0, 3).join(' · '),
           p.i === PLD.plan_index ? '<span class="tag t-ok">المختار ✓</span>'
             : `<button class="btn gh" style="padding:3px 10px;font-size:11px"
                  onclick="replan({plan_index:${p.i}})">اختره</button>`]))}
-      <div class="note">ملف الأوتوكاد الواحد يحوي عادةً عدة مخططات جنب بعض (طوابق ومقاطع).
-        فُصلت كلها بالتعنقد على طبقات الجدران والأعمدة — واختير تلقائياً صاحب أكثر أعمدة.</div></details>
+      <div class="note">ملف الأوتوكاد الواحد يحوي عادةً عدة مخططات جنب بعض: أساس، وربما فرعين
+        للتسليح (علوي وسفلي)، وواجهات، وسقوف، وساحات فارغة بلا بناء. فُصلت كلها بالتعنقد على
+        طبقات الجدران والأعمدة، ونوع كلٍّ مخمَّن من اسمه وطبقاته — وتقدر تصحّحه من القائمة.
+        الأقطار المكتشَفة بمخطط تسليح تُقرأ من رموز الأسياخ (⌀12 · T16) أو رقمٍ مجرد بجانبها.</div></details>
 
     <details class="fold"><summary>🗂️ طبقات المخطط ودورها (${PLD.layers.length})</summary>
       <div style="max-height:340px;overflow:auto">${table(['الطبقة', 'العناصر', 'الدور'],
@@ -3283,7 +3302,7 @@ PAGES.wizard = {
            ['aci', '📕 مطابقة ACI 318-19'],
            ['xr', '🩻 الأشعة الإنشائية'], ['movie', '🎬 فيديو البناء'],
            ['slabs', '🧱 نوع السقف'], ['lab', '🧪 الإنشائيات والتجربة'],
-           ['plan', '📐 المخطط (DWG)'], ['boq', '📋 الكميات والحديد']].map(([k, t], i) =>
+           ['plan', '📐 الأوتوكاد'], ['boq', '📋 الكميات والحديد']].map(([k, t], i) =>
           `<button data-t="${k}" class="${i ? '' : 'on'}" onclick="wtab('${k}')">${t}</button>`).join('')}
       </div>
       <div class="wpanel" data-t="detail">${detailPanel(r)}</div>

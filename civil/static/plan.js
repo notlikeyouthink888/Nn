@@ -215,8 +215,49 @@ const PlanIO = (() => {
     const hidden = name => { const l = layTab[name]; return !!(l && (l.frozen || l.off)); };
     const ms = brs.find(r => (r.name || '').toUpperCase() === '*MODEL_SPACE');
     const top = ms ? (ms.entities || []) : (db.entities || []);
-    const LIMIT = 400000;
+    const LIMIT = 600000, BUDGET = 350000;
     let nIns = 0, truncated = false;
+    // ميزانية الفكّ: الملفات الضخمة (مستشفى 10 ميغا: أبواب وأشجار وأثاث بآلاف النسخ) تُفكّ
+    // بلوكاتها الزخرفية الأثقل إلى نقطة واحدة بدل عشرات الخطوط — العناصر العليا لا تُقصّ أبداً،
+    // وبلوكات الأعمدة والمحاور والمناسيب والعناوين تُفكّ دائماً.
+    const KEEP_BLK = /col|colum|axis|axes|grid|beam|foot|level|lvl|sec|elev|title|board|frame|mark|bubble|عمود|محور|منسوب|جسر/i;
+    const collapsed = new Set(), memo = {};
+    const nOf = (e) => Math.max(1, e.columnCount || 1) * Math.max(1, e.rowCount || 1);
+    const size = (name, d) => {
+      if (collapsed.has(name)) return 1;
+      if (memo[name] != null) return memo[name];
+      const blk = byName[name];
+      if (!blk || d > 6) return 1;
+      memo[name] = 1;
+      let n = 0;
+      for (const be of (blk.entities || [])) {
+        if (be.type === 'INSERT') n += size(be.name, d + 1) * nOf(be) + (be.attribs || []).length;
+        else if (!SKIP.has(be.type) && be.type !== 'ATTDEF') n++;
+      }
+      return (memo[name] = Math.max(1, n));
+    };
+    const smallText = name => { const b = byName[name]; const es = (b && b.entities) || [];
+      return es.length <= 30 && es.some(x => x.type === 'TEXT' || x.type === 'MTEXT' || x.type === 'ATTDEF'); };
+    const insLay = {};
+    for (const e of top) if (e.type === 'INSERT' && !(e.name in insLay)) insLay[e.name] = e.layer || '';
+    for (let it = 0; it < 400; it++) {
+      for (const k in memo) delete memo[k];
+      const topCnt = {}; let total = 0;
+      for (const e of top) {
+        if (e.type === 'INSERT') { const n = size(e.name, 0) * nOf(e) + (e.attribs || []).length; total += n;
+          if (!collapsed.has(e.name)) topCnt[e.name] = (topCnt[e.name] || 0) + n; }
+        else total++;
+      }
+      if (total <= BUDGET) break;
+      let best = null;
+      for (const k in topCnt) {
+        if (!byName[k] || KEEP_BLK.test(k) || KEEP_BLK.test(insLay[k] || '') || smallText(k)) continue;
+        if (!best || topCnt[k] > topCnt[best]) best = k;
+      }
+      if (!best || topCnt[best] < 50) break;
+      collapsed.add(best);
+    }
+    const LT_KEEP = /CENTER|DASH|HIDDEN|PHANTOM|DOT|DIVIDE|BORDER/i;
 
     // تحويل تآلفي [a,b,c,d,tx,ty]: x' = a·x + c·y + tx ، y' = b·x + d·y + ty
     const ID = [1, 0, 0, 1, 0, 0];
@@ -231,8 +272,11 @@ const PlanIO = (() => {
 
     const push = (t, lay, p, extra) => {
       if (ents.length >= LIMIT) { truncated = true; return; }
-      const e = { t, l: lay || '0', p };
-      if (extra) Object.assign(e, extra);
+      const e = { t, l: lay || '0', p };             // الإحداثيات كما هي — التدوير يغيّر نتائج حدّية (يكفي الضغط)
+      if (extra) {
+        Object.assign(e, extra);
+        if (e.lt !== undefined && !LT_KEEP.test(e.lt)) delete e.lt;   // «Continuous» لا يعني شيئاً — يُحذف لتصغير الرفع
+      }
       ents.push(e);
       (layers[e.l] = layers[e.l] || { name: e.l, color: 7, n: 0, lt: '' }).n++;
     };
@@ -328,7 +372,8 @@ const PlanIO = (() => {
         case 'INSERT': {
           const blk = byName[e.name];
           const ip = e.insertionPoint || { x: 0, y: 0 };
-          if (!blk || depth >= 6) { const w = ap(m, ip.x, ip.y); push('C', lay, [w[0], w[1], 0], ex); break; }
+          if (collapsed.has(e.name)) (blocks[e.name] = blocks[e.name] || { name: e.name, n: 0 }).n++;
+          if (!blk || depth >= 6 || collapsed.has(e.name)) { const w = ap(m, ip.x, ip.y); push('C', lay, [w[0], w[1], 0], Object.assign({ blk: e.name }, ex)); break; }
           const base = blk.basePoint || { x: 0, y: 0 };
           const sx = e.xScale || 1, sy = e.yScale || 1, r = e.rotation || 0;
           const cs = Math.cos(r), sn = Math.sin(r);
@@ -355,6 +400,7 @@ const PlanIO = (() => {
     const hdr = db.header || {};
     return { source: source, mode: 'full', insunits: hdr.INSUNITS ?? 4,
              dimlfac: hdr.DIMLFAC ?? null, ents: ents, truncated: truncated,
+             collapsed: [...collapsed].map(n => ({ name: n, n: (blocks[n] || {}).n || 0 })),
              blocks: Object.values(blocks).sort((a, b) => b.n - a.n),
              layers: Object.values(layers).filter(l => l.n > 0).sort((a, b) => b.n - a.n) };
   }

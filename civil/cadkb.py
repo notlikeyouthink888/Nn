@@ -13,6 +13,7 @@
 
 الأسبقية عند التعارض: تعريف المستخدم بالواجهة ← تعريف المهندس داخل الملف ← هذه القاعدة.
 """
+import functools
 import re
 
 from plan import parse_rebar_callout, clean_text
@@ -38,6 +39,9 @@ SHEET_KINDS = [
     ('found', 'مخطط الأساسات',
      r'(foundation\s+plan|footings?\s+(plan|layout)|raft\s+plan|piles?\s+(plan|layout)|'
      r'مخطط\s*الأساسات|الأساسات|القواعد)'),
+    # مساقط مرجعية (تشطيبات/أثاث/سقف مستعار/السطح العلوي) — تُعرض ولا تُركَّب بدل المسقط الأصلي
+    ('finish', 'مسقط تشطيبات/أثاث', r'(finish(es)?\s+plan|furniture\s+(plan|layout)|sitting\s+layout|seating\s+layout|'
+                                   r'reflected\s+ceiling|ceiling\s+plan|upper\s+roof|مسقط\s*(التشطيبات|الأثاث|السقف\s*المستعار))'),
     ('section', 'مقطع', r'(\bsection\b|\bsec\.\s*[a-z0-9]|مقطع)'),
     ('detail', 'تفصيلة', r'(typical\s+detail|\bdetail\b|تفصيل)'),
     ('elev', 'واجهة', r'(\belevation\b|facade|واجهة|واجهات)'),
@@ -55,10 +59,10 @@ FLOORS = [
     ('basement', -1.0, 'السرداب', r'basement|cellar', r'سرداب|قبو|البدروم'),
     ('ground', 0.0, 'الأرضي', r'ground', r'أرضي|ارضي|الأرضي|الارضي'),
     ('mezzanine', 0.5, 'الميزانين', r'mezzanine|mezz', r'ميزانين|الميزانين'),
-    ('first', 1.0, 'الأول', r'first|1st', r'الأول|الاول|أول'),
-    ('second', 2.0, 'الثاني', r'second|2nd', r'الثاني|ثاني'),
-    ('third', 3.0, 'الثالث', r'third|3rd', r'الثالث|ثالث'),
-    ('fourth', 4.0, 'الرابع', r'fourth|4th', r'الرابع|رابع'),
+    ('first', 1.0, 'الأول', r'first|1st|1th', r'الأول|الاول|أول'),
+    ('second', 2.0, 'الثاني', r'secou?nd|2nd|2th', r'الثاني|ثاني'),
+    ('third', 3.0, 'الثالث', r'third|3rd|3th', r'الثالث|ثالث'),
+    ('fourth', 4.0, 'الرابع', r'fou?rth|4th', r'الرابع|رابع'),
     ('fifth', 5.0, 'الخامس', r'fifth|5th', r'الخامس|خامس'),
     ('sixth', 6.0, 'السادس', r'sixth|6th', r'السادس|سادس'),
     ('seventh', 7.0, 'السابع', r'seventh|7th', r'السابع|سابع'),
@@ -347,6 +351,7 @@ LAYER_HINTS = [
 _LAYER_RX = [(k, re.compile(p, re.I)) for k, _, p in LAYER_HINTS]
 
 
+@functools.lru_cache(maxsize=8192)
 def layer_hint(name):
     for k, rx in _LAYER_RX:
         if rx.search(name or ''):

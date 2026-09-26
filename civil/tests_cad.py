@@ -65,6 +65,14 @@ class TestTokens(unittest.TestCase):
         self.assertLess(K.axis_sort_key("G'"), K.axis_sort_key('H'))
         self.assertLess(K.axis_sort_key('9'), K.axis_sort_key('17'))
 
+    def test_ordinal_floors(self):
+        for t, k in [('3TH FLOOR PLAN', 'third'), ('SECOUND FLOOR PLAN', 'second'), ('4TH FLOOR PLAN', 'fourth'),
+                     ('1ST FLOOR LEVEL', 'first')]:
+            self.assertEqual(K.parse_floor(t)['key'], k, t)
+        self.assertEqual(K.sheet_kind('GROUND FLOOR FINISHES PLAN'), 'finish')
+        self.assertEqual(K.sheet_kind('UPPER ROOF FLOOR PLAN'), 'finish')
+        self.assertEqual(K.sheet_kind('ROOF FLOOR PLAN'), 'arch')
+
     def test_marks(self):
         for s, k in [('C1B', 'col'), ("C3B'", 'col'), ('C5', 'col'), ('B2', 'beam'), ('GB1', 'beam'),
                      ('F3', 'foot'), ('S1', 'slab'), ('17', None), ('Plan', None)]:
@@ -113,7 +121,7 @@ class TestLevels(unittest.TestCase):
 
     def test_chain(self):
         import cadread as C
-        mk = lambda v, ok=True, drawn=None: dict(v=v, ok=ok, drawn=v if drawn is None else drawn)
+        mk = lambda v, ok=True, drawn=None: dict(v=v, ok=ok, drawn=v if drawn is None else drawn, exact=True)
         sl = lambda lv: dict(level=lv, t=0.15, fin=0.1, L=10.0, top=0)
         views = [dict(id=3, kind='elev', levels=dict(k=1.0, marks=[mk(0), mk(0.7), mk(2.45), mk(4.2), mk(7.7), mk(10.2)],
                                                     slabs=[], vdims=[])),
@@ -129,6 +137,19 @@ class TestLevels(unittest.TestCase):
         # الواجهة وحدها (بلا مقطع): الأرضي والأول يُقاسان، والسرداب يبقى افتراضياً
         m2 = C._measure_levels(views[:1], ['basement', 'ground', 'first'], 1)
         self.assertEqual((m2['first'], m2['chain']), (1, [0.7, 4.2, 7.7]))
+
+    def test_floor_labels_and_plan_ffl(self):
+        # مستشفى: «EL. +9.00M» + لافتات «3RD FLOOR LEVEL» + «+0.60 F.F.L.» بالمسقط الأرضي
+        import cadread as C
+        mk = lambda v, key=None: dict(v=v, ok=True, drawn=v, key=key, label=bool(key))
+        views = [dict(id=1, kind='elev', levels=dict(k=1.0, slabs=[], vdims=[], marks=[
+            mk(4.8), mk(9.0), mk(17.4), mk(21.6), mk(24.6),
+            mk(4.8, 'first'), mk(9.0, 'second'), mk(13.2, 'third'), mk(17.4, 'fourth')]))]
+        order = ['ground', 'first', 'second', 'third', 'fourth', 'roof']
+        m = C._measure_levels(views, order, 0, {'ground': 0.6})
+        self.assertEqual(m['chain'], [0.6, 4.8, 9.0, 13.2, 17.4, 21.6, 24.6])
+        self.assertEqual(m['heights'][:5], [4.2] * 5)
+        self.assertEqual(m['extra'], [])
 
 
 FIX = os.environ.get('CAD_FIXTURE')
@@ -217,6 +238,48 @@ class TestBlock4(unittest.TestCase):
         for b in self.R['buildings']:
             for f in b['floors']:
                 self.assertEqual(f['slab']['t'], 200)
+
+
+HOSP = os.environ.get('HOSP_FIXTURE')
+
+
+@unittest.skipUnless(HOSP and os.path.exists(HOSP), 'HOSP_FIXTURE غير متوفر')
+class TestHospital(unittest.TestCase):
+    """مجموعة معمارية ضخمة (10 ميغا): بلا وحدات ولا أبعاد حقيقية، عناوين بجدول العنوان،
+    مساقط تشطيبات ومكبَّرة، واجهات بمناسيب «EL. +9.00M» ولافتات «3RD FLOOR LEVEL»."""
+    @classmethod
+    def setUpClass(cls):
+        import cadread
+        cls.R = cadread.read_set(json.load(open(HOSP)))
+
+    def test_scale_from_room_labels(self):
+        self.assertEqual(self.R['scale'], 0.25)
+
+    def test_one_building_six_floors(self):
+        self.assertEqual(len(self.R['buildings']), 1)
+        B = self.R['buildings'][0]
+        self.assertEqual([f['key'] for f in B['floors']], ['ground', 'first', 'second', 'third', 'fourth', 'roof'])
+        self.assertAlmostEqual(B['size'][0], 57.3, delta=0.5)
+        self.assertEqual(len(B['grid']['x']), 33)
+
+    def test_levels(self):
+        B = self.R['buildings'][0]
+        self.assertEqual(B['levels']['chain'], [0.6, 4.8, 9.0, 13.2, 17.4, 21.6, 24.6])
+
+    def test_elevation_sides(self):
+        B = self.R['buildings'][0]
+        sides = {v['title']: v['fit']['side'] for v in B['views'] if v['kind'] == 'elev' and v.get('fit')}
+        self.assertEqual(sides.get('MAIN ELEVATION 1'), 'S')
+        self.assertEqual(sides.get('REAR ELEVATION 3'), 'N')
+
+    def test_titles(self):
+        k = {}
+        for dw in self.R['drawings']:
+            k.setdefault(dw['title'] or '', set()).add(dw['kind'])
+        self.assertIn('arch', k['GROUND FLOOR PLAN'])        # الرئيسي (والمكبَّرات بالعنوان نفسه تفاصيل)
+        self.assertIn('detail', k['GROUND FLOOR PLAN'])
+        self.assertEqual(k['GROUND FLOOR FINISHES PLAN'], {'finish'})
+        self.assertEqual(k['FIRST FLOOR FINISHES PLAN'], {'arch'})   # لا مسقط رئيسي للأول
 
 
 if __name__ == '__main__':

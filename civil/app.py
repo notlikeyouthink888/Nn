@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """HTTP server for the civil engineering platform (stdlib only)."""
-import json, os, sys, traceback
+import gzip, json, os, sys, threading, traceback
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import engine as E
 import found as FD
@@ -120,8 +121,12 @@ class H(BaseHTTPRequestHandler):
 
     def _send(self, code, body, ctype='application/json; charset=utf-8'):
         if isinstance(body, str): body = body.encode('utf-8')
+        gz = (len(body) > 65536 and ctype.startswith('application/json')
+              and 'gzip' in (self.headers.get('Accept-Encoding') or ''))
+        if gz: body = gzip.compress(body, 5)       # نتائج كبيرة (قسم الأوتوكاد) تُضغط للموبايل
         self.send_response(code)
         self.send_header('Content-Type', ctype)
+        if gz: self.send_header('Content-Encoding', 'gzip')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
@@ -160,7 +165,13 @@ class H(BaseHTTPRequestHandler):
             return self._send(404, json.dumps(dict(error='unknown endpoint: %s' % name)))
         try:
             n = int(self.headers.get('Content-Length') or 0)
-            payload = json.loads(self.rfile.read(n) or b'{}')
+            raw = self.rfile.read(n) or b''
+            zipped = (self.headers.get('Content-Encoding') or '').lower() == 'gzip'
+            payload = json.loads((gzip.decompress(raw) if zipped else raw) or b'{}')
+            if name == 'cad/read':
+                payload = _cad_cache(payload, raw if zipped else None)
+                if payload is None:                    # إعادة تحليل بمفتاح انتهى من الذاكرة
+                    return self._send(409, json.dumps(dict(error='cache_miss')))
             if name == 'bbs/csv':
                 body = BBS.csv(payload if 'model' in payload else PJ.wizard(payload))
                 data = ('\ufeff' + body).encode('utf-8')
@@ -188,6 +199,35 @@ class H(BaseHTTPRequestHandler):
             traceback.print_exc()
             self._send(400, json.dumps(dict(error=str(ex), type=type(ex).__name__),
                                        ensure_ascii=False))
+
+# ذاكرة ملفات الأوتوكاد: الرفع مرة واحدة، وإعادة التحليل (تعديل ارتفاع/نوع لوحة) ترسل
+# الخيارات فقط. تُحفظ البيانات مضغوطة (بضع ميغا) لآخر 4 ملفات.
+_CAD = OrderedDict()
+_CAD_LOCK = threading.Lock()
+
+
+def _cad_cache(payload, gz_raw):
+    key = str(payload.get('key') or '')[:128]
+    if payload.get('ents') is not None:
+        if key:
+            blob = gz_raw if gz_raw is not None else gzip.compress(
+                json.dumps(payload, ensure_ascii=False).encode('utf-8'), 3)
+            with _CAD_LOCK:
+                _CAD[key] = blob
+                _CAD.move_to_end(key)
+                while len(_CAD) > 4:
+                    _CAD.popitem(last=False)
+        return payload
+    with _CAD_LOCK:
+        blob = _CAD.get(key) if key else None
+        if blob is not None:
+            _CAD.move_to_end(key)
+    if blob is None:
+        return None
+    full = json.loads(gzip.decompress(blob))
+    full['opts'] = payload.get('opts')
+    return full
+
 
 if __name__ == '__main__':
     srv = ThreadingHTTPServer(('0.0.0.0', PORT), H)

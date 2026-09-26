@@ -208,7 +208,7 @@ const CAD3D = (() => {
         const F = v.fit, pts = [];
         const map = (ex, ey) => { const u = F.s * ex + F.b, z = (ey - F.y0) / F.k;
           return F.along === 'x' ? P(u, F.face, z) : P(F.face, u, z); };
-        v.sketch.forEach(l => pts.push(map(l[0], l[1]), map(l[2], l[3])));
+        v.sketch.forEach(l => { if (l[4] !== 'a') pts.push(map(l[0], l[1]), map(l[2], l[3])); });  // خطوط المحاور تُحذف — تزحم الواجهة
         const geo = keep(new THREE.BufferGeometry().setFromPoints(pts));
         views.add(new THREE.LineSegments(geo, keep(new THREE.LineBasicMaterial({
           color: v.kind === 'section' ? 0x22d3ee : COL.elev, transparent: true, opacity: 0.9 }))));

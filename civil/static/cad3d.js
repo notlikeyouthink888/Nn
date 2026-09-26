@@ -111,13 +111,33 @@ const CAD3D = (() => {
       });
     });
 
+    // ستارة السطح (من المقطع/الواجهة): جدار رقيق على حواف بلاطة السطح غير الملاصقة لبلاطة أخرى
+    const parH = B.levels && B.levels.parapet;
+    if (parH && fl.length) {
+      const F = fl[fl.length - 1], top = F.level + F.h, R = F.slab.rects || [], th = 0.2;
+      const shared = (x1, y1, x2, y2, me) => R.some(r => r !== me && (
+        (x1 === x2 && (Math.abs(r[0] - x1) < 0.05 || Math.abs(r[2] - x1) < 0.05) && Math.min(y2, r[3]) - Math.max(y1, r[1]) > 0.5) ||
+        (y1 === y2 && (Math.abs(r[1] - y1) < 0.05 || Math.abs(r[3] - y1) < 0.05) && Math.min(x2, r[2]) - Math.max(x1, r[0]) > 0.5)));
+      const pg = new THREE.Group();
+      floorsG[floorsG.length - 1].conc.add(pg);
+      const info = { kind: 'wall', floor: 'السطح', t: 200, L: parH, parapet: parH };
+      R.forEach(r => {
+        [[r[0], r[1], r[2], r[1]], [r[0], r[3], r[2], r[3]], [r[0], r[1], r[0], r[3]], [r[2], r[1], r[2], r[3]]].forEach(([x1, y1, x2, y2]) => {
+          if (shared(x1, y1, x2, y2, r)) return;
+          const L = Math.hypot(x2 - x1, y2 - y1), mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+          if (y1 === y2) box(L, parH, th, P(mx, my + (y1 === r[1] ? th / 2 : -th / 2), top + parH / 2), mat('wall', { transparent: true, opacity: 0.9 }), info, pg);
+          else box(th, parH, L, P(mx + (x1 === r[0] ? th / 2 : -th / 2), my, top + parH / 2), mat('wall', { transparent: true, opacity: 0.9 }), info, pg);
+        });
+      });
+    }
+
     // ---------------- الأساسات ----------------
     const found = new THREE.Group();
     root.add(found);
     const Df = 1.5, z0f = (fl[0] ? fl[0].level : 0);
     (B.footings || []).forEach(ft => {
       const hh = ft.h / 1000;
-      const zt = (typeof ft.z === 'number') ? ft.z : z0f;      // منسوب طابق العمود المرتكز
+      const zt = (typeof ft.zg === 'number') ? ft.zg : ((typeof ft.z === 'number') ? ft.z : z0f);  // التأسيس من الأرض الطبيعية
       box(ft.B, hh, ft.B, P(ft.x, ft.y, zt - Df + hh / 2), mat('foot'),
           { kind: 'foot', mark: ft.col, size: ft.B.toFixed(2) + '×' + ft.B.toFixed(2) + ' م × ' + ft.h + ' مم',
             PD: ft.PD, PL: ft.PL, Pu: ft.Pu, bars: ft.bars, ok: ft.ok }, found);
@@ -127,7 +147,8 @@ const CAD3D = (() => {
       if (!ft) return;
       const zt = (typeof ft.z === 'number') ? ft.z : z0f;
       if (Math.abs(zt - base.level) > 0.01 && base !== fl[0]) return;
-      const z0 = zt - Df + ft.h / 1000;
+      const zb = (typeof ft.zg === 'number') ? ft.zg : zt;     // رقبة العمود من الأساس حتى منسوب الطابق (+0.70)
+      const z0 = zb - Df + ft.h / 1000;
       box(c.b / 1000, zt - z0, c.h / 1000, P(c.x, c.y, (z0 + zt) / 2), mat('stub'), null, found);
     }));
 
@@ -171,8 +192,29 @@ const CAD3D = (() => {
     // (من اليسار لليمين كما يراه الواقف أمام الواجهة)، والارتفاع من خط الأرض.
     const views = new THREE.Group();
     root.add(views);
+    const txtSprite = (txt, pos, col) => {
+      const cv = document.createElement('canvas'); cv.width = 256; cv.height = 64;
+      const x = cv.getContext('2d');
+      x.fillStyle = 'rgba(15,23,42,.85)'; x.fillRect(0, 8, 256, 48);
+      x.fillStyle = col || '#fbbf24'; x.font = 'bold 34px sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText(txt, 128, 33);
+      const sp = new THREE.Sprite(keep(new THREE.SpriteMaterial({ map: keep(new THREE.CanvasTexture(cv)), depthTest: false })));
+      sp.position.copy(pos); sp.scale.set(2.4, 0.6, 1);
+      return sp;
+    };
     (B.views || []).forEach(v => {
-      if (!v.view || !(v.sketch || []).length) return;
+      if (!(v.sketch || []).length) return;
+      if (v.fit) {           // مطابقة دقيقة: محاور الواجهة ← محاور المسقط، وعلامات المنسوب ← الارتفاع
+        const F = v.fit, pts = [];
+        const map = (ex, ey) => { const u = F.s * ex + F.b, z = (ey - F.y0) / F.k;
+          return F.along === 'x' ? P(u, F.face, z) : P(F.face, u, z); };
+        v.sketch.forEach(l => pts.push(map(l[0], l[1]), map(l[2], l[3])));
+        const geo = keep(new THREE.BufferGeometry().setFromPoints(pts));
+        views.add(new THREE.LineSegments(geo, keep(new THREE.LineBasicMaterial({
+          color: v.kind === 'section' ? 0x22d3ee : COL.elev, transparent: true, opacity: 0.9 }))));
+        return;
+      }
+      if (!v.view) return;
       const L = v.sketch;
       const hl = L.filter(l => Math.abs(l[3] - l[1]) < 0.01);
       const wmax = Math.max(...L.map(l => Math.max(l[0], l[2]))) - Math.min(...L.map(l => Math.min(l[0], l[2])));
@@ -196,6 +238,16 @@ const CAD3D = (() => {
       const geo = keep(new THREE.BufferGeometry().setFromPoints(pts));
       views.add(new THREE.LineSegments(geo, keep(new THREE.LineBasicMaterial({ color: COL.elev, transparent: true, opacity: 0.85 }))));
     });
+    if (B.levels && views.children.length) {        // المناسيب المقاسة بجانب المبنى
+      const lv = B.levels.chain.concat(B.levels.extra || []);
+      lv.forEach((z, i) => {
+        const t = Math.abs(z) < 0.005 ? '±0.00' : (z > 0 ? '+' : '') + z.toFixed(2);
+        views.add(txtSprite(t, P(-1.6, -0.3, z), i < B.levels.chain.length ? '#fbbf24' : '#94a3b8'));
+        const g2 = keep(new THREE.BufferGeometry().setFromPoints([P(-0.9, -0.12, z), P(0, -0.12, z)]));
+        views.add(new THREE.Line(g2, keep(new THREE.LineBasicMaterial({ color: 0xfbbf24 }))));
+      });
+      if (B.levels.ngl && Math.abs(B.ffl0 || 0) > 0.005) views.add(txtSprite('±0.00', P(-1.6, -0.3, 0), '#94a3b8'));
+    }
     views.visible = false;
 
     // ---------------- الحديد (يُبنى عند الطلب لكل طابق) ----------------
@@ -326,7 +378,7 @@ const CAD3D = (() => {
     // ---------------- الكاميرا والرسم ----------------
     const Htot = B.height || 3.5;
     // تأطير الكاميرا على ما هو ظاهر (المبنى كله أو الطابق المختار) بالكرة المحيطة
-    function fit(obj) {
+    function fit(obj, dirv) {
       const bx = new THREE.Box3();
       (obj || root).traverse(o => { if (o.isMesh && o.visible && o.geometry && o !== gm) {
         let p = o.parent, vis = true;
@@ -338,7 +390,7 @@ const CAD3D = (() => {
       const c = bx.getCenter(new THREE.Vector3()), r = bx.getSize(new THREE.Vector3()).length() / 2;
       const fov = cam.fov * Math.PI / 180, asp = Math.min(1, cam.aspect);
       const dist = r / Math.sin(fov / 2) / Math.max(0.55, asp) * 0.82;
-      const dir = new THREE.Vector3(0.62, 0.62, 0.8).normalize();
+      const dir = (dirv || new THREE.Vector3(0.62, 0.62, 0.8)).clone().normalize();
       cam.position.copy(c).addScaledVector(dir, dist);
       cam.near = Math.max(0.05, dist / 200); cam.far = dist * 20; cam.updateProjectionMatrix();
       ctl.target.copy(c);
@@ -404,7 +456,16 @@ const CAD3D = (() => {
       rebar(on) { rebarOn = !!on; apply(); },
       only(on) { onlyBars = !!on; apply(); },
       xray(on) { xrayOn = !!on; apply(); },
-      views(on) { views.visible = !!on; draw(); },
+      views(on) {          // تشغيل الواجهات = نظرة أمامية على الواجهة المطابَقة لرؤية التطابق
+        views.visible = !!on;
+        const v = on && (B.views || []).find(q => q.fit && q.kind === 'elev');
+        if (v) {
+          const F = v.fit, mid = F.along === 'x' ? sy / 2 : sx / 2;
+          const d = F.along === 'x' ? (F.face <= mid ? new THREE.Vector3(0.12, 0.1, 1) : new THREE.Vector3(-0.12, 0.1, -1))
+                                    : (F.face >= mid ? new THREE.Vector3(1, 0.1, -0.12) : new THREE.Vector3(-1, 0.1, 0.12));
+          fit(null, d);
+        } else reset();
+      },
       hasViews: () => views.children.length > 0,
       reset,
       stats() { return { floors: floorsG.length, pick: pickables.length, bars: nBars }; },

@@ -1104,6 +1104,20 @@ def read_set(d, opts=None):
                 rec['bot']['cont'] = df['bars']
 
     # ---- ٥) العناصر بكل رسمة ----
+    circles = [i for i, e in enumerate(E) if e['t'] == 'C']
+    dims_i = [i for i, e in enumerate(E) if e['t'] == 'D']
+    sec_letters = set()
+    for dw in drawings:
+        if dw['kind'] == 'section':
+            for m in _SEC_RX.finditer(dw.get('title') or ''):
+                sec_letters.add(m.group(1))
+            dw['letter'] = next(iter(m.group(1) for m in _SEC_RX.finditer(dw.get('title') or '')), None)
+    for dw in drawings:
+        if dw['kind'] in ('elev', 'section'):
+            dw['levels'] = stage('المناسيب', lambda dw=dw: read_levels(
+                dw, E, TG, [segs[k] for k in SG.query(*dw['rect'])], circles, dims_i), None)
+        elif dw['kind'] not in VIEW_KINDS and sec_letters:
+            dw['cuts'] = stage('خطوط القطع', lambda dw=dw: section_cuts(dw, E, TG, sec_letters, bubs), {})
     for dw in drawings:
         r = dw['rect']
         dw['openings'], dw['columns'], dw['beams'], dw['callouts'], dw['walls'] = [], [], [], [], []
@@ -1177,6 +1191,315 @@ def read_set(d, opts=None):
                 definitions=defs + user_defs, materials=materials, merged=merge,
                 can_merge=(not merge and len(groups) > 1 and same_bld),
                 warnings=warn, stages=stages, dictionary=K.dictionary())
+
+
+# ------------------------------------------------------------------ المناسيب (واجهات · مقاطع)
+_LEVEL_RX = re.compile(r'^\s*(?:(?:F\.?F\.?L|S\.?S\.?L|T\.?O\.?S|EL|LEVEL|LVL|منسوب)\.?\s*[:=]?\s*)?'
+                       r'([+\-±]|%%[Pp])?\s*(\d{1,2}[.,]\d{2,3}|\d{1,4})\s*(?:m|م)?\s*$', re.I)
+_SIGN_TXT = ('+', '-', '±', '%%P', '%%p', '−')
+
+
+def _med_f(v):
+    v = sorted(v)
+    n = len(v)
+    return (v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0) if n else None
+
+
+def read_levels(dw, E, TG, segs, circles, dims=()):
+    """قراءة لوحة واجهة/مقطع كما يقرؤها المهندس:
+    - علامات المنسوب: رقم (±0.00 · +3.50 · 420 سم) فوق خط أفقي قصير ومثلث رأسه على المنسوب،
+      وقد تُكتب الإشارة نصاً مستقلاً بجانب الرقم.
+    - معايرة الرسم: y = y0 + k·المنسوب بمطابقة العلامات (العلامة المخالفة للرسم تُعلَّم تعارضاً).
+    - البلاطات بالمقطع: خطّان أفقيان طويلان متوازيان بينهما 8–40 سم ولا خط بينهما، والتشطيب فوقها.
+    - فقاعات المحاور فوق الواجهة: لمطابقة الواجهة أفقياً مع محاور المسقط."""
+    x0, y0, x1, y1 = dw['rect']
+    inside = lambda x, y: x0 <= x <= x1 and y0 <= y <= y1
+    texts = [E[j] for j in TG.query(x0, y0, x1, y1) if inside(E[j]['p'][0], E[j]['p'][1])]
+    signs = [t for t in texts if (t.get('s') or '').strip() in _SIGN_TXT]
+    toks = []
+    for t in texts:
+        rot = (t.get('rot') or 0) % 360
+        if min(rot, 360 - rot) > 1:
+            continue
+        m = _LEVEL_RX.match(PL.clean_text(t.get('s') or '') or '')
+        if m:
+            toks.append((t, m.group(1), m.group(2)))
+    ints = [int(n) for _, _, n in toks if n.isdigit()]
+    cm = bool(ints) and max(ints) >= 30              # أعداد صحيحة كبيرة = سنتمتر (420 = +4.20)
+    hs = [sg for sg in segs if abs(sg[3] - sg[1]) < 0.005 and abs(sg[2] - sg[0]) > 0.02]
+    marks = []
+    for t, sg, n in toks:
+        tx, ty = t['p'][0], t['p'][1]
+        line = [q for q in hs if 0.25 <= abs(q[2] - q[0]) <= 4.0 and ty - 0.45 <= q[1] <= ty + 0.02
+                and min(q[0], q[2]) <= tx + 0.3 and max(q[0], q[2]) >= tx]
+        if not sg:
+            near = [q['s'].strip() for q in signs
+                    if -1.0 <= q['p'][0] - tx <= 1.5 and -0.2 <= q['p'][1] - ty <= 0.25]
+            if '+' in near and ('-' in near or '−' in near):
+                sg = '±'
+            elif near:
+                sg = near[0]
+        if not line and not sg:
+            continue                                   # رقم عادي (بُعد/مقاس) لا علامة منسوب
+        v = float(n.replace(',', '.'))
+        if '.' not in n and ',' not in n and cm:
+            v /= 100.0
+        if sg in ('-', '−'):
+            v = -v
+        ly = ty
+        if line:
+            q = max(line, key=lambda q: q[1])
+            lx0, lx1, ly = min(q[0], q[2]) - 0.2, max(q[0], q[2]) + 0.2, q[1]
+            tri = [p for g in segs if abs(g[2] - g[0]) + abs(g[3] - g[1]) < 0.9
+                   for p in ((g[0], g[1]), (g[2], g[3]))
+                   if lx0 <= p[0] <= lx1 and ly - 0.4 <= p[1] <= ly + 0.01]
+            if tri:
+                ly = min(p[1] for p in tri)            # رأس المثلث = المنسوب نفسه
+        if not any(abs(m['v'] - v) < 1e-6 and abs(m['y'] - ly) < 0.05 for m in marks):
+            marks.append(dict(v=round(v, 3), y=round(ly, 3), x=round(tx, 3), exact=bool(line)))
+    vd = set()
+    for i in dims:                                     # الأبعاد الرأسية المكتوبة (للتحقق من الارتفاعات)
+        q = E[i]['p']
+        if len(q) >= 4 and abs(q[2] - q[0]) < 0.01 and inside(q[0], q[1]):
+            vd.add(round(abs(q[3] - q[1]), 2))
+    out = dict(marks=marks, cm=cm, k=None, y0=None, slabs=[], axes=[], ground_y=None, vdims=sorted(vd))
+    # ---- المعايرة ----
+    if len({m['v'] for m in marks}) >= 2:
+        ks = [(a['y'] - b['y']) / (a['v'] - b['v']) for i, a in enumerate(marks) for b in marks[i + 1:]
+              if abs(a['v'] - b['v']) >= 0.5]
+        k = _med_f(ks)
+        if k and 0.2 <= k <= 5.0:
+            y00 = _med_f([m['y'] - k * m['v'] for m in marks])
+            ok = [m for m in marks if abs(m['y'] - (y00 + k * m['v'])) <= 0.05 * k]
+            if len(ok) >= 2:
+                mv = sum(m['v'] for m in ok) / len(ok)
+                my = sum(m['y'] for m in ok) / len(ok)
+                den = sum((m['v'] - mv) ** 2 for m in ok)
+                if den > 1e-9:
+                    k = sum((m['v'] - mv) * (m['y'] - my) for m in ok) / den
+                    y00 = my - k * mv
+                for m in marks:
+                    m['ok'] = abs(m['y'] - (y00 + k * m['v'])) <= 0.05 * k
+                    m['drawn'] = round((m['y'] - y00) / k, 3)
+                out['k'], out['y0'] = round(k, 5), round(y00, 4)
+    # ---- خط الأرض + البلاطات ----
+    inr = [q for q in hs if inside(q[0], q[1]) and inside(q[2], q[3])]
+    if inr:
+        wmax = max(abs(q[2] - q[0]) for q in inr)
+        longs = sorted([q for q in inr if abs(q[2] - q[0]) >= max(2.0, 0.4 * wmax)], key=lambda q: q[1])
+        g = [q for q in inr if abs(q[2] - q[0]) >= 0.4 * wmax]
+        out['ground_y'] = round(min(q[1] for q in g), 4) if g else None
+
+        def ov(a, b):
+            return min(max(a[0], a[2]), max(b[0], b[2])) - max(min(a[0], a[2]), min(b[0], b[2]))
+        slabs = []
+        for i, a in enumerate(longs):
+            for b in longs[i + 1:]:
+                d = b[1] - a[1]
+                if d > 0.40:
+                    break
+                if d < 0.08:
+                    continue
+                o = ov(a, b)
+                if o < 0.6 * min(abs(a[2] - a[0]), abs(b[2] - b[0])):
+                    continue
+                if any(a[1] + 0.004 < c[1] < b[1] - 0.004 and ov(c, a) > 0.3 * o for c in longs):
+                    continue
+                fin = [c[1] - b[1] for c in inr if b[1] + 0.005 < c[1] <= b[1] + 0.2 and ov(c, b) >= 0.5 * o]
+                slabs.append(dict(top=b[1], t=round(d, 3), L=round(o, 2), fin=round(max(fin), 3) if fin else 0.0))
+        # البلاطة الإنشائية فوق طبقة النظافة/الفرشة: من كل مجموعة متقاربة (40 سم) تبقى العليا
+        slabs.sort(key=lambda q: -q['top'])
+        keep = []
+        for q in slabs:
+            if not any(0 < k2['top'] - q['top'] <= 0.4 for k2 in keep):
+                keep.append(q)
+        for q in keep:
+            q['level'] = round((q['top'] - out['y0']) / out['k'], 3) if out['k'] else None
+        out['slabs'] = sorted(keep, key=lambda q: q['top'])
+    # ---- فقاعات المحاور (للمطابقة الأفقية) ----
+    for i in circles:
+        cx, cy, r = E[i]['p']
+        if not (inside(cx, cy) and 0.1 <= r <= 1.5):
+            continue
+        for j in TG.query(cx - 1.3 * r, cy - 1.3 * r, cx + 1.3 * r, cy + 1.3 * r):
+            lab = K.axis_label(E[j].get('s'))
+            if lab and math.hypot(E[j]['p'][0] - cx, E[j]['p'][1] - cy) <= 1.25 * r:
+                if not any(a['name'] == lab['name'] for a in out['axes']):
+                    out['axes'].append(dict(name=lab['name'], x=round(cx, 3), y=round(cy, 3)))
+                break
+    return out
+
+
+_SEC_RX = re.compile(r'(?<![A-Za-z])([A-Z])\s*[-–]\s*\1(?![A-Za-z])')
+
+
+def section_cuts(dw, E, TG, letters, bubs):
+    """خط القطع بالمسقط: الحرف نفسه (A) على جانبي المسقط خارج فقاعات المحاور."""
+    if not letters:
+        return {}
+    x0, y0, x1, y1 = dw['rect']
+    W, H = x1 - x0, y1 - y0
+    pts = {}
+    for j in TG.query(x0 - 3, y0 - 3, x1 + 3, y1 + 3):
+        s = (E[j].get('s') or '').strip()
+        if s not in letters:
+            continue
+        x, y = E[j]['p'][0], E[j]['p'][1]
+        if any(math.hypot(x - b['x'], y - b['y']) <= 1.4 * b['r'] for b in bubs):
+            continue
+        pts.setdefault(s, []).append((x, y))
+    cuts = {}
+    for L, P in pts.items():
+        best = None
+        for i, a in enumerate(P):
+            for b in P[i + 1:]:
+                if abs(a[1] - b[1]) <= 1.0 and abs(a[0] - b[0]) >= 0.5 * W:
+                    c = dict(o='h', c=round((a[1] + b[1]) / 2, 3), span=abs(a[0] - b[0]))
+                elif abs(a[0] - b[0]) <= 1.0 and abs(a[1] - b[1]) >= 0.5 * H:
+                    c = dict(o='v', c=round((a[0] + b[0]) / 2, 3), span=abs(a[1] - b[1]))
+                else:
+                    continue
+                if best is None or c['span'] > best['span']:
+                    best = c
+        if best:
+            cuts[L] = best
+    return cuts
+
+
+def _measure_levels(views, order, g0):
+    """مناسيب الطوابق من الواجهات والمقاطع: سلسلة منسوب لكل طابق + سطح الأخير، يختارها
+    كما يختارها المهندس: ارتفاعات 2.6–6.0 م، أكثرها انتظاماً، ومفضَّلٌ المنسوب المؤيَّد ببلاطة
+    مرسومة بالمقطع على علامة نصية فقط. الطوابق تحت الأرض إن لم تُقَس تبقى افتراضية."""
+    cand = []
+
+    def add(v, kind, src):
+        for c in cand:
+            if abs(c['v'] - v) <= 0.03:
+                c['sup'].add(kind)
+                c['src'].add(src)
+                return
+        cand.append(dict(v=v, sup={kind}, src={src}))
+    conflicts, slabs = [], []
+    for v in views:
+        L = v.get('levels') or {}
+        if not L.get('k'):
+            continue
+        for m in L['marks']:
+            if m.get('ok'):
+                add(m['v'], 'mark', v['id'])
+            elif m.get('drawn') is not None:
+                conflicts.append(dict(v=m['v'], drawn=m['drawn'], src=v['id']))
+        if v['kind'] == 'section':
+            for q in L['slabs']:
+                if q.get('level') is not None:
+                    add(q['level'], 'slab', v['id'])
+                    slabs.append(dict(q, src=v['id']))
+    if len(cand) < 2:
+        return None
+    cand.sort(key=lambda c: c['v'])
+    if len(cand) > 16:                                      # حدّ للتوافيق — الأقوى دعماً
+        cand = sorted(sorted(cand, key=lambda c: -len(c['sup']))[:16], key=lambda c: c['v'])
+    import itertools
+
+    def best_chain(n, gi):
+        best = None
+        for ch in itertools.combinations(cand, n):
+            vs = [c['v'] for c in ch]
+            d = [b - a for a, b in zip(vs, vs[1:])]
+            if not d or min(d) < 2.6 or max(d) > 6.0:
+                continue
+            if gi is not None and not (-0.3 <= vs[gi] <= 1.8):
+                continue
+            mu = sum(d) / len(d)
+            sc = math.sqrt(sum((x - mu) ** 2 for x in d) / len(d)) + \
+                0.25 * sum(1 for c in ch if 'slab' not in c['sup'])
+            if best is None or sc < best[0]:
+                best = (sc, ch)
+        return best
+    n = len(order) + 1
+    gi = g0 if any(K.FLOOR_ORDER.get(k, 0) >= 0 for k in order) else None
+    b = best_chain(n, gi)
+    first = 0
+    if not b and gi:
+        b = best_chain(n - gi, 0)                           # فوق الأرض فقط، السرداب افتراضي
+        first = gi
+    if not b:
+        return None
+    ch = b[1]
+    vs = [c['v'] for c in ch]
+    roof = vs[-1]
+    extra = [c['v'] for c in cand if c['v'] > roof + 0.3]
+    mids = [c['v'] for c in cand if vs[0] < c['v'] < roof and all(abs(c['v'] - x) > 0.03 for x in vs)]
+    below = [c['v'] for c in cand if c['v'] < vs[0] - 0.03]
+    on = [q for q in slabs if any(abs(q['level'] - x) <= 0.03 for x in vs)]
+    tvals = [round(q['t'] * 1000 / 10.0) * 10 for q in on]
+    t = max(set(tvals), key=tvals.count) if tvals else None
+    fin = [q['fin'] for q in on if q.get('fin')]
+    ngl = any(abs(c['v']) <= 0.005 for c in cand)
+    if ngl and abs(vs[min(g0, len(vs) - 1)] if first == 0 else vs[0]) > 0.005:
+        mids = [x for x in mids if abs(x) > 0.005]          # ±0.00 = الأرض الطبيعية لا بسطة
+    vd = set()
+    for v in views:
+        if v['kind'] == 'section':
+            vd |= set((v.get('levels') or {}).get('vdims') or [])
+    checks = []
+    for h in [round(b2 - a, 3) for a, b2 in zip(vs, vs[1:])]:
+        clear = round(h - (t or 0) / 1000.0, 2) if t else None
+        checks.append(dict(h=h, clear=clear, h_dim=round(h, 2) in vd,
+                           clear_dim=bool(clear) and clear in vd))
+    return dict(chain=[round(x, 3) for x in vs], first=first, heights=[round(b2 - a, 3) for a, b2 in zip(vs, vs[1:])],
+                src=sorted(set().union(*[c['src'] for c in ch])), from_slab=[('slab' in c['sup']) for c in ch],
+                extra=extra, mids=mids, below=below, conflicts=conflicts, t=t,
+                fin=round(_med_f(fin) * 1000) if fin else None, ngl=ngl, checks=checks)
+
+
+def _view_fit(v, gx, gy, box, cuts):
+    """تحويل رسمة الواجهة/المقطع إلى المجسم بدقة: أفقياً من فقاعات محاورها مطابَقةً بأسماء
+    محاور المسقط (u = s·x + b)، وعمودياً من معايرة علامات المنسوب (z = (y − y0)/k)،
+    والعمق: وجه المبنى حسب الجهة، أو خط القطع المرسوم بالمسقط للمقطع."""
+    L = v.get('levels') or {}
+    gxd = {a['name']: a['pos'] for a in gx}
+    gyd = {a['name']: a['pos'] for a in gy}
+    ax = L.get('axes') or []
+    mx = [(a['x'], gxd[a['name']]) for a in ax if a['name'] in gxd]
+    my = [(a['x'], gyd[a['name']]) for a in ax if a['name'] in gyd]
+    along, P = ('x', mx) if len(mx) >= len(my) else ('y', my)
+    if v.get('view') in ('S', 'N') and len(mx) >= 2:
+        along, P = 'x', mx
+    elif v.get('view') in ('E', 'W') and len(my) >= 2:
+        along, P = 'y', my
+    if len(P) < 2:
+        return None
+    mxv = sum(p[0] for p in P) / len(P)
+    mu = sum(p[1] for p in P) / len(P)
+    den = sum((p[0] - mxv) ** 2 for p in P)
+    if den < 1e-9:
+        return None
+    sl = sum((p[0] - mxv) * (p[1] - mu) for p in P) / den
+    b = mu - sl * mxv
+    res = max(abs(sl * p[0] + b - p[1]) for p in P)
+    if L.get('k'):
+        y0, k, vhow = L['y0'], L['k'], 'levels'
+    elif L.get('ground_y') is not None:
+        y0, k, vhow = L['ground_y'], abs(sl), 'ground'
+    else:
+        return None
+    X0, Y0, X1, Y1 = box
+    face, fhow = None, 'face'
+    if v['kind'] == 'section':
+        c = cuts.get(v.get('letter')) if v.get('letter') else None
+        if c and ((c['o'] == 'h') == (along == 'x')):
+            face, fhow = c['c'], 'cut'
+        else:
+            face, fhow = ((Y0 + Y1) / 2 if along == 'x' else (X0 + X1) / 2), 'center'
+    else:
+        vw = v.get('view')
+        if along == 'x':
+            face = Y1 + 0.12 if vw == 'N' else Y0 - 0.12
+        else:
+            face = X0 - 0.12 if vw == 'W' else X1 + 0.12
+    return dict(along=along, s=round(sl, 5), b=round(b, 4), y0=y0, k=k, face=round(face, 3),
+                res=round(res, 3), vhow=vhow, fhow=fhow, n_axes=len(P))
 
 
 def _arch_columns(cols):
@@ -1374,10 +1697,34 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
         warn.append('ما لقيت أسماء طوابق بعناوين المبنى %d — عُرض طابقاً واحداً (تقدر تحدد الطابق لكل لوحة).' % (gi + 1))
     order = sorted(by_floor, key=lambda k: K.FLOOR_ORDER.get(k, 0))
     hmap = opts.get('floor_h') or {}
-    hs = [PL._safe_float(hmap.get(fk), 0.0) or 3.5 for fk in order]
     # منسوب الصفر = الطابق الأرضي (أو أول طابق فوقه)، وما تحته بالسالب (سرداب/قبو)
     g0 = next((i for i, fk in enumerate(order) if K.FLOOR_ORDER.get(fk, 0) >= 0), 0)
-    levels = [(-sum(hs[i:g0]) if i < g0 else sum(hs[g0:i])) for i in range(len(order))]
+    # الارتفاعات: تعديل المستخدم ← المقاس من الواجهة/المقطع ← 3.5 م
+    meas = None
+    if views and not opts.get('no_measure'):
+        try:
+            meas = _measure_levels(views, order, g0)
+        except Exception as ex:
+            warn.append('تعذّر قياس المناسيب من الواجهات: %s' % ex)
+    h_src, hs = [], []
+    for i, fk in enumerate(order):
+        u = PL._safe_float(hmap.get(fk), 0.0)
+        j = i - meas['first'] if meas else -1
+        if u:
+            hs.append(u); h_src.append('user')
+        elif meas and 0 <= j < len(meas['heights']):
+            hs.append(meas['heights'][j]); h_src.append('measured')
+        else:
+            hs.append(3.5); h_src.append('default')
+    base0 = meas['chain'][g0 - meas['first']] if meas and 0 <= g0 - meas['first'] < len(meas['chain']) else 0.0
+    levels = [base0 + (-sum(hs[i:g0]) if i < g0 else sum(hs[g0:i])) for i in range(len(order))]
+    if meas:
+        vn = ' و'.join('%d' % (i + 1) for i in meas['src'])
+        warn.append('📏 المناسيب مقاسة من الواجهة/المقطع (لوحة %s): %s — ارتفاع الطوابق %s م.' % (
+            vn, ' · '.join(_fmt_lv(x) for x in meas['chain']), ' · '.join('%.2f' % x for x in meas['heights'])))
+        for c in meas['conflicts']:
+            warn.append('⚠️ علامة المنسوب %s باللوحة %d مرسومة فعلياً عند %s — اعتُمد القياس من الرسم.' % (
+                _fmt_lv(c['v']), c['src'] + 1, _fmt_lv(c['drawn'])))
     floors = []
     for fi, fk in enumerate(order):
         sheets = by_floor[fk]
@@ -1492,8 +1839,13 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             loc_ax = {'x': {str(i): dict(name=str(i), pos=v) for i, v in enumerate(px)},
                       'y': {str(i): dict(name=str(i), pos=v) for i, v in enumerate(py)}}
         rects = slab_panels(loc_ax, spans, opens, calls)
-        t = (sl or {}).get('thickness') or (bk or {}).get('thickness') or 200
+        t = (sl or {}).get('thickness') or (bk or {}).get('thickness')
+        t_src = 'title' if t else None
+        if not t and meas and meas.get('t'):
+            t, t_src = meas['t'], 'section'           # سماكة البلاطة المرسومة بالمقطع
+        t = t or 200
         floors.append(dict(key=fk, name=K.FLOOR_NAMES.get(fk, fk), level=round(levels[fi], 3), h=h,
+                           h_src=h_src[fi], t_src=t_src,
                            columns=cols, beams=beams, walls=walls, beams_assumed=assumed,
                            slab=dict(t=t, rects=[[round(v, 3) for v in r] for r in rects],
                                      openings=opens, callouts=calls, mesh=_slab_mesh(calls),
@@ -1506,14 +1858,41 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
     footings = _footings(floors, materials, opts, warn)
     ext = [round(max(xs_all) - ox, 2), round(max(ys_all) - oy, 2)]
     names = sorted(set(dw['building_name'] for dw in grp if dw['building_name']))
-    vout = [dict(id=v['id'], title=v['title'], kind=v['kind'], view=v.get('view'), rect=v['rect'],
-                 sketch=v['sketch']) for v in views]
+    box = [0.0, 0.0, ext[0], ext[1]]
+    cuts = {}
+    for dw in plans:                                # خطوط القطع بإحداثيات المبنى
+        for L_, c in (dw.get('cuts') or {}).items():
+            if L_ not in cuts:
+                cuts[L_] = dict(c, c=round(c['c'] + (dw['reg']['dy'] - oy if c['o'] == 'h' else dw['reg']['dx'] - ox), 3))
+    vout = []
+    for v in views:
+        fit = None
+        try:
+            fit = _view_fit(v, gx, gy, box, cuts) if v['kind'] in ('elev', 'section') else None
+        except Exception as ex:
+            warn.append('تعذّرت مطابقة اللوحة %d على المبنى: %s' % (v['id'] + 1, ex))
+        vout.append(dict(id=v['id'], title=v['title'], kind=v['kind'], view=v.get('view'), rect=v['rect'],
+                         sketch=v['sketch'], fit=fit, letter=v.get('letter')))
+    lv_info = None
+    if meas:
+        lv_info = dict(chain=meas['chain'], heights=meas['heights'], first=meas['first'], src=meas['src'],
+                       from_slab=meas['from_slab'], extra=meas['extra'], mids=meas['mids'], below=meas['below'],
+                       conflicts=meas['conflicts'], t=meas['t'], fin=meas['fin'], ngl=meas['ngl'],
+                       checks=meas['checks'],
+                       parapet=next((round(x - meas['chain'][-1], 3) for x in meas['extra']
+                                     if 0.3 <= x - meas['chain'][-1] <= 1.6), None),
+                       keys=order[meas['first']:])
     return dict(id=gi, name=(names[0] if names else 'مبنى %d' % (gi + 1)),
                 axes_sig=('%s→%s × %s→%s' % (gx[0]['name'], gx[-1]['name'], gy[0]['name'], gy[-1]['name'])
                           if gx and gy else 'بلا محاور'),
                 grid=dict(x=gx, y=gy), size=ext,
                 drawings=[dw['id'] for dw in grp], floors=floors, footings=footings, views=vout,
-                height=round(sum(hs[g0:]), 3), depth=round(sum(hs[:g0]), 3))
+                height=round(sum(hs[g0:]), 3), depth=round(sum(hs[:g0]), 3),
+                levels=lv_info, ffl0=round(base0, 3))
+
+
+def _fmt_lv(v):
+    return '±0.00' if abs(v) < 0.005 else ('%+.2f' % v)
 
 
 def _beam_rebar(rec):
@@ -1553,9 +1932,10 @@ def _footings(floors, materials, opts, warn):
     # (مثل أعمدة المدخل خارج حدود السرداب) — كلٌّ عند منسوب طابقه. العمود المبتدئ بطابق علوي لا أساس له.
     lv0 = floors[0].get('level', 0.0) or 0.0
     base = [dict(c, _z=lv0) for c in floors[0]['columns']]
+    gnd = next((f.get('level', 0.0) or 0.0 for f in floors if K.FLOOR_ORDER.get(f['key'], 0) >= 0), 0.0)
     for f in floors[1:]:
         lv = f.get('level', 0.0) or 0.0
-        if lv > 0.01:
+        if lv > max(gnd, 0.0) + 0.01:              # الأرضي (ولو مرفوعاً +0.70) آخر طابق يرتكز على أساسات
             break
         for c in f['columns']:
             if not any(math.hypot(q['x'] - c['x'], q['y'] - c['y']) < 0.6 for q in base):
@@ -1611,5 +1991,5 @@ def _footings(floors, materials, opts, warn):
             continue
         out.append(dict(x=c['x'], y=c['y'], col=c.get('mark'), B=r['B'], h=r['h'], PD=round(PD[j], 1),
                         PL=round(PLv[j], 1), Pu=round(r['Pu'], 1), bars=r['bars_label'], db=r['bar_db'],
-                        s=r['spacing'], ok=r['ok'], designed=True, z=c['_z']))
+                        s=r['spacing'], ok=r['ok'], designed=True, z=c['_z'], zg=round(min(c['_z'], 0.0), 3)))
     return out

@@ -249,7 +249,10 @@ const CADPAGE = (() => {
           ? `<div class="note" style="margin-top:6px">${dw.kind === 'elev'
               ? 'واجهة' + ({ S: ' جنوبية', N: ' شمالية', E: ' شرقية', W: ' غربية' }[dw.view] || '') +
                 (dw.view ? ' — تظهر على المبنى بالمجسم (🏛️ الواجهات على المبنى)' : ' — حدّد جهتها بعنوانها لتُركَّب على المبنى')
-              : 'لوحة عرض (مقطع/تفصيلة) — مرجع للقراءة، لا تدخل تركيب العناصر'}</div>`
+              : dw.kind === 'section' ? 'مقطع' + (dw.letter ? ' ' + dw.letter + '-' + dw.letter : '') +
+                ' — يُركَّب على خط قطعه بالمسقط، ومنه تُقاس المناسيب وسماكة البلاطة'
+              : 'لوحة عرض (تفصيلة) — مرجع للقراءة، لا تدخل تركيب العناصر'}${dw.levels && dw.levels.k
+              ? `<div>📏 ${dw.levels.marks.filter(m => m.ok).length} علامة منسوب مقروءة${(dw.levels.slabs || []).length ? ' · ' + dw.levels.slabs.length + ' بلاطة مرسومة' : ''}${(dw.levels.axes || []).length ? ' · محاور ' + dw.levels.axes.map(a => a.name).join(' ') : ''}</div>` : ''}</div>`
           : `<div class="note" style="margin-top:6px">${dw.ax.x.length}×${dw.ax.y.length} محور · ${dw.columns.length} عمود ·
           ${dw.beams.length} بحر جسر (${dw.beams.filter(b => b.mark).length} بعلامة) · ${dw.openings.length} فتحة ·
           ${dw.callouts.length} نداء تسليح${(dw.walls || []).length && dw.kind === 'arch' ? ' · ' + dw.walls.length + ' جدار' : ''}${dw.thickness ? ' · بلاطة ' + dw.thickness + ' مم' : ''}</div>`}
@@ -316,16 +319,34 @@ const CADPAGE = (() => {
   function floorsTab() {
     const B = cur();
     if (!B) return '<div class="note">لا مبنى.</div>';
-    return `<div class="card">${bsel()}</div>` + B.floors.map(f => {
+    const LV = z => `<span dir="ltr" style="unicode-bidi:isolate;display:inline-block">${Math.abs(z) < 0.005 ? '±0.00' : (z > 0 ? '+' : '') + N(z, 2)}</span>`;
+    const HS = { measured: '<span class="tag t-ok">📏 مقاس من الواجهة/المقطع</span>', user: '<span class="tag t-ok">✍️ تعديلك</span>',
+                 default: '<span class="tag t-warn">افتراضي 3.5</span>' };
+    const L = B.levels;
+    const lvCard = L ? `<div class="card" style="margin-top:10px"><h3>📏 المناسيب مقاسة من الواجهة والمقطع (لوحة ${L.src.map(i => i + 1).join(' و')})</h3>
+      <div class="scroll"><table><tr><th>الطابق</th><th>المنسوب</th><th>الارتفاع م</th><th>الصافي م</th><th>التحقق</th></tr>
+      ${L.keys.map((k, i) => { const c = (L.checks || [])[i] || {}; const f = B.floors.find(q => q.key === k);
+        return `<tr><td>${E(f ? f.name : k)}</td><td>${LV(L.chain[i])}${L.from_slab[i] ? ' ▭' : ''}</td>
+          <td class="ltr">${N(L.heights[i], 2)}</td><td class="ltr">${c.clear != null ? N(c.clear, 2) : '—'}</td>
+          <td>${c.h_dim || c.clear_dim ? '<span class="tag t-ok">✓ مطابق لبُعد مكتوب</span>' : '<span class="tag t-warn">من العلامات</span>'}</td></tr>`; }).join('')}
+      <tr><td>السطح</td><td>${LV(L.chain[L.chain.length - 1])}${L.from_slab[L.chain.length - 1] ? ' ▭' : ''}</td><td colspan="3"></td></tr></table></div>
+      <div class="note" style="margin-top:6px;line-height:1.9">
+        ${L.t ? `سماكة البلاطة من المقطع <b class="ltr">${L.t} مم</b>${L.fin ? ' + تشطيبات <b class="ltr">' + L.fin + ' مم</b> (فرشة + بلاط)' : ''} · ` : ''}
+        ${L.ngl && Math.abs(B.ffl0 || 0) > 0.005 ? `الأرض الطبيعية <b class="ltr">±0.00</b> والطابق الأرضي مرفوع <b class="ltr">${LV(B.ffl0)}</b> — الأساسات تُقاس من الأرض الطبيعية · ` : ''}
+        ${(L.mids || []).length ? `بسطات درج: ${L.mids.map(LV).join(' · ')} · ` : ''}
+        ${(L.extra || []).length ? `فوق السطح (غرفة درج/ستارة): ${L.extra.map(LV).join(' · ')}` : ''}
+        ${(L.conflicts || []).map(c => `<div>⚠️ العلامة <b class="ltr">${LV(c.v)}</b> باللوحة ${c.src + 1} مرسومة فعلياً عند <b class="ltr">${LV(c.drawn)}</b> — اعتُمد الرسم.</div>`).join('')}
+        <div>▭ = منسوب مؤكَّد ببلاطة مرسومة بالمقطع. غيّر أي ارتفاع أدناه ويُعاد التركيب (تعديلك يتقدّم على القياس).</div></div></div>` : '';
+    return `<div class="card">${bsel()}</div>` + lvCard + B.floors.map(f => {
       const s = f.slab, m = s.mesh || {};
       return `<div class="card" style="margin-top:10px"><h3>سقف الطابق ${E(f.name)}
-        <span class="tag t-ok">منسوب ${f.level >= 0 ? '+' : ''}${N(f.level, 2)} م</span></h3>
+        <span class="tag t-ok">منسوب ${f.level >= 0 ? '+' : ''}${N(f.level, 2)} م</span> ${HS[f.h_src] || ''}</h3>
         <div class="f" style="margin-bottom:8px"><div><label>ارتفاع الطابق (م)</label>
           <input type="number" step="0.05" min="2.4" max="12" class="sm" data-fh="${f.key}" value="${f.h}"></div></div>
         ${f.beams_assumed ? '<div class="note" style="margin-bottom:6px">⚠️ لا مخطط جسور لهذا السقف — الجسور مفترضة بين الأعمدة (250 مم، عمق ≈ البحر/12) ومعلَّمة «تخمين». ارفع مخطط الجسور أو عرّفها بتبويب «التعريفات».</div>' : ''}
         <div class="kg">${kpi('أعمدة', f.columns.length)}${kpi('بحور جسور', f.beams.length, f.beams_assumed ? 'warn' : '')}
           ${(f.walls || []).length ? kpi('جدران', f.walls.length) : ''}
-          ${kpi('بلاطة', s.t + ' مم', s.t_from_title ? 'ok' : 'warn')}${kpi('فتحات', s.openings.length)}
+          ${kpi(f.t_src === 'section' ? 'بلاطة (من المقطع)' : 'بلاطة', s.t + ' مم', s.t_from_title || f.t_src === 'section' ? 'ok' : 'warn')}${kpi('فتحات', s.openings.length)}
           ${kpi('شبكة سفلية', m.bot ? 'Ø' + m.bot.d + '@' + m.bot.s : '—')}${kpi('شبكة علوية', m.top ? 'Ø' + m.top.d + '@' + m.top.s : '—')}</div>
         ${s.openings.length ? `<div class="note" style="margin-top:6px">الفتحات: ${s.openings.map(o =>
           `<span class="ltr">${o.between && o.between.x ? E(AX(o.between.x[0])) + '→' + E(AX(o.between.x[1])) : ''} × ${o.between && o.between.y ? E(AX(o.between.y[0])) + '→' + E(AX(o.between.y[1])) : ''}</span>
@@ -400,7 +421,7 @@ const CADPAGE = (() => {
           ${B.floors.map(f => `<option value="${f.key}">سقف ${E(f.name)}</option>`).join('')}</select>
         <button data-v="rebar">🧵 إظهار التسليح</button><button data-v="only">🔩 التسليح فقط</button>
         <button data-v="xray">🩻 أشعة</button>
-        ${(B.views || []).some(v => v.view) ? '<button data-v="views">🏛️ الواجهات على المبنى</button>' : ''}
+        ${(B.views || []).some(v => v.view || v.fit) ? '<button data-v="views">🏛️ الواجهات والمقطع على المبنى</button>' : ''}
         <button data-v="reset">🎯 إعادة الكاميرا</button>
       </div>
       <div id="cad3d"></div>
@@ -444,7 +465,8 @@ const CADPAGE = (() => {
           : 'لا حديد بالجدول لهذه العلامة'}`,
       slab: () => `⬜ <b>بلاطة سقف ${E(u.floor)}</b> · ${u.t} مم · سفلي ${u.mesh && u.mesh.bot ? 'Ø' + u.mesh.bot.d + '@' + u.mesh.bot.s : '—'}
         · علوي ${u.mesh && u.mesh.top ? 'Ø' + u.mesh.top.d + '@' + u.mesh.top.s : '—'}`,
-      wall: () => `🧱 <b>جدار</b> · سماكة ${u.t} مم · طول ${N(u.L, 2)} م · طابق ${E(u.floor)}`,
+      wall: () => u.parapet ? `🧱 <b>ستارة السطح</b> · ارتفاع ${N(u.parapet, 2)} م (مقاس من المقطع/الواجهة) · سماكة ${u.t} مم`
+                            : `🧱 <b>جدار</b> · سماكة ${u.t} مم · طول ${N(u.L, 2)} م · طابق ${E(u.floor)}`,
       foot: () => `🟫 <b>أساس ${E(u.mark || '')}</b> · ${E(u.size)} · PD ${N(u.PD, 0)} / PL ${N(u.PL, 0)} كن · Pu ${N(u.Pu, 0)} كن ·
         ${E(u.bars)} · ${u.ok ? '✓ القص مقبول' : '✗ راجع'} <span class="tag t-warn">مصمَّم بالكود</span>`
     }[u.kind];
@@ -503,7 +525,8 @@ const CADPAGE = (() => {
   async function sendToWizard() {
     const B = cur();
     if (!B || !B.floors.length) return;
-    const f = B.floors[0];
+    // الطابق الأرضي (فوق السرداب إن وُجد) — ارتفاعه هو الطابق النموذجي المقاس
+    const f = B.floors.find(q => q.level >= (B.ffl0 || 0) - 0.01) || B.floors[0];
     // عقد وجسور الطابق الأسفل بإحداثيات المبنى — نفس صيغة __frame_override التي يقبلها المعالج
     const nodes = f.columns.map((c, k) => ({ k: k, x: c.x, y: c.y, b: c.b, h: c.h, shape: c.shape, D: c.shape === 'circ' ? c.b / 1000 : null }));
     const near = (x, y) => { let bi = -1, bd = 1e9; nodes.forEach((n, i) => { const d = Math.hypot(n.x - x, n.y - y); if (d < bd) { bd = d; bi = i; } }); return bd < 0.8 ? bi : -1; };

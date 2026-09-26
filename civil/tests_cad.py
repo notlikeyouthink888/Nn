@@ -103,6 +103,34 @@ class TestTokens(unittest.TestCase):
         self.assertTrue(len(d['symbols']) >= 12 and len(d['sheets']) >= 10)
 
 
+class TestLevels(unittest.TestCase):
+    """قياس المناسيب من الواجهة/المقطع (بيانات مصطنعة تحاكي فيلا: سرداب + أرضي مرفوع + أول)."""
+    def test_token(self):
+        import cadread as C
+        for t, g in [('0.00', '0.00'), ('+3.50', '3.50'), ('420', '420'), ('FFL +0.70', '0.70'), ('-1.05', '1.05')]:
+            self.assertEqual(C._LEVEL_RX.match(t).group(2), g, t)
+        self.assertIsNone(C._LEVEL_RX.match('B1 350X800'))
+
+    def test_chain(self):
+        import cadread as C
+        mk = lambda v, ok=True, drawn=None: dict(v=v, ok=ok, drawn=v if drawn is None else drawn)
+        sl = lambda lv: dict(level=lv, t=0.15, fin=0.1, L=10.0, top=0)
+        views = [dict(id=3, kind='elev', levels=dict(k=1.0, marks=[mk(0), mk(0.7), mk(2.45), mk(4.2), mk(7.7), mk(10.2)],
+                                                    slabs=[], vdims=[])),
+                 dict(id=4, kind='section', levels=dict(k=1.0, marks=[mk(-2.8, False, -2.1), mk(0.7), mk(4.2), mk(-1.05)],
+                                                        slabs=[sl(-2.1), sl(0.7), sl(4.2), sl(7.7)], vdims=[3.35, 2.65]))]
+        m = C._measure_levels(views, ['basement', 'ground', 'first'], 1)
+        self.assertEqual(m['chain'], [-2.1, 0.7, 4.2, 7.7])
+        self.assertEqual(m['heights'], [2.8, 3.5, 3.5])
+        self.assertEqual(m['t'], 150)
+        self.assertEqual(m['conflicts'][0]['v'], -2.8)
+        self.assertTrue(all(c['clear_dim'] for c in m['checks']))
+        self.assertIn(10.2, m['extra'])
+        # الواجهة وحدها (بلا مقطع): الأرضي والأول يُقاسان، والسرداب يبقى افتراضياً
+        m2 = C._measure_levels(views[:1], ['basement', 'ground', 'first'], 1)
+        self.assertEqual((m2['first'], m2['chain']), (1, [0.7, 4.2, 7.7]))
+
+
 FIX = os.environ.get('CAD_FIXTURE')
 
 
@@ -175,6 +203,12 @@ class TestBlock4(unittest.TestCase):
     def test_openings(self):
         n = sum(len(f['slab']['openings']) for b in self.R['buildings'] for f in b['floors'])
         self.assertGreaterEqual(n, 10)
+
+    def test_heights_unchanged(self):
+        # لوحات العرض في Block_4 تفاصيل صغيرة بلا علامات منسوب — الارتفاعات تبقى 3.5
+        for b in self.R['buildings']:
+            self.assertIsNone(b['levels'])
+            self.assertTrue(all(f['h'] == 3.5 for f in b['floors']))
 
     def test_floors(self):
         names = [[f['key'] for f in b['floors']] for b in self.R['buildings']]

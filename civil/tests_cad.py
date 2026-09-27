@@ -240,6 +240,62 @@ class TestBlock4(unittest.TestCase):
                 self.assertEqual(f['slab']['t'], 200)
 
 
+class TestTablesAndScale(unittest.TestCase):
+    def test_generic_table(self):
+        import cadread as C
+        E = []
+        for y in (0, 1, 2, 3):                       # 3 صفوف × 3 أعمدة
+            E.append(dict(t='L', l='t', p=[0, y, 9, y]))
+        for x in (0, 3, 6, 9):
+            E.append(dict(t='L', l='t', p=[x, 0, x, 3]))
+        for r, row in enumerate([['DOOR NO.', 'SIZE', 'TYPE'], ['D1', '0.9X2.1', 'WOOD'], ['D2', '1.2X2.1', 'ALUM']]):
+            for c, txt in enumerate(row):
+                E.append(dict(t='T', l='t', p=[c * 3 + 0.3, 2.3 - r, 0.25], s=txt))
+        TG = C._Grid(4.0)
+        for i, e in enumerate(E):
+            if e['t'] == 'T':
+                TG.add(i, e['p'][0], e['p'][1])
+        T = C.find_tables(E, C._segments(E), TG)
+        self.assertEqual(len(T), 1)
+        self.assertEqual(T[0]['rows'][0], ['DOOR NO.', 'SIZE', 'TYPE'])
+        self.assertEqual(T[0]['rows'][2], ['D2', '1.2X2.1', 'ALUM'])
+        self.assertEqual(T[0]['kind'], 'openings')
+
+    def test_wide_dims_metres_not_feet(self):
+        import cadread as C
+        vals = [0.3, 21.133, 24.08, 5.246, 0.5, 0.25, 31.483, 0.4, 7.65, 6.49, 24.28, 10.05, 9.79, 34.32, 15.29, 12, 7.52]
+        ents = [dict(t='D', l='d', p=[0, 0, v, 0], m=v) for v in vals]
+        self.assertEqual(C.scale_from_dims_wide(ents)['scale'], 1.0)
+
+
+SCHOOL = os.environ.get('SCHOOL_FIXTURE')
+
+
+@unittest.skipUnless(SCHOOL and os.path.exists(SCHOOL) and FIX and os.path.exists(FIX), 'SCHOOL_FIXTURE غير متوفر')
+class TestSchoolMerge(unittest.TestCase):
+    """مسقط مدرسة بلا محاور ولا عناوين (جدران حاملة + أعمدة ربط)، ودمجه مع Block_4 بمشروع واحد."""
+    def test_school_alone(self):
+        import cadread
+        R = cadread.read_set(json.load(open(SCHOOL)))
+        self.assertEqual(R['scale'], 1.0)
+        self.assertEqual(len(R['buildings']), 1)           # نسختا المسقط تُدمجان
+        B = R['buildings'][0]
+        self.assertTrue(B['masonry'])
+        self.assertGreaterEqual(len(B['floors'][0]['columns']), 20)
+        self.assertGreaterEqual(len(B['strips']), 20)
+
+    def test_merge_two_files(self):
+        import cadread
+        fs = []
+        for f, n in ((FIX, 'Block_4.dwg'), (SCHOOL, 'school.dwg')):
+            d = json.load(open(f))
+            fs.append(dict(name=n, ents=d['ents'], layers=d['layers'], insunits=d['insunits']))
+        R = cadread.read_set(dict(files=fs))
+        self.assertEqual(len(R['buildings']), 3)
+        self.assertEqual([f['drawings'] > 0 for f in R['files']], [True, True])
+        self.assertEqual(sorted(set(b['file'] for b in R['buildings'])), ['Block_4.dwg', 'school.dwg'])
+
+
 HOSP = os.environ.get('HOSP_FIXTURE')
 
 

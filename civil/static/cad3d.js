@@ -76,7 +76,7 @@ const CAD3D = (() => {
       (f.columns || []).forEach(c => {
         const b = c.b / 1000, h = c.h / 1000, H = f.h - t;
         const info = { kind: 'col', floor: f.name, mark: c.mark, size: c.b + '×' + c.h,
-                       at: (c.ax || '?') + '×' + (c.ay || '?'), rebar: c.rebar };
+                       at: (c.ax || '?') + '×' + (c.ay || '?'), rebar: c.rebar, outside: !!c.outside, how: c.how };
         if (c.shape === 'circ') {
           const geo = keep(new THREE.CylinderGeometry(b / 2, b / 2, H, 24));
           const me = new THREE.Mesh(geo, mat('col'));
@@ -141,6 +141,17 @@ const CAD3D = (() => {
       box(ft.B, hh, ft.B, P(ft.x, ft.y, zt - Df + hh / 2), mat('foot'),
           { kind: 'foot', mark: ft.col, size: ft.B.toFixed(2) + '×' + ft.B.toFixed(2) + ' م × ' + ft.h + ' مم',
             PD: ft.PD, PL: ft.PL, Pu: ft.Pu, bars: ft.bars, ok: ft.ok }, found);
+    });
+    // أساسات شريطية (مرسومة بطبقة الأساس، أو مصمَّمة تحت الجدران الحاملة) + جدار الأساس حتى منسوب الطابق
+    (B.strips || []).forEach(st => {
+      const L = Math.hypot(st.x2 - st.x1, st.y2 - st.y1), w = st.w / 1000, hh = (st.h || 350) / 1000;
+      const zg = Math.min(z0f, 0), mx = (st.x1 + st.x2) / 2, my = (st.y1 + st.y2) / 2, dS = 1.0;
+      const info = { kind: 'strip', w: st.w, h: st.h || 350, L: L, P: st.P, designed: !!st.designed };
+      if (st.o === 'h') box(L + w, hh, w, P(mx, my, zg - dS + hh / 2), mat('foot'), info, found);
+      else box(w, hh, L + w, P(mx, my, zg - dS + hh / 2), mat('foot'), info, found);
+      const tw = 0.3, H = z0f - (zg - dS + hh);
+      if (st.o === 'h') box(L, H, tw, P(mx, my, zg - dS + hh + H / 2), mat('stub'), null, found);
+      else box(tw, H, L, P(mx, my, zg - dS + hh + H / 2), mat('stub'), null, found);
     });
     fl.filter(f => f === fl[0] || f.level <= 0.01).forEach(base => (base.columns || []).forEach(c => {  // رقبة العمود من الأساس للأرض
       const ft = (B.footings || []).find(q => Math.abs(q.x - c.x) < 0.3 && Math.abs(q.y - c.y) < 0.3);

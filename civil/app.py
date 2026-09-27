@@ -172,6 +172,7 @@ class H(BaseHTTPRequestHandler):
                 payload = _cad_cache(payload, raw if zipped else None)
                 if payload is None:                    # إعادة تحليل بمفتاح انتهى من الذاكرة
                     return self._send(409, json.dumps(dict(error='cache_miss')))
+                payload['_owned'] = True               # تُحوَّل عناصره بمكانها (ذاكرة أقل)
             if name == 'bbs/csv':
                 body = BBS.csv(payload if 'model' in payload else PJ.wizard(payload))
                 data = ('\ufeff' + body).encode('utf-8')
@@ -195,6 +196,10 @@ class H(BaseHTTPRequestHandler):
                 return self.wfile.write(data)
             out = ROUTES[name](payload)
             self._send(200, json.dumps(out, ensure_ascii=False, default=float))
+        except MemoryError:
+            traceback.print_exc()
+            self._send(507, json.dumps(dict(error='ذاكرة السيرفر ما كفّت لهذا الملف — جرّب ملفاً أصغر أو زد ذاكرة السيرفر',
+                                            type='MemoryError'), ensure_ascii=False))
         except Exception as ex:
             traceback.print_exc()
             self._send(400, json.dumps(dict(error=str(ex), type=type(ex).__name__),
@@ -208,7 +213,7 @@ _CAD_LOCK = threading.Lock()
 
 def _cad_cache(payload, gz_raw):
     key = str(payload.get('key') or '')[:128]
-    if payload.get('ents') is not None:
+    if payload.get('ents') is not None or payload.get('files') is not None:
         if key:
             blob = gz_raw if gz_raw is not None else gzip.compress(
                 json.dumps(payload, ensure_ascii=False).encode('utf-8'), 3)

@@ -68,7 +68,11 @@ const CADPAGE = (() => {
     return `<div id="cad">
       <div class="card"><h3>🧩 الأوتوكاد — اقرأ مجموعة مخططاتك وركّب المبنى</h3>
         <div class="f"><div><label>ملف DWG أو DXF إنشائي (عدة لوحات بملف واحد)</label>
-          <input type="file" id="cad_file" accept=".dwg,.dxf"></div></div>
+          <input type="file" id="cad_file" accept=".dwg,.dxf" multiple></div></div>
+        <div class="note" style="margin-top:6px">تقدر تختار <b>أكثر من ملف</b> مرة وحدة (معماري + إنشائي، أو مباني المشروع كلها) — تُدمج بمشروع واحد:
+          لوحات المبنى الواحد تتجمّع بأسماء محاورها، والمباني المختلفة تظهر معاً بعرض «الموقع».
+          <button class="btn gh" id="cad_add_btn" style="display:none;margin-inline-start:6px">➕ أضف ملفاً آخر للمشروع</button>
+          <input type="file" id="cad_add" accept=".dwg,.dxf" multiple style="display:none"></div>
         <div id="cad_msg" class="note" style="margin-top:8px">ارفع ملف المخططات: لوحات تسليح السقوف،
           مفاتيح الجسور والأعمدة، وجداول الجسور والأعمدة — يُقرأ كل شي ويُركّب المبنى تلقائياً.</div></div>
       <div class="ctabs">${TABS.map(([k, t]) => `<button data-t="${k}" class="${k === TAB ? 'on' : ''}">${t}</button>`).join('')}</div>
@@ -79,7 +83,10 @@ const CADPAGE = (() => {
   function init() {
     css();
     const f = q('#cad_file');
-    if (f) f.addEventListener('change', () => f.files && f.files[0] && load(f.files[0]));
+    if (f) f.addEventListener('change', () => f.files && f.files.length && load(f.files, false));
+    const ad = q('#cad_add'), ab = q('#cad_add_btn');
+    if (ab && ad) ab.addEventListener('click', () => ad.click());
+    if (ad) ad.addEventListener('change', () => ad.files && ad.files.length && load(ad.files, true));
     qa('#cad .ctabs button').forEach(b => b.addEventListener('click', () => tab(b.dataset.t)));
     render();
     // مغادرة الصفحة = تحرير العارض (لا يبقى WebGL معلّقاً)
@@ -91,15 +98,31 @@ const CADPAGE = (() => {
     if (m) { m.innerHTML = s; m.style.color = cls === 'bad' ? '#fca5a5' : ''; }
   }
 
-  async function load(file) {
+  async function load(files, append) {
     if (BUSY) return;
     BUSY = true;
     try {
-      NAME = file.name;
-      msg('قراءة الملف… (' + (file.size / 1048576).toFixed(2) + ' ميغا)');
-      RAW = await PlanIO.read(file, t => msg(E(t)), { full: true });
-      if (!RAW || !RAW.ents || !RAW.ents.length) throw new Error('الملف لا يحوي عناصر رسم مقروءة');
-      KEY = [file.name, file.size, file.lastModified, Math.random().toString(36).slice(2)].join('|');
+      files = files && files.length !== undefined ? Array.from(files) : [files];
+      if (!append) RAWS = [];
+      const bad = [];
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i], tag = files.length > 1 ? `[${i + 1}/${files.length}] ` : '';
+        msg(tag + 'قراءة ' + E(file.name) + '… (' + (file.size / 1048576).toFixed(2) + ' ميغا)');
+        let r = null;
+        try { r = await PlanIO.read(file, t => msg(tag + E(t)), { full: true }); } catch (e) { r = null; }
+        if (!r || !r.ents || !r.ents.length) { bad.push(file.name); continue; }
+        r.name = file.name;
+        RAWS = RAWS.filter(x => x.name !== r.name).concat([r]);        // الملف نفسه مرتين = نسخة واحدة
+      }
+      if (!RAWS.length) throw new Error('الملف لا يحوي عناصر رسم مقروءة' + (bad.length > 1 ? ' (' + bad.map(E).join('، ') + ')' : ''));
+      RAW = RAWS.length === 1 ? RAWS[0] : { ents: [].concat(...RAWS.map(r => r.ents)), collapsed: [].concat(...RAWS.map(r => r.collapsed || [])),
+                                             layers: [].concat(...RAWS.map(r => r.layers || [])),
+                                             truncated: RAWS.some(r => r.truncated) };
+      NAME = RAWS.map(r => r.name).join(' + ');
+      if (bad.length) msg('⚠️ تعذّرت قراءة: ' + bad.map(E).join('، ') + ' — أُكمل بالباقي.');
+      const ab = q('#cad_add_btn'); if (ab) ab.style.display = '';
+      SITE = false;
+      KEY = [NAME, RAWS.length, Math.random().toString(36).slice(2)].join('|');
       SENT = false;
       Object.assign(OPTS, { merge: false, floor_h: {}, drawings: {}, definitions: [] });
       BI = 0;
@@ -115,9 +138,22 @@ const CADPAGE = (() => {
     msg('تحليل ' + RAW.ents.length.toLocaleString('en-US') + ' عنصر: المحاور، العناوين، الجداول، العناصر، ثم التركيب…');
     const t0 = performance.now();
     // الرفع مرة واحدة مضغوطاً؛ إعادة التحليل (تعديل ارتفاع/نوع لوحة) ترسل الخيارات فقط
-    let r = SENT ? await post(false) : null;
-    if (!r || r.status === 409) r = await post(true);
-    const j = await r.json();
+    let r = null;
+    // «Failed to fetch» = انقطع الاتصال قبل الرد (سيرفر أُعيد تشغيله/نفدت ذاكرته، أو شبكة الموبايل):
+    // محاولة ثانية تلقائية بعد 4 ثوانٍ (الخدمة تعود خلال 3)، ثم رسالة واضحة بدل الخطأ الخام
+    for (let attempt = 0; attempt < 2 && !r; attempt++) {
+      try {
+        r = SENT ? await post(false) : null;
+        if (!r || r.status === 409) r = await post(true);
+      } catch (e) {
+        if (attempt === 0) { msg('⏳ انقطع الاتصال بالسيرفر أثناء التحليل — إعادة المحاولة…'); await new Promise(z => setTimeout(z, 4000)); SENT = false; continue; }
+        throw new Error('انقطع الاتصال بالسيرفر قبل أن يرد (' + (e.message || e) + '). الأسباب المعتادة: ' +
+          'السيرفر أُعيد تشغيله أو نفدت ذاكرته مع ملف ضخم، أو انقطعت شبكة الموبايل أثناء الرفع. ' +
+          'حدّث السيرفر بآخر نسخة (الرفع صار مضغوطاً وأخفّ بكثير) ثم أعد المحاولة.');
+      }
+    }
+    let j;
+    try { j = await r.json(); } catch (e) { throw new Error('ردّ السيرفر غير مفهوم (الحالة ' + r.status + ')'); }
     if (r.ok) SENT = true;
     if (!r.ok) throw new Error(j.error || 'خطأ بالتحليل');
     RES = j;
@@ -130,10 +166,11 @@ const CADPAGE = (() => {
     render();
   }
 
-  let KEY = null, SENT = false;
+  let KEY = null, SENT = false, RAWS = [], SITE = false;
   async function post(full) {
-    const body = full ? { key: KEY, ents: RAW.ents, layers: RAW.layers, insunits: RAW.insunits, opts: OPTS }
-                      : { key: KEY, opts: OPTS };
+    const body = !full ? { key: KEY, opts: OPTS }
+      : RAWS.length > 1 ? { key: KEY, opts: OPTS, files: RAWS.map(r => ({ name: r.name, ents: r.ents, layers: r.layers, insunits: r.insunits })) }
+      : { key: KEY, ents: RAW.ents, layers: RAW.layers, insunits: RAW.insunits, opts: OPTS };
     let data = JSON.stringify(body);
     const headers = { 'Content-Type': 'application/json' };
     if (full && data.length > 200000 && window.CompressionStream) {
@@ -184,8 +221,9 @@ const CADPAGE = (() => {
     const bs = RES.buildings || [];
     let h = '';
     if (bs.length > 1) {
-      h += `<div class="bsel">المبنى: ${bs.map((b, i) => `<button class="btn ${i === BI ? '' : 'gh'}" data-bi="${i}">
-        ${E(b.name)} · <span class="ltr">${E(b.axes_sig)}</span> · ${b.floors.map(f => E(f.name)).join('/')}</button>`).join('')}</div>`;
+      h += `<div class="bsel">المبنى: ${bs.map((b, i) => `<button class="btn ${i === BI && !SITE ? '' : 'gh'}" data-bi="${i}">
+        ${E(b.name)}${b.file ? ' <small>(' + E(b.file) + ')</small>' : ''} · <span class="ltr">${E(b.axes_sig)}</span> · ${b.floors.map(f => E(f.name)).join('/')}</button>`).join('')}
+        <button class="btn ${SITE ? '' : 'gh'}" data-site="1">🏘️ الموقع — كل المباني بمجسم واحد</button></div>`;
     }
     if (RES.can_merge || RES.merged) {
       h += `<div class="note" style="margin-top:6px">${RES.merged
@@ -222,6 +260,8 @@ const CADPAGE = (() => {
         ${RAW && (RAW.collapsed || []).length ? `<div>📦 ملف ضخم: ${RAW.collapsed.length} بلوك زخرفي ثقيل (أبواب/أشجار/أثاث — ${RAW.collapsed.reduce((a, c) => a + c.n, 0).toLocaleString('en-US')} نسخة)
           قُرئ كنقطة بدل عشرات الخطوط لكل نسخة، لتسريع القراءة — الأعمدة والمحاور والمناسيب والعناوين تُفكّ دائماً.</div>` : ''}
         ${RAW && RAW.truncated ? '<div>⚠️ تجاوز الملف الحد الأقصى للعناصر — قد تنقص بعض اللوحات الأخيرة.</div>' : ''}</div>
+      ${(RES.files || []).length > 1 ? `<div class="note" style="margin-top:8px">📂 مشروع من ${RES.files.length} ملفات مدموجة:
+        ${RES.files.map(f => `<div>• <b>${E(f.name)}</b> — ${f.n_ents.toLocaleString('en-US')} عنصر · المقياس ${N(f.scale, 4)} م/وحدة (${E(f.scale_src)}) · ${f.drawings} لوحة</div>`).join('')}</div>` : ''}
       ${(RES.warnings || []).length ? `<ul class="warn">${RES.warnings.map(w => '<li>⚠️ ' + E(w) + '</li>').join('')}</ul>` : ''}
     </div>`;
   }
@@ -339,8 +379,17 @@ const CADPAGE = (() => {
         return `<td class="ltr">${bar(v[k].main)}<br><span style="color:var(--mut)">${tie(v[k].ties)}</span></td>`;
       }).join('')}</tr>`).join('')}</table></div>
       <div class="note">«غير موجود» = NOT PRESENT: العمود ينتهي تحت هذا الطابق فلا يُرسم فيه.</div></div>` : '';
-    return (bt || ct) ? `<div class="note">عدّل مقطع أي جسر بالجدول (مثلاً 350x800) فيُعاد التركيب بمقطعك — تعديلك يتقدّم على الملف.</div>${bt}${ct}`
-      : '<div class="note">ما لقيت جداول بالملف (SCHEDULE OF BEAMS / Columns Reinforcing Schedule).</div>';
+    // كل الجداول المرسومة بالملف (أبواب/شبابيك، تشطيبات، أساسات…) كما هي — صفوفاً وأعمدة
+    const TK = { openings: '🚪 أبواب وشبابيك', finishes: '🎨 تشطيبات', footings: '🧱 أساسات', beams: '📏 جسور',
+                 columns: '🏛️ أعمدة', slabs: '▭ بلاطات', rooms: '🏠 فضاءات', other: '📋 جدول' };
+    const all = RES.tables || [];
+    const gt = all.length ? `<div class="card" style="margin-top:10px"><h3>📋 كل الجداول المرسومة بالملف (${all.length})</h3>
+      <div class="note">كل شبكة خطوط فيها نصوص بخلاياها تُقرأ جدولاً (الجداول المكرّرة تُعرض مرة واحدة، وجداول إطار اللوحة تُستبعد).</div>
+      ${all.map((t, i) => `<details class="fold"${i < 2 ? ' open' : ''}><summary>${TK[t.kind] || TK.other}${t.title ? ' — ' + E(t.title) : ''}
+          <small>(${t.rows.length}×${Math.max(...t.rows.map(r => r.length))}${t.count > 1 ? ' · مكرّر ' + t.count + ' مرات' : ''})</small></summary>
+        <div class="scroll"><table>${t.rows.map((r, ri) => `<tr>${r.map(c => ri === 0 ? `<th>${E(c)}</th>` : `<td>${E(c)}</td>`).join('')}</tr>`).join('')}</table></div></details>`).join('')}</div>` : '';
+    return (bt || ct || gt) ? `${bt || ct ? '<div class="note">عدّل مقطع أي جسر بالجدول (مثلاً 350x800) فيُعاد التركيب بمقطعك — تعديلك يتقدّم على الملف.</div>' : ''}${bt}${ct}${gt}`
+      : '<div class="note">ما لقيت جداول بالملف.</div>';
   }
 
   function floorsTab() {
@@ -439,8 +488,30 @@ const CADPAGE = (() => {
         <div class="note" style="margin-top:6px">الأسبقية: ${E(RES.dictionary.precedence)}.</div></div>`;
   }
 
+  // الموقع: كل المباني بمجسم واحد، متجاورة بفاصل 12 م (لكل مبنى إحداثياته المحلية من ملفه)
+  function siteB() {
+    const bs = RES.buildings || [];
+    let dx = 0, W = 0, D = 0, H = 0;
+    const floors = [], footings = [], strips = [];
+    const X = (o, ks) => { const c = Object.assign({}, o); ks.forEach(k => { if (typeof c[k] === 'number') c[k] += dx; }); return c; };
+    bs.forEach((b, i) => {
+      b.floors.forEach(f => floors.push(Object.assign({}, f, {
+        key: f.key + '@' + i, name: b.name + ' · ' + f.name,
+        columns: f.columns.map(c => X(c, ['x'])), beams: f.beams.map(m => X(m, ['x1', 'x2'])),
+        walls: (f.walls || []).map(w => X(w, ['x1', 'x2'])),
+        slab: Object.assign({}, f.slab, { rects: f.slab.rects.map(r => [r[0] + dx, r[1], r[2] + dx, r[3]]),
+                                          openings: f.slab.openings.map(o => X(o, ['x0', 'x1'])), callouts: [] }) })));
+      footings.push(...(b.footings || []).map(ft => X(ft, ['x'])));
+      strips.push(...(b.strips || []).map(st => X(st, ['x1', 'x2'])));
+      W = dx + b.size[0]; D = Math.max(D, b.size[1]); H = Math.max(H, b.height || 3.5);
+      dx += b.size[0] + 12;
+    });
+    floors.sort((a, b) => a.level - b.level);
+    return { name: 'الموقع', site: true, floors, footings, strips, views: [], grid: { x: [], y: [] }, size: [W, D], height: H };
+  }
+
   function view3dTab() {
-    const B = cur();
+    const B = SITE ? siteB() : cur();
     if (!B) return '<div class="note">لا مبنى.</div>';
     return `<div class="card">${bsel()}
       <div class="bar3d" style="margin-top:8px">
@@ -460,7 +531,7 @@ const CADPAGE = (() => {
   }
 
   function show3d() {
-    const B = cur(), host = q('#cad3d');
+    const B = SITE ? siteB() : cur(), host = q('#cad3d');
     if (!B || !host || VIEW || !window.CAD3D) return;
     VIEW = CAD3D.mount(host, B, { onPick: pick });
     const st = { rebar: false, only: false, xray: false, views: false };
@@ -484,7 +555,9 @@ const CADPAGE = (() => {
     const rb = u.rebar;
     const L = {
       col: () => `🟥 <b>عمود ${E(u.mark || '')}</b> · ${E(u.at)} · ${E(u.size)} مم · طابق ${E(u.floor)}<br>
-        ${rb ? 'القضبان: <b class="ltr">' + bar(rb.main) + '</b> · الأتاري: <b class="ltr">' + tie(rb.ties) + '</b>' : 'الحديد غير مذكور بالجدول لهذا العمود'}`,
+        ${rb ? 'القضبان: <b class="ltr">' + bar(rb.main) + '</b> · الأتاري: <b class="ltr">' + tie(rb.ties) + '</b>' : 'الحديد غير مذكور بالجدول لهذا العمود'}
+        ${u.how === 'assumed' ? '<br><span class="tag t-warn">مقترح على تقاطع محاور</span>' : u.how === 'in-wall' ? '<br><span class="tag t-ok">عمود ربط مغروس بالجدار</span>' : ''}
+        ${u.outside ? '<br>ℹ️ أبعد من متر عن أي بلاطة مقروءة — مرسوم بالمسقط (عمود مدخل/مظلة أو حول فناء/فتحة) وما فوقه غير مرسوم كبلاطة' : ''}`,
       beam: () => `🟩 <b>جسر ${E(u.mark || '(بلا علامة)')}</b> · محور ${E(AX(u.axis || '—'))} · بحر ${N(u.span, 2)} م · ${E(u.size)} مم
         ${u.guess ? '<span class="tag t-warn">العمق تخمين</span>' : ''}<br>
         ${rb ? 'سفلي <b class="ltr">' + bar(rb.bot.cont) + (rb.bot.extra ? ' + ' + bar(rb.bot.extra) : '') + '</b> · علوي <b class="ltr">' +
@@ -492,6 +565,8 @@ const CADPAGE = (() => {
           : 'لا حديد بالجدول لهذه العلامة'}`,
       slab: () => `⬜ <b>بلاطة سقف ${E(u.floor)}</b> · ${u.t} مم · سفلي ${u.mesh && u.mesh.bot ? 'Ø' + u.mesh.bot.d + '@' + u.mesh.bot.s : '—'}
         · علوي ${u.mesh && u.mesh.top ? 'Ø' + u.mesh.top.d + '@' + u.mesh.top.s : '—'}`,
+      strip: () => `🧱 <b>أساس شريطي</b> · العرض ${u.w} مم × السماكة ${u.h} مم · الطول ${N(u.L, 2)} م` +
+        (u.P ? ` · الحمل الخدمي ${N(u.P, 0)} كن/م` : '') + (u.designed ? ' · <span class="tag t-warn">مصمَّم بالكود</span>' : ' · من الملف'),
       wall: () => u.parapet ? `🧱 <b>ستارة السطح</b> · ارتفاع ${N(u.parapet, 2)} م (مقاس من المقطع/الواجهة) · سماكة ${u.t} مم`
                             : `🧱 <b>جدار</b> · سماكة ${u.t} مم · طول ${N(u.L, 2)} م · طابق ${E(u.floor)}`,
       foot: () => `🟫 <b>أساس ${E(u.mark || '')}</b> · ${E(u.size)} · PD ${N(u.PD, 0)} / PL ${N(u.PL, 0)} كن · Pu ${N(u.Pu, 0)} كن ·
@@ -514,7 +589,8 @@ const CADPAGE = (() => {
   }
 
   function bind() {
-    qa('#cad [data-bi]').forEach(b => b.addEventListener('click', () => { BI = +b.dataset.bi; drop3d(); render(); }));
+    qa('#cad [data-bi]').forEach(b => b.addEventListener('click', () => { BI = +b.dataset.bi; SITE = false; drop3d(); render(); }));
+    qa('#cad [data-site]').forEach(b => b.addEventListener('click', () => { SITE = true; drop3d(); TAB = '3d'; render(); tab('3d'); }));
     const mg = q('#cad_merge');
     if (mg) mg.addEventListener('click', async () => { OPTS.merge = !RES.merged; BI = 0; await safeRun(); });
     qa('#cad [data-dk]').forEach(s => s.addEventListener('change', async () => {

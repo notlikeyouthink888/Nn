@@ -20,7 +20,9 @@
 كل عنصر يحمل مصدره (رقم الرسمة) وثقته. ما بلا دليل كافٍ يُعلَّم «تخمين» ولا
 يدخل التركيب إلا إن طلب المستخدم ذلك صراحةً (opts.use_guesses).
 """
+import collections
 import functools
+import json
 import math
 import re
 
@@ -58,9 +60,9 @@ class _Grid:
         return out
 
 
-def _to_m(e, s):
-    """نسخة من العنصر بالمتر."""
-    f = dict(e)
+def _to_m(e, s, inplace=False):
+    """نسخة من العنصر بالمتر (أو تحويله بمكانه لطلبات الخادم — يوفّر نصف الذاكرة بالملفات الضخمة)."""
+    f = e if inplace else dict(e)
     p = e['p']
     t = e['t']
     if t in ('L', 'P', 'D'):
@@ -134,6 +136,28 @@ def find_bubbles(E, TG):
                    for o in ded):
             ded.append(b)
     return ded
+
+
+def scale_from_dims_wide(ents):
+    """الأبعاد المكتوبة بمدى المباني الكاملة (0.08–80 م): دالة المعالج تقصر المدى على 15 م فتختار
+    القدم لمبنى طوله 31 م. الحكم هنا بتدوير الأرقام: المصمم يكتب 7.65 و24.28 لا أرقام القدم المحوَّلة."""
+    dims = [PL._safe_float(e.get('m')) for e in ents if e['t'] == 'D']
+    dims = [v for v in dims if v and v > 0]
+    if len(dims) < 5:
+        return None
+    best = None
+    for sc, nm in PL.SCALES:
+        mm = [v * sc * 1000.0 for v in dims]
+        good = [x for x in mm if 80.0 <= x <= 80000.0]
+        if len(good) < 0.7 * len(mm):
+            continue
+        rnd = sum(1 for x in good if abs(x - round(x / 10.0) * 10.0) <= 1.0) / float(len(good))
+        key = (round(rnd, 2), len(good))
+        if best is None or key > best[0]:
+            best = (key, dict(scale=sc, name=nm, n=len(dims), rnd=rnd, max_m=max(good) / 1000.0))
+    if not best or best[1]['rnd'] < 0.5:
+        return None
+    return best[1]
 
 
 _ROOM_SIZE = re.compile(r'^\s*\(?\s*(\d{1,2}(?:\.\d{1,2})?)\s*[*xX×]\s*(\d{1,2}(?:\.\d{1,2})?)\s*\)?\s*(m|م)\b')
@@ -991,6 +1015,7 @@ def _merge_rects(rects):
 # ------------------------------------------------------------------ لوحات بلا فقاعات
 _SKIP_LAYER = re.compile(r'(hatch|^dim|dimension|text|txt|frame|border|title|numbers|جداول|print|defpoints)', re.I)
 _WALL_LAYER = re.compile(r'(wall|جدار|جدران|حائط|block|brick|بلوك)', re.I)
+_FOUND_LAYER = re.compile(r'(found|foot|fdn|ftg|أساس|قواعد|اساس)', re.I)
 _TABLE_TITLE = re.compile(r'^\s*(جدول|المحتويات|contents|schedule|legend|مفتاح\s*الرموز)', re.I)
 
 
@@ -1091,6 +1116,227 @@ def framed_drawing(t, comps, taken, frames):
     return r
 
 
+def _untitled_plans(drawings, comps, E, segs, opts):
+    """عناقيد الرسم الكبيرة التي فيها خطوط جدران كثيرة تُعامل مساقط (الطابق مجهول ← أرضي)."""
+    big = sorted((c for c in comps if (c['x1'] - c['x0']) >= 4 and (c['y1'] - c['y0']) >= 4 and c['n'] >= 60),
+                 key=lambda c: -c['n'])[:12]
+    taken = [dw['rect'] for dw in drawings]
+    for c in big:
+        r = [c['x0'] - 0.5, c['y0'] - 0.5, c['x1'] + 0.5, c['y1'] + 0.5]
+        if any(_overlap(r, q) > 0.45 for q in taken):
+            continue
+        nw = sum(1 for sg in segs if r[0] <= sg[0] <= r[2] and r[1] <= sg[1] <= r[3]
+                 and _WALL_LAYER.search(E[sg[4]].get('l') or ''))
+        if nw < 16:
+            continue
+        dw = dict(id=len(drawings), ax={'x': {}, 'y': {}}, rect=r, bub=list(r), n_bubbles=0, _t=None)
+        _title_info(dw, None, opts)
+        if not dw['kind']:
+            dw['kind'], dw['kind_name'], dw['untitled'] = 'arch', 'مسقط (بلا عنوان — من الجدران)', True
+        drawings.append(dw)
+        taken.append(r)
+
+
+def _cols_in_walls(E, idx, walls, rect):
+    x0, y0, x1, y1 = rect
+    out = []
+    for i in idx:
+        e = E[i]
+        if e['t'] != 'P' or e.get('hatch') or _NONSTRUCT.search(e.get('l') or '') or _WALL_LAYER.search(e.get('l') or ''):
+            continue
+        q = e['p']
+        n = len(q) // 2
+        if not (4 <= n <= 5) or not (e.get('closed') or (n == 5 and abs(q[0] - q[-2]) < 1e-6 and abs(q[1] - q[-1]) < 1e-6)):
+            continue
+        xs, ys = q[0::2], q[1::2]
+        w, h = max(xs) - min(xs), max(ys) - min(ys)
+        if not (0.15 <= w <= 1.2 and 0.15 <= h <= 1.2) or max(w, h) > 4 * min(w, h):
+            continue
+        cx, cy = (max(xs) + min(xs)) / 2, (max(ys) + min(ys)) / 2
+        if not (x0 <= cx <= x1 and y0 <= cy <= y1):
+            continue
+        inw = False
+        for wl in walls:
+            tt = wl['t'] / 2000.0 + 0.15
+            if wl['o'] == 'h' and abs(cy - wl['c']) <= tt and wl['a'] - 0.3 <= cx <= wl['b'] + 0.3:
+                inw = True
+            elif wl['o'] == 'v' and abs(cx - wl['c']) <= tt and wl['a'] - 0.3 <= cy <= wl['b'] + 0.3:
+                inw = True
+            if inw:
+                break
+        if not inw or any(math.hypot(cx - c['x'], cy - c['y']) < 0.2 for c in out):
+            continue
+        out.append(dict(x=cx, y=cy, b=round(w * 1000), h=round(h * 1000), shape='rect', how='in-wall'))
+    return out
+
+
+def _wall_box(dw):
+    W = dw.get('walls') or []
+    if len(W) < 8:
+        return None
+    xs, ys = [], []
+    for w in W:
+        if w['o'] == 'h':
+            xs += [w['a'], w['b']]; ys.append(w['c'])
+        else:
+            ys += [w['a'], w['b']]; xs.append(w['c'])
+    return min(xs), min(ys), max(xs), max(ys), len(W)
+
+
+def _reg_by_walls(dw, master):
+    """نسختان من المسقط نفسه (واحدة بأبعاد والأخرى بلا): حدود الجدران بالمقاس نفسه = الرسمة نفسها."""
+    a, b = _wall_box(master), _wall_box(dw)
+    if not a or not b:
+        return None
+    WA, WB = master['walls'], dw['walls']
+    # تصويت على الإزاحة: كل زوج جدارين متقاربي الطول بالاتجاه نفسه يقترح إزاحة؛ الغالبة هي التطابق
+    def vote(o):
+        cnt = {}
+        for wa in WA:
+            if wa['o'] != o:
+                continue
+            La = wa['b'] - wa['a']
+            for wb in WB:
+                if wb['o'] != o or abs((wb['b'] - wb['a']) - La) > max(0.1, 0.05 * La):
+                    continue
+                k = (round((wa['c'] - wb['c']) / 0.05), round((wa['a'] - wb['a']) / 0.05))
+                cnt[k] = cnt.get(k, 0) + 1
+        return max(cnt.items(), key=lambda kv: kv[1]) if cnt else None
+    vh, vv = vote('h'), vote('v')
+    if not vh or not vv:
+        return None
+    ty, tx = vh[0][0] * 0.05, vv[0][0] * 0.05
+    if abs(vh[0][1] * 0.05 - tx) > 0.2 or abs(vv[0][1] * 0.05 - ty) > 0.2:
+        return None                                          # الاتجاهان غير متسقين
+    m = 0
+    for wb in WB:
+        for wa in WA:
+            if wa['o'] != wb['o']:
+                continue
+            dc, da = (ty, tx) if wb['o'] == 'h' else (tx, ty)
+            if abs(wa['c'] - (wb['c'] + dc)) <= 0.1 and abs(wa['a'] - (wb['a'] + da)) <= 0.3 \
+                    and abs(wa['b'] - (wb['b'] + da)) <= 0.3:
+                m += 1
+                break
+    if m < max(6, 0.5 * min(len(WA), len(WB))):
+        return None
+    return tx, ty, 0.1, m
+
+
+def find_tables(E, segs, TG, plan_rects=()):
+    """كل جدول مرسوم بالملف (جداول الأبواب والشبابيك والتشطيبات والأساسات…): ثلاثة خطوط أفقية
+    فأكثر بالامتداد نفسه + خطوط عمودية بينها = شبكة خلايا، ونصوص كل خلية تُجمع. تُستبعد شبكات
+    المساقط نفسها (خطوط الجسور/الجدران)، وجداول العنوان، والجداول المكرَّرة (تُعدّ مرة واحدة)."""
+    ths = sorted(e['p'][2] for e in E if e['t'] == 'T' and e['p'][2] > 0)
+    th = ths[len(ths) // 2] if ths else 0.25
+    tol = max(th * 0.6, 1e-6)
+    H, V = [], []
+    for s in segs:
+        x0, y0, x1, y1, i = s
+        if E[i].get('hatch'):
+            continue
+        L = math.hypot(x1 - x0, y1 - y0)
+        if L < th * 1.2:
+            continue
+        if abs(y1 - y0) <= 1e-6 * max(1, L):
+            H.append((min(x0, x1), max(x0, x1), y0))
+        elif abs(x1 - x0) <= 1e-6 * max(1, L):
+            V.append((min(y0, y1), max(y0, y1), x0))
+    grp = collections.defaultdict(list)
+    for h in H:
+        if h[1] - h[0] >= th * 8:
+            grp[(round(h[0] / tol), round(h[1] / tol))].append(h[2])
+    VG = _Grid(th * 40)
+    for k, v in enumerate(V):
+        VG.add(k, v[2], v[0], v[2], v[1])
+    out = []
+    for (a, b), ys in grp.items():
+        ys = sorted(set(round(y / tol) * tol for y in ys))
+        if len(ys) < 3:
+            continue
+        # نوافذ متصلة من الخطوط (فاصل ≤ 12 ارتفاع نص)
+        runs, cur = [], [ys[0]]
+        for y in ys[1:]:
+            if y - cur[-1] <= th * 14:
+                cur.append(y)
+            else:
+                runs.append(cur); cur = [y]
+        runs.append(cur)
+        x0, x1 = a * tol, b * tol
+        for ry in runs:
+            if len(ry) < 3:
+                continue
+            y0, y1 = ry[0], ry[-1]
+            vs = [V[k] for k in VG.query(x0 - tol, y0, x1 + tol, y1)
+                  if x0 - tol <= V[k][2] <= x1 + tol and V[k][1] >= y0 - tol and V[k][0] <= y1 + tol
+                  and (V[k][1] - V[k][0]) >= 0.5 * min(q - p for p, q in zip(ry, ry[1:]))]
+            xs = sorted(set(round(v[2] / tol) * tol for v in vs))
+            if len(xs) < 3:
+                continue
+            texts = [E[j] for j in TG.query(x0, y0, x1, y1) if x0 <= E[j]['p'][0] <= x1 and y0 <= E[j]['p'][1] <= y1]
+            if len(texts) < 4:
+                continue
+            nr, nc = len(ry) - 1, len(xs) - 1
+            grid = [[[] for _ in range(nc)] for _ in range(nr)]
+            for t in texts:
+                tx, ty = t['p'][0] + 0.2 * th, t['p'][1] + 0.3 * th
+                r = next((i for i in range(nr) if ry[i] <= ty <= ry[i + 1]), None)
+                c = next((i for i in range(nc) if xs[i] <= tx <= xs[i + 1]), None)
+                if r is not None and c is not None and (t.get('s') or '').strip():
+                    grid[r][c].append(t)
+            rows = []
+            for r in range(nr - 1, -1, -1):
+                row = [' '.join(PL.clean_text(t['s']) for t in sorted(cell, key=lambda t: (-t['p'][1], t['p'][0]))) for cell in grid[r]]
+                if any(row):
+                    rows.append(row)
+            filled = sum(1 for row in rows for c in row if c)
+            cells = sum(len(r) for r in rows) or 1
+            rect = [x0, y0, x1, y1]
+            if len(rows) < 2 or filled < 4 or filled < 0.25 * cells:
+                continue
+            if any(_overlap(rect, q) > 0.5 for q in plan_rects):
+                continue                                   # شبكة خطوط مسقط لا جدول
+            flat = ' '.join(c for r in rows for c in r)
+            if _TITLEBLOCK.search(flat):
+                continue
+            sym = lambda c: re.sub(r'%%[dD]', '°', re.sub(r'%%[pP]', '±', re.sub(r'%%[cC]', 'Ø', re.sub(r'%%[uUoO]', '', c))))
+            out.append(dict(rect=[round(v, 3) for v in rect], rows=[[sym(c)[:80] for c in r[:30]] for r in rows[:80]],
+                            th=th, _y1=y1, _x0=x0, _x1=x1))
+    # العنوان: أكبر نص فوق الجدول مباشرة؛ ثم دمج المكرَّر
+    seen = {}
+    for tb in out:
+        x0, x1, y1, th2 = tb.pop('_x0'), tb.pop('_x1'), tb.pop('_y1'), tb.pop('th')
+        cand = [E[j] for j in TG.query(x0 - th2, y1, x1, y1 + 5 * th2)
+                if x0 - th2 <= E[j]['p'][0] <= x1 and y1 < E[j]['p'][1] <= y1 + 5 * th2 and (E[j].get('s') or '').strip()]
+        tb['title'] = PL.clean_text(max(cand, key=lambda t: (t['p'][2], t['p'][1]))['s'])[:120] if cand else None
+        key = json.dumps(tb['rows'], ensure_ascii=False)
+        if key in seen:
+            seen[key]['count'] += 1
+            continue
+        tb['count'] = 1
+        tb['kind'] = _table_kind((tb['title'] or '') + ' ' + ' '.join(tb['rows'][0]))
+        seen[key] = tb
+    # الأكبر أولاً (الجدول الكامل قبل أجزاء رؤوسه)
+    return sorted(seen.values(), key=lambda t: -sum(1 for r in t['rows'] for c in r if c))
+
+
+_TITLEBLOCK = re.compile(r'(drawn\s+by|checked\s+by|approved\s+by|sheet\s+no|project\s+(no|title)|date\s+start|رقم\s*اللوحة|رسم\s*:)', re.I)
+_TABLE_KINDS = [('openings', 'جدول الأبواب والشبابيك', r'(door|window|opening|باب|أبواب|شباك|شبابيك|فتحات)'),
+                ('finishes', 'جدول التشطيبات', r'(finish|تشطيب|ارضيات|أرضيات|دهان|سيراميك|plaster)'),
+                ('footings', 'جدول الأساسات', r'(footing|foundation|أساس|قواعد|F\d)'),
+                ('beams', 'جدول الجسور', r'(beam|\bB\d+\b|جسر|جسور|كمرات)'),
+                ('columns', 'جدول الأعمدة', r'(column|\bC\d+|عمود|أعمدة)'),
+                ('slabs', 'جدول البلاطات', r'(slab|بلاطة|سقف)'),
+                ('rooms', 'جدول الفضاءات', r'(room|area|m2|م2|فضاء|غرفة)')]
+
+
+def _table_kind(text):
+    for k, n, rx in _TABLE_KINDS:
+        if re.search(rx, text or '', re.I):
+            return k
+    return 'other'
+
+
 def _sort_plans(drawings):
     """مجموعة معمارية كبيرة فيها مساقط رئيسية بمحاور ومساقط مكبَّرة (حمّامات/غرف) بعنوان الطابق نفسه:
     - المسقط الصغير بلا محاور (أقل من ربع مساحة المسقط الرئيسي) لطابق له مسقط رئيسي = تفصيلة مكبَّرة.
@@ -1146,13 +1392,15 @@ def titled_drawing(t, comps, taken):
     return r
 
 
-def detect_walls(E, segs, rect):
-    """الجدران: خطّان متوازيان بفاصل 7–50 سم على طبقات الجدران (مسقط معماري)."""
+def detect_walls(E, segs, rect, layer_rx=None, gmin=0.07, gmax=0.5):
+    """الجدران: خطّان متوازيان بفاصل 7–50 سم على طبقات الجدران (مسقط معماري).
+    وبمعاملات أخرى: الأساسات الشريطية (طبقة الأساس، فاصل 30–250 سم)."""
+    layer_rx = layer_rx or _WALL_LAYER
     x0, y0, x1, y1 = rect
     lines = {'h': [], 'v': []}
     for s in segs:
         e = E[s[4]]
-        if not _WALL_LAYER.search(e.get('l') or '') or e.get('hatch'):
+        if not layer_rx.search(e.get('l') or '') or e.get('hatch'):
             continue
         sx0, sy0, sx1, sy1 = s[:4]
         L = math.hypot(sx1 - sx0, sy1 - sy0)
@@ -1174,9 +1422,9 @@ def detect_walls(E, segs, rect):
             for j in range(i + 1, len(L)):
                 b = L[j]
                 gap = b[2] - a[2]
-                if gap > 0.5:
+                if gap > gmax:
                     break
-                if gap < 0.07 or j in used:
+                if gap < gmin or j in used:
                     continue
                 ov0, ov1 = max(a[0], b[0]), min(a[1], b[1])
                 if ov1 - ov0 >= 0.3:
@@ -1228,7 +1476,7 @@ def _reg_by_cols(dw, master):
             n, e = hits(a[0] - b[0], a[1] - b[1])
             if n > best[0]:
                 best = (n, (a[0] - b[0], a[1] - b[1], e))
-    if best[0] >= 3:
+    if best[0] >= max(3, 0.5 * min(len(A), len(Bc))):    # غالبية الأعمدة لا مصادفة ثلاثة
         return best[1] + (best[0],)
     return None
 
@@ -1261,6 +1509,8 @@ def read_set(d, opts=None):
             stages.append(dict(name=name, ok=False))
             return default
 
+    if d.get('files'):
+        return _read_multi(d, opts, warn, stages, stage)
     ents, dropped = PL.sanitize_ents(d.get('ents'))
     if dropped:
         warn.append('تجاوزت %d عنصراً مشوَّهاً بالملف.' % dropped)
@@ -1271,6 +1521,69 @@ def read_set(d, opts=None):
         return empty
 
     # ---- ١) المقياس والتدوير ----
+    scale, src = _pick_scale(ents, d.get('insunits', 4), opts, warn, stage)
+    E = [_to_m(e, scale, bool(d.get('_owned'))) for e in ents]
+    ents = None
+    return _read_core(E, scale, src, d, opts, warn, stages, stage, empty)
+
+
+_FILE_OFF = 1.0e7          # كل ملف بإزاحته (10 آلاف كم) — لا تتداخل لوحات الملفات مكانياً
+
+
+def _shift_x(e, dx):
+    q = e['p']
+    if e['t'] in ('L', 'P', 'D'):
+        e['p'] = [v + dx if i % 2 == 0 else v for i, v in enumerate(q)]
+    else:
+        e['p'] = [q[0] + dx] + list(q[1:])
+    return e
+
+
+def _read_multi(d, opts, warn, stages, stage):
+    """مشروع من عدة ملفات (معماري + إنشائي، أو مباني الموقع): لكل ملف مقياسه، ثم تُجمع عناصره
+    بمجموعة واحدة — لوحات المبنى الواحد تتجمّع بأسماء محاورها عبر الملفات، والمباني الأخرى منفصلة."""
+    E, info = [], []
+    own = bool(d.get('_owned'))
+    for k, f in enumerate(d.get('files') or []):
+        name = str(f.get('name') or 'ملف %d' % (k + 1))[:120]
+        ents, dropped = PL.sanitize_ents(f.get('ents'))
+        if not ents:
+            warn.append('الملف «%s» فارغ أو غير مقروء — تُرك.' % name)
+            info.append(dict(name=name, n_ents=0, scale=None, scale_src='—', drawings=0))
+            continue
+        w0 = len(warn)
+        sc, src = _pick_scale(ents, f.get('insunits', 4), dict(opts, scale=None), warn, stage)
+        for i in range(w0, len(warn)):
+            warn[i] = '[%s] %s' % (name, warn[i])
+        dx = k * _FILE_OFF
+        for e in ents:
+            E.append(_shift_x(_to_m(e, sc, own), dx))
+        info.append(dict(name=name, n_ents=len(ents), scale=sc, scale_src=src, drawings=0))
+        if own:
+            f['ents'] = None
+    empty = dict(ok=False, warnings=warn, drawings=[], buildings=[], schedules=dict(beams={}, columns={}),
+                 definitions=[], materials={}, scale=None, n_ents=len(E), dictionary=K.dictionary(), files=info)
+    if not E:
+        warn.append('لا ملف مقروء بالمشروع.')
+        return empty
+    R = _read_core(E, info[0]['scale'] or 1.0, 'لكل ملف مقياسه', d, dict(opts, scale=None), warn, stages, stage, empty)
+    fidx = lambda x: min(max(int(round(x / _FILE_OFF)), 0), len(info) - 1)
+    for dw in R.get('drawings', []):
+        k = fidx(dw['rect'][0])
+        dw['file'] = info[k]['name']
+        info[k]['drawings'] += 1
+    byid = {dw['id']: dw for dw in R.get('drawings', [])}
+    for b in R.get('buildings', []):
+        names = sorted(set(byid[i]['file'] for i in b['drawings'] if i in byid))
+        b['file'] = ' + '.join(names)
+        if len(R['buildings']) > 1 and b['name'].startswith('مبنى') and len(names) == 1:
+            nm = re.sub(r'_{2,}', '', re.sub(r'\.(dwg|dxf)$', '', names[0], flags=re.I)).strip(' -_')[:40]
+            b['name'] = '%s (%s)' % (b['name'], nm) if nm else b['name']
+    R['files'] = info
+    return R
+
+
+def _pick_scale(ents, insunits, opts, warn, stage):
     scale, src = None, None
     if opts.get('scale'):
         scale, src = PL._safe_float(opts['scale'], 0.0) or None, 'يدوي'
@@ -1279,6 +1592,12 @@ def read_set(d, opts=None):
         if dimc and dimc.get('ok'):
             scale, src = dimc['scale'], 'الأبعاد المكتوبة'
     if not scale:
+        dc = stage('مقياس الأبعاد (مدى المباني)', lambda: scale_from_dims_wide(ents), None)
+        if dc:
+            scale, src = dc['scale'], 'الأبعاد المكتوبة'
+            warn.append('عُرف المقياس من %d بُعد مكتوب (%d%% أرقام مدوّرة بالسنتمتر، ومنها أبعاد كلية حتى %.0f م) '
+                        '— وحدات الملف المصرّحة مخالفة فأُهملت.' % (dc['n'], dc['rnd'] * 100, dc['max_m']))
+    if not scale:
         rl = stage('مقياس لافتات الغرف', lambda: scale_from_room_labels(ents), None)
         if rl:
             scale, src = rl['scale'], 'مقاسات الغرف المكتوبة'
@@ -1286,7 +1605,7 @@ def read_set(d, opts=None):
                         '(«3.80*3.80 m») مقارنةً بالمسافة بين جدرانها: %d غرفة متطابقة، الوحدة = %s م.' % (
                             rl['n'], ('%.4f' % rl['scale']).rstrip('0').rstrip('.')))
     if not scale:
-        su = PL.units_scale(d.get('insunits', 4))
+        su = PL.units_scale(insunits)
         bs = stage('مقياس الفقاعات', lambda: scale_from_bubbles(ents, su), None)
         if bs and bs['scale'] != su:
             scale, src = bs['scale'], 'فقاعات المحاور'
@@ -1296,7 +1615,10 @@ def read_set(d, opts=None):
         else:
             scale, src = su, 'وحدات الملف'
             warn.append('المقياس مأخوذ من وحدات الملف لا من الأبعاد المكتوبة — تأكد منه (تقدر تحدده يدوياً).')
-    E = [_to_m(e, scale) for e in ents]
+    return scale, src
+
+
+def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
     roles = {e['l']: PL.suggest_role(e['l']) for e in E}
     ang, share = stage('اتجاه المخطط', lambda: PL.plan_angle(E, roles), (0.0, 0.0))
     if share >= 0.5 and abs((ang + 45.0) % 90.0 - 45.0) > 1.0:
@@ -1439,6 +1761,16 @@ def read_set(d, opts=None):
         used_t.add(id(t))
 
     stage('فرز المساقط', lambda: _sort_plans(drawings), None)
+    fk_ = lambda x: int(round(x / _FILE_OFF))       # الملف (بالمشاريع متعددة الملفات)
+    have_f = set(fk_(dw['rect'][0]) for dw in drawings if dw['kind'] not in VIEW_KINDS)
+    if any(fk_(c['x0']) not in have_f for c in comps):
+        # لا فقاعات محاور ولا عناوين (مسقط مدرسة مرسوم جدراناً فقط): كل عنقود رسم كبير فيه جدران = مسقط
+        stage('مساقط بلا محاور ولا عناوين', lambda: _untitled_plans(
+            drawings, [c for c in comps if fk_(c['x0']) not in have_f], E, segs, opts), None)
+        if any(dw.get('untitled') for dw in drawings):
+            warn[:] = [w for w in warn if not w.startswith('ما لقيت فقاعات محاور')]
+            warn.append('لا فقاعات محاور ولا عناوين بالملف — قُرئ كل مسقط من جدرانه مباشرة، والأعمدة من '
+                        'المستطيلات الصغيرة المغروسة بالجدران (أعمدة ربط)، والنسخ المتكررة من المسقط نفسه تُدمج.')
 
     # ---- ٤) الجداول ----
     beam_scheds, col_sched = [], {}
@@ -1514,6 +1846,7 @@ def read_set(d, opts=None):
     for dw in drawings:
         r = dw['rect']
         dw['openings'], dw['columns'], dw['beams'], dw['callouts'], dw['walls'] = [], [], [], [], []
+        dw['strips'] = []
         view_only = dw['kind'] in VIEW_KINDS
         if not view_only:
             dw['openings'] = stage('فتحات السقف', lambda r=r: detect_openings(
@@ -1529,6 +1862,12 @@ def read_set(d, opts=None):
                 label_beams(dw['beams'], E, TG, r)
             dw['callouts'] = stage('تسليح البلاطة', lambda r=r: slab_callouts(E, TG, r), [])
             dw['walls'] = stage('الجدران', lambda r=r: detect_walls(E, [segs[k] for k in SG.query(*r)], r), [])
+            dw['strips'] = stage('الأساسات الشريطية', lambda r=r: detect_walls(
+                E, [segs[k] for k in SG.query(*r)], r, _FOUND_LAYER, 0.3, 2.5), [])
+            if not dw['columns'] and not dw['ax']['x'] and dw['walls']:
+                # بلا محاور: مستطيلات صغيرة مغروسة بالجدران = أعمدة ربط (بناء حامل مقيَّد)
+                dw['columns'] = stage('أعمدة الربط بالجدران', lambda r=r, dw=dw: _cols_in_walls(
+                    E, sorted(EG.query(*r)), dw['walls'], r), [])
         dw['sketch'] = _sketch([segs[k] for k in SG.query(*r)], E, r, cap=4000 if view_only else 2500)
         for c in dw['columns']:
             ax_ = _snap(c['x'], dw['ax']['x'].values(), 0.9)
@@ -1536,6 +1875,10 @@ def read_set(d, opts=None):
             c['ax'], c['ay'] = (ax_['name'] if ax_ else None), (ay_['name'] if ay_ else None)
         for op in dw['openings']:
             op['between'] = _between(op, dw['ax'])
+
+    # ---- ٥ب) كل الجداول المرسومة ----
+    tables = stage('الجداول العامة', lambda: find_tables(
+        E, segs, TG, [dw['rect'] for dw in drawings if dw['kind'] not in VIEW_KINDS]), [])
 
     # ---- ٦) المباني ----
     merge = bool(opts.get('merge'))
@@ -1575,7 +1918,7 @@ def read_set(d, opts=None):
                 w[k2] = round(w[k2], 3)
 
     same_bld = len(set(dw['building_name'] for dw in drawings if dw['building_name'])) == 1
-    return dict(ok=bool(buildings), scale=scale, scale_src=src, angle=round(ang, 2),
+    return dict(ok=bool(buildings), scale=scale, scale_src=src, angle=round(ang, 2), tables=tables or [],
                 n_ents=len(E), drawings=drawings, buildings=buildings,
                 schedules=dict(beams=beams_all, columns=col_sched,
                                beam_tables=[dict(id=i, x=round(bs['x'], 2), y=round(bs['y'], 2), beams=bs['beams'],
@@ -2089,10 +2432,13 @@ def _group_drawings(drawings, merge):
                 break
         if not placed:
             groups.append([dw])
+    fk_ = lambda dw: int(round(dw['rect'][0] / _FILE_OFF))
     for dw in sorted([p for p in plans if p not in axd], key=lambda d: -len(d['columns'])):
         best = None
         for g in groups:
-            r = _reg_by_cols(dw, g[0])
+            if fk_(g[0]) != fk_(dw):
+                continue                                 # مسقط بلا محاور لا يُلحق بمبنى من ملف آخر
+            r = _reg_by_cols(dw, g[0]) or _reg_by_walls(dw, g[0])
             if r and (best is None or r[3] > best[0]):
                 best = (r[3], g)
         if best:
@@ -2129,6 +2475,9 @@ def _register(dw, master):
     rc = _reg_by_cols(dw, master)
     if rc:
         return rc[0], rc[1], rc[2], 'cols'
+    rw = _reg_by_walls(dw, master)
+    if rw:
+        return rw[0], rw[1], rw[2], 'walls'
     if dx and dy:
         return tx, ty, res, 'axes'
     return master['bub'][0] - dw['bub'][0], master['bub'][1] - dw['bub'][1], 9.9, 'bbox'
@@ -2384,7 +2733,36 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
         if assumed:
             warn.append('سقف %s: لا مخطط جسور — افتُرضت جسور 250 مم بين الأعمدة المتجاورة (عمقها ≈ البحر/12)، '
                         'معلَّمة «تخمين».' % K.FLOOR_NAMES.get(fk, fk))
-    footings = _footings(floors, materials, opts, warn)
+    for f in floors:                                  # أعمدة خارج حدود البلاطات = أعمدة مدخل/مظلة
+        R_ = f['slab']['rects']
+        out_ = [c for c in f['columns'] if R_ and not any(r[0] - 1.0 <= c['x'] <= r[2] + 1.0 and r[1] - 1.0 <= c['y'] <= r[3] + 1.0
+                                                         for r in R_)]
+        for c in out_:
+            c['outside'] = True
+        if out_ and len(out_) < 0.3 * len(f['columns']):
+            nr = sum(1 for c in out_ if c.get('shape') == 'circ')
+            warn.append('%s: %d عمود أبعد من متر عن أي بلاطة مقروءة%s — مرسومة بالمسقط (أعمدة مدخل/مظلة، أو حول فناء/فتحة) '
+                        'وما فوقها غير مرسوم كبلاطة، فتظهر قائمة وحدها بالمجسم — ليست خطأً بالملف.' % (
+                            K.FLOOR_NAMES.get(f['key'], f['key']), len(out_), (' (%d دائري)' % nr) if nr else ''))
+    masonry = bool(floors) and floors[0]['columns'] and all(c.get('how') == 'in-wall' for c in floors[0]['columns'])
+    footings = [] if masonry else _footings(floors, materials, opts, warn)
+    # أساسات شريطية مرسومة (طبقة الأساس: خطّان متوازيان تحت الجدران الحاملة)
+    strips = []
+    srcs = [dw for dw in plans if dw.get('strips')]
+    if srcs:
+        sd = max(srcs, key=lambda d: (d['kind'] == 'found', len(d['strips'])))
+        for w in sd['strips']:
+            if w['o'] == 'h':
+                a, b = T(sd, w['a'], w['c']), T(sd, w['b'], w['c'])
+            else:
+                a, b = T(sd, w['c'], w['a']), T(sd, w['c'], w['b'])
+            if math.hypot(b[0] - a[0], b[1] - a[1]) >= 0.8:
+                strips.append(dict(x1=round(a[0], 3), y1=round(a[1], 3), x2=round(b[0], 3), y2=round(b[1], 3),
+                                   w=w['t'], o=w['o'], src=sd['id']))
+        if strips:
+            ws = sorted(st['w'] for st in strips)
+            warn.append('أساسات شريطية مرسومة بطبقة الأساس (اللوحة %d): %d شريط تحت الجدران، العرض %d–%d مم (الوسيط %d).' % (
+                sd['id'] + 1, len(strips), ws[0], ws[-1], ws[len(ws) // 2]))
     ext = [round(max(xs_all) - ox, 2), round(max(ys_all) - oy, 2)]
     names = sorted(set(dw['building_name'] for dw in grp if dw['building_name']))
     box = [0.0, 0.0, ext[0], ext[1]]
@@ -2418,6 +2796,8 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
                           if gx and gy else 'بلا محاور'),
                 grid=dict(x=gx, y=gy), size=ext,
                 drawings=[dw['id'] for dw in grp], floors=floors, footings=footings, views=vout,
+                strips=strips or (_strip_design(floors, opts, warn) if masonry or not floors[0]['columns'] else []),
+                masonry=masonry,
                 height=round(sum(hs[g0:]), 3), depth=round(sum(hs[:g0]), 3),
                 levels=lv_info, ffl0=round(base0, 3))
 
@@ -2468,6 +2848,40 @@ def _propose_columns(order, by_floor, gx, gy, T):
             if bx[0] - 0.3 <= p[2] <= bx[2] + 0.3 and bx[1] - 0.3 <= p[3] <= bx[3] + 0.3:
                 prop[lo].add(p)
     return prop
+
+
+def _strip_design(floors, opts, warn):
+    """بناء حامل (جدران وأعمدة ربط): أساس شريطي تحت كل جدران الطابق الأسفل. الحمل الخطي لكل متر:
+    وزن الجدار بارتفاع كل الطوابق فوقه (19 كن/م³) + نصيبه من البلاطات (المساحة ÷ أطوال الجدران)
+    × (وزن البلاطة + تشطيب 2.5 + حي LL). العرض = الحمل الخدمي ÷ قدرة التربة، لا يقل عن 0.6 م — ACI 318-19
+    (السماكة ≥ 0.35 م لأساس خرساني مسلّح). مُعلَّم «مصمَّم بالكود — ليس من الملف»."""
+    if not floors or not floors[0].get('walls'):
+        return []
+    qa = PL._safe_float(opts.get('qa'), 150.0) or 150.0
+    LL = PL._safe_float(opts.get('LL'), 0.0) or 3.0
+    base = floors[0]['walls']
+    Lw = sum(math.hypot(w['x2'] - w['x1'], w['y2'] - w['y1']) for w in base) or 1.0
+    q = 0.0
+    for f in floors:
+        area = sum((r[2] - r[0]) * (r[3] - r[1]) for r in f['slab']['rects'])
+        tf = (f['slab'].get('t') or 150) / 1000.0
+        q += area / Lw * (tf * 25.0 + 2.5 + LL)
+    out = []
+    for w in base:
+        L = math.hypot(w['x2'] - w['x1'], w['y2'] - w['y1'])
+        if L < 0.8:
+            continue
+        tw = max(w.get('t') or 200, 150) / 1000.0
+        P = q + sum(tw * f['h'] * 19.0 for f in floors)
+        B = max(0.6, math.ceil(P / qa / 0.05) * 0.05, tw + 0.3)
+        out.append(dict(x1=w['x1'], y1=w['y1'], x2=w['x2'], y2=w['y2'], w=int(round(B * 1000)), o=w['o'],
+                        h=350, P=round(P, 1), designed=True))
+    if out:
+        Bs = sorted(o['w'] for o in out)
+        warn.append('بناء بجدران حاملة وأعمدة ربط: صُمّمت أساسات شريطية تحت %d جدار — العرض %d–%d مم '
+                    '(الحمل الخدمي ≤ %.0f كن/م، التربة %.0f كن/م²) — مصمَّمة بالكود، ليست من الملف.' % (
+                        len(out), Bs[0], Bs[-1], max(o['P'] for o in out), qa))
+    return out
 
 
 def _beam_rebar(rec):

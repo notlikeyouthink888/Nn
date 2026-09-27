@@ -2812,7 +2812,13 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
         if dw['kind'] in ('slab_rft', 'beams_key', 'arch', 'found') and fl:
             by_floor.setdefault(fl['key'], {})[dw['kind']] = dw
     if not by_floor:                                # لوحات بلا عناوين طوابق: طابق واحد افتراضي
-        by_floor['ground'] = {(master['kind'] if master['kind'] in ('slab_rft', 'beams_key', 'arch') else 'arch'): master}
+        mk = master['kind'] if master['kind'] in ('slab_rft', 'beams_key', 'arch') else 'arch'
+        if not master['kind'] and len(master.get('beams') or []) >= 4 and not master.get('walls'):
+            # لوحة بلا عنوان فيها جسور مرسومة (خطّان متوازيان) ولا جدران: مخطط جسور، لا تُفترض جسور بدلها
+            mk = 'beams_key'
+            warn.append('اللوحة %d بلا عنوان وفيها %d بحر جسر مرسوم — عوملت مخطط جسور للمبنى %d (غيّر نوعها إن لم تكن كذلك).'
+                        % (master['id'] + 1, len(master['beams']), gi + 1))
+        by_floor['ground'] = {mk: master}
         warn.append('ما لقيت أسماء طوابق بعناوين المبنى %d — عُرض طابقاً واحداً (تقدر تحدد الطابق لكل لوحة).' % (gi + 1))
     order = sorted(by_floor, key=lambda k: K.FLOOR_ORDER.get(k, 0))
     hmap = opts.get('floor_h') or {}

@@ -229,7 +229,8 @@ def scale_from_bubbles(ents, su):
     if not circ:
         return None
     rs = sorted(c[2] for c in circ)
-    cell = max(rs[len(rs) // 2] * 3.0, 1e-9)
+    # الشبكة بحجم الفقاعات الكبيرة لا الدوائر الصغيرة الكثيرة (رؤوس أسهم/نقاط 0.1 تغلب على الوسيط)
+    cell = max(rs[len(rs) // 2] * 3.0, rs[int(len(rs) * 0.9)] * 1.5, 1e-9)
     G = {}
     for e in ents:
         if e['t'] == 'T' and K.axis_label(e.get('s')):
@@ -238,7 +239,7 @@ def scale_from_bubbles(ents, su):
     for cx, cy, r in circ:
         k = int(math.ceil(1.3 * r / cell))
         i0, j0 = int(cx // cell), int(cy // cell)
-        if k > 3:
+        if k > 8:
             continue
         hit = None
         for i in range(i0 - k, i0 + k + 1):
@@ -1015,6 +1016,14 @@ def _merge_rects(rects):
 # ------------------------------------------------------------------ لوحات بلا فقاعات
 _SKIP_LAYER = re.compile(r'(hatch|^dim|dimension|text|txt|frame|border|title|numbers|جداول|print|defpoints)', re.I)
 _WALL_LAYER = re.compile(r'(wall|جدار|جدران|حائط|block|brick|بلوك)', re.I)
+class _AnyStructLayer:
+    _NO = {'land', 'furn', 'hatch', 'dim', 'text', 'door', 'window', 'frame', 'axis', 'elev', 'finish', 'stair'}
+
+    def search(self, name):
+        return not _NONSTRUCT.search(name or '') and K.layer_hint(name) not in self._NO
+
+
+_ANY_STRUCT = _AnyStructLayer()
 _FOUND_LAYER = re.compile(r'(found|foot|fdn|ftg|أساس|قواعد|اساس)', re.I)
 _TABLE_TITLE = re.compile(r'^\s*(جدول|المحتويات|contents|schedule|legend|مفتاح\s*الرموز)', re.I)
 
@@ -1114,6 +1123,144 @@ def framed_drawing(t, comps, taken, frames):
     if any(_overlap(r, q) > 0.45 for q in taken):
         return None
     return r
+
+
+_NOTE_KINDS = [
+    ('general', 'ملاحظة عامة', r'(ملاحظ|ملحوظ|\bnotes?\b|تنبيه|يجب|يراعى|must|shall)'),
+    ('rebar', 'تسليح', r'(تسليح|حديد|قضبان|كانات|أتاري|اتاري|ركائب|%%c|Ø|@\s*\d|\bbars?\b|stirrup|reinf|lap|تراكب|أشاير|اشاير|تكسيح|يكسح)'),
+    ('concrete', 'خرسانة ومواد', r'(خرسان|concrete|\bfc\b|f\'c|mpa|\bc\d{2}\b|اسمنت|إسمنت|cement|كغم|kg/m|رمل|حصى|بلوك|block|طابوق|مونة|mortar)'),
+    ('level', 'مناسيب', r'(منسوب|مناسيب|level|f\.?f\.?l|\bel\.)'),
+    ('water', 'عزل ومياه', r'(عازل|عزل|رطوبة|membrane|waterproof|تصريف|drain|مياه|خزان|مواسير|pipe)'),
+    ('exec', 'تعليمات تنفيذ', r'(يتم|ينفذ|تنفذ|تنفيذ|يصب|صب\b|تخشيبة|نجارة|قبل الصب|بعد الصب|execute|cast)'),
+    ('finish', 'تشطيبات', r'(تشطيب|دهان|لياسة|بلاط|رخام|سيراميك|finish|plaster|paint|tile|marble|جبس|gypsum)'),
+    ('struct', 'إنشائي', r'(جسر|جسور|عمود|أعمدة|اعمدة|بلاطة|سقف|أساس|اساس|ميدة|ميدات|beam|column|slab|footing|cantilever|كابول)'),
+]
+_NOTE_RX = [(k, n, re.compile(p, re.I)) for k, n, p in _NOTE_KINDS]
+
+
+_ROOM = re.compile(r'(نوم|معيشة|مطبخ|حمام|صالة|صالون|غرفة|غرفه|مخزن|ممر|مدخل|استقبال|مكتب|مجلس|ضيوف|سفرة|كراج|جراج|'
+                   r'مصلى|مغاسل|تواليت|بلكونة|شرفة|درج|مصعد|\broom\b|\bbed|kitchen|living|\bwc\b|toilet|lobby|store|'
+                   r'office|corridor|hall|garage|dining|reception|clinic|pantry|lift|stair)', re.I)
+
+
+def collect_notes(E, drawings, used_ids=(), table_rects=()):
+    """كل نص بالملف يُقرأ ويُصنَّف: عنوان · علامة عنصر · رقم/بُعد · نداء تسليح · منسوب · ملاحظة.
+    الملاحظات (≥ 3 كلمات أو ≥ 16 حرفاً) تُجمع فقرات (أسطر متتالية متقاربة بالحجم نفسه) وتُنسب لأقرب
+    رسمة، ولكل فقرة: النص المُصلَح وطريقة إصلاحه ونوعها — فلا تبقى ملاحظة غير مقروءة."""
+    stats = collections.Counter()
+    lines = []
+    for i, e in enumerate(E):
+        if e['t'] != 'T':
+            continue
+        st = PL.clean_text(e.get('s') or '') or ''
+        if not st.strip():
+            stats['empty'] += 1
+            continue
+        if i in used_ids:
+            stats['title'] += 1
+            continue
+        if e.get('fix') == 'undecodable':
+            stats['undecodable'] += 1
+        if K.mark_kind(st)[0] or K.axis_label(st):
+            stats['mark'] += 1
+            continue
+        if re.fullmatch(r'[\d\s.,:/*x×+\-±()=%]+', st):
+            stats['number'] += 1
+            continue
+        if K.parse_callout(st) or K.parse_bars(st):
+            stats['callout'] += 1
+            if len(st) < 16:
+                continue
+        words = st.split()
+        if len(words) <= 4 and _ROOM.search(st) and not re.search(r'(ملاحظ|ملحوظ|note|يتم|ينفذ)', st, re.I):
+            stats['room'] += 1
+            continue
+        if any(r[0] <= e['p'][0] <= r[2] and r[1] <= e['p'][1] <= r[3] for r in table_rects):
+            stats['table_cell'] += 1
+            continue
+        if len(words) < 3 and len(st) < 16 and not re.search(r'(ملاحظ|ملحوظ|note)', st, re.I):
+            stats['label'] += 1
+            continue
+        stats['note_line'] += 1
+        lines.append(dict(i=i, x=e['p'][0], y=e['p'][1], h=max(e['p'][2], 1e-3), s=st, alt=e.get('s_alt'),
+                          fix=e.get('fix'), s0=e.get('s0')))
+    # فقرات: أسطر بنفس الحجم تقريباً، متقاربة عمودياً ومتراصفة أفقياً
+    lines.sort(key=lambda l: (-l['y'], l['x']))
+    paras = []
+    for l in lines:
+        best = None
+        for pgh in paras[-40:]:
+            q = pgh['lines'][-1]
+            if abs(q['h'] - l['h']) > 0.4 * max(q['h'], l['h']):
+                continue
+            dy = q['y'] - l['y']
+            if not (0 < dy <= 2.6 * l['h']) or abs(q['x'] - l['x']) > 30 * l['h']:
+                continue
+            if best is None or dy < best[0]:
+                best = (dy, pgh)
+        if best:
+            best[1]['lines'].append(l)
+        else:
+            paras.append(dict(lines=[l]))
+    out = []
+    for k, pgh in enumerate(paras):
+        L = pgh['lines']
+        txt = '\n'.join(l['s'] for l in L)
+        alt = '\n'.join(l['alt'] or l['s'] for l in L) if any(l['alt'] for l in L) else None
+        fixes = sorted(set(l['fix'] for l in L if l['fix']))
+        kinds = [n for key, n, rx in _NOTE_RX if rx.search(txt)]
+        x, y = L[0]['x'], L[0]['y']
+        dwid = None
+        for dw in drawings:
+            r = dw['rect']
+            W, H = r[2] - r[0], r[3] - r[1]
+            if r[0] - 0.15 * W <= x <= r[2] + 0.15 * W and r[1] - 0.15 * H <= y <= r[3] + 0.15 * H:
+                if dwid is None or (r[2] - r[0]) * (r[3] - r[1]) < dwid[1]:
+                    dwid = (dw['id'], (r[2] - r[0]) * (r[3] - r[1]))
+        st_ = K.slab_type(txt)
+        out.append(dict(id=k, text=txt[:1200], alt=alt[:1200] if alt else None, fix=fixes, kinds=kinds[:4],
+                        drawing=dwid[0] if dwid else None, x=round(x, 2), y=round(y, 2), n_lines=len(L),
+                        lang='ar' if re.search('[؀-ۿ]', txt) else 'en',
+                        orig='\n'.join(l['s0'] for l in L if l['s0'])[:600] or None,
+                        slab=st_['key'] if st_ else None, beams=[b['key'] for b in K.beam_types(txt)]))
+    return out, dict(stats)
+
+
+def unknown_report(E, drawings, notes, layers_info=None):
+    """ما لم أتعرّف عليه — يُعرض لرافع الملف بدل إهماله بصمت."""
+    items = []
+    und = [n for n in notes if 'undecodable' in n['fix']]
+    raw_und = [e for e in E if e['t'] == 'T' and e.get('fix') == 'undecodable']
+    if raw_und:
+        smp = []
+        for e in raw_und:
+            s_ = (e.get('s') or '').strip()
+            if s_ and s_ not in smp:
+                smp.append(s_)
+            if len(smp) >= 6:
+                break
+        items.append(dict(kind='text', title='%d نص عربي بخط SHX قديم خاص لا يُفكّ' % len(raw_und),
+                          detail='مكتوب بخط عربي قديم يرسم الحروف برموز خاصة (ليس Unicode ولا مواضع لوحة المفاتيح) — '
+                                 'تحويله يحتاج ملف الخط نفسه. الحل: بالأوتوكاد غيّر نمط النص لخط Unicode (Arial/Tahoma) '
+                                 'أو ارفع ملف الخط .shx مع المخطط.', samples=smp))
+    wo = [n for n in notes if 'word-order' in n['fix']]
+    if wo:
+        items.append(dict(kind='order', title='%d ملاحظة عربية ترتيب كلماتها مقلوب' % len(wo),
+                          detail='سطر عربي كُتب بمحرر لا يدعم الاتجاه فانقلب ترتيب كلماته — عُرضت قراءة مقترحة بجانب الأصل؛ راجعها.',
+                          samples=[n['text'][:80] for n in wo[:4]]))
+    nk = [dw for dw in drawings if not dw.get('kind')]
+    if nk:
+        items.append(dict(kind='drawing', title='%d رسمة بلا عنوان ولا نوع معروف' % len(nk),
+                          detail='رسمة (غالباً بفقاعات محاور) لم أجد عنوانها ولا ما يدل على نوعها — حدّد نوعها وطابقها من تبويب «المخططات».',
+                          samples=['#%d' % (dw['id'] + 1) for dw in nk[:12]]))
+    cnt = collections.Counter(e['l'] for e in E)
+    unk = [(l, n) for l, n in cnt.most_common() if n >= 40 and not K.layer_hint(l) and l not in ('0', 'Defpoints', 'DEFPOINTS')]
+    if unk:
+        items.append(dict(kind='layer', title='%d طبقة لم أعرف دورها من اسمها' % len(unk),
+                          detail='أسماء الطبقات مرقّمة أو خاصة بالمكتب — عناصرها قُرئت هندسياً (خطوط/نصوص) لكن دورها '
+                                 '(جدار/عمود/أثاث…) مجهول؛ إن كانت أعمدة أو جسوراً سمِّها بالاسم (col/beam) أو أخبرني.',
+                          samples=['%s (%d)' % (l, n) for l, n in unk[:10]]))
+    return items
 
 
 def _untitled_plans(drawings, comps, E, segs, opts):
@@ -1352,7 +1499,7 @@ def _sort_plans(drawings):
     for dw in drawings:
         a = area(dw)
         fk = (dw.get('floor') or {}).get('key')
-        if dw['kind'] == 'arch' and not dw['ax']['x'] and a < 0.25 * big:
+        if dw['kind'] == 'arch' and not dw['ax']['x'] and (a < 0.25 * big or (fk and fk in fl_main)):
             dw['kind'], dw['kind_name'], dw['enlarged'] = 'detail', 'مسقط مكبَّر (تفصيلة)', True
         elif dw['kind'] is None and dw['ax']['x'] and a < 0.1 * big:
             dw['kind'], dw['kind_name'], dw['enlarged'] = 'detail', 'مسقط مكبَّر (تفصيلة)', True
@@ -1583,6 +1730,27 @@ def _read_multi(d, opts, warn, stages, stage):
     return R
 
 
+def _check_scale_by_text(ents, sc0):
+    hs = sorted(e['p'][2] for e in ents if e['t'] == 'T' and e['p'][2] > 0)
+    if len(hs) < 5:
+        return None
+    th = hs[len(hs) // 2]
+    if 0.05 <= th * sc0 <= 1.5:
+        return None
+    dims = [PL._safe_float(e.get('m')) for e in ents if e['t'] == 'D' and PL._safe_float(e.get('m')) > 0]
+    best = None
+    for sc, nm in PL.SCALES:
+        if not (0.05 <= th * sc <= 1.5) or not all(0.08 <= v * sc <= 80 for v in dims):
+            continue
+        d = abs(math.log(th * sc / 0.3))
+        if best is None or d < best[0]:
+            best = (d, sc, nm)
+    if not best:
+        return None
+    return dict(scale=best[1], name=best[2], th=th * best[1], th_old=th * sc0,
+                dims=' · '.join('%g' % round(v * best[1], 2) for v in sorted(set(dims))[:5]) or '—')
+
+
 def _pick_scale(ents, insunits, opts, warn, stage):
     scale, src = None, None
     if opts.get('scale'):
@@ -1591,6 +1759,14 @@ def _pick_scale(ents, insunits, opts, warn, stage):
         dimc = stage('المقياس', lambda: PL.scale_from_dims(ents))
         if dimc and dimc.get('ok'):
             scale, src = dimc['scale'], 'الأبعاد المكتوبة'
+            if dimc.get('n', 0) < 15:
+                # أبعاد قليلة (مثلاً 10 · 15.25 · 25 لقطعة أرض) دليل ضعيف: يُفحص بارتفاع النص المعقول
+                alt = _check_scale_by_text(ents, scale)
+                if alt:
+                    warn.append('الأبعاد المكتوبة قليلة (%d) وتعطي نصوصاً بارتفاع %.2f م — غير معقول؛ '
+                                'اعتُمد مقياس %s (ارتفاع النص %.2f م والأبعاد %s م).' % (
+                                    dimc['n'], alt['th_old'], alt['name'], alt['th'], alt['dims']))
+                    scale = alt['scale']
     if not scale:
         dc = stage('مقياس الأبعاد (مدى المباني)', lambda: scale_from_dims_wide(ents), None)
         if dc:
@@ -1619,6 +1795,18 @@ def _pick_scale(ents, insunits, opts, warn, stage):
 
 
 def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
+    # ---- ٠) إصلاح النصوص قبل أي فهم: عربي بمواضع المفاتيح (خطوط SHX قديمة) وعربي مقلوب الحروف ----
+    txt_fix = collections.Counter()
+    for e in E:
+        if e['t'] == 'T' and e.get('s'):
+            fx, how = K.fix_text(e['s'])
+            txt_fix[how or 'ok'] += 1
+            if how in ('keyboard', 'reversed'):
+                e['s0'], e['s'], e['fix'] = e['s'], fx, how
+            elif how == 'word-order':
+                e['fix'], e['s_alt'] = how, fx
+            elif how:
+                e['fix'] = how
     roles = {e['l']: PL.suggest_role(e['l']) for e in E}
     ang, share = stage('اتجاه المخطط', lambda: PL.plan_angle(E, roles), (0.0, 0.0))
     if share >= 0.5 and abs((ang + 45.0) % 90.0 - 45.0) > 1.0:
@@ -1862,6 +2050,10 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
                 label_beams(dw['beams'], E, TG, r)
             dw['callouts'] = stage('تسليح البلاطة', lambda r=r: slab_callouts(E, TG, r), [])
             dw['walls'] = stage('الجدران', lambda r=r: detect_walls(E, [segs[k] for k in SG.query(*r)], r), [])
+            if not dw['walls'] and dw['kind'] in ('arch', 'found'):
+                # الجدران على طبقة باسم عام («plan»/«0»): أي طبقة ليست أثاثاً/تشجيراً/نصوصاً/أبعاداً
+                dw['walls'] = stage('الجدران (طبقات عامة)', lambda r=r: detect_walls(
+                    E, [segs[k] for k in SG.query(*r)], r, _ANY_STRUCT), [])
             dw['strips'] = stage('الأساسات الشريطية', lambda r=r: detect_walls(
                 E, [segs[k] for k in SG.query(*r)], r, _FOUND_LAYER, 0.3, 2.5), [])
             if not dw['columns'] and not dw['ax']['x'] and dw['walls']:
@@ -1876,9 +2068,34 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
         for op in dw['openings']:
             op['between'] = _between(op, dw['ax'])
 
-    # ---- ٥ب) كل الجداول المرسومة ----
+    # ---- ٥أ) كل الجداول المرسومة، ثم كل الملاحظات والنصوص، ونظام البلاطة لكل رسمة ----
     tables = stage('الجداول العامة', lambda: find_tables(
         E, segs, TG, [dw['rect'] for dw in drawings if dw['kind'] not in VIEW_KINDS]), [])
+    used_ids = set(id(dw['_t']) for dw in drawings if dw.get('_t'))
+    used_idx = set(i for i, e in enumerate(E) if e['t'] == 'T' and id(e) in used_ids)
+    notes, tstats = stage('الملاحظات', lambda: collect_notes(E, drawings, used_idx,
+                                                          [t['rect'] for t in (tables or [])]), ([], {}))
+    for dw in drawings:
+        ev = []
+        for src_, txt in [('العنوان', dw.get('title') or '')] + [('ملاحظة', n['text']) for n in notes if n['drawing'] == dw['id']]:
+            st_ = K.slab_type(txt)
+            if st_:
+                ev.append((st_, src_, txt[:80]))
+        if not ev:                                   # اسم طبقة («هــردي») داخل الرسمة
+            r = dw['rect']
+            lays = set(E[j]['l'] for j in EG.query(*r) if K.slab_type(E[j]['l']))
+            for l_ in sorted(lays)[:1]:
+                ev.append((K.slab_type(l_), 'طبقة', l_))
+        if ev:
+            st_, src_, txt = ev[0]
+            dw['slab_type'] = dict(st_, src=src_, evidence=txt)
+        bt = set()
+        for n in notes:
+            if n['drawing'] == dw['id']:
+                bt.update(n['beams'])
+        if bt:
+            dw['beam_types'] = sorted(bt)
+
 
     # ---- ٦) المباني ----
     merge = bool(opts.get('merge'))
@@ -1894,7 +2111,8 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
     buildings = []
     for gi, grp in enumerate(groups):
         b = stage('تركيب مبنى', lambda g=grp, gi=gi: _assemble(
-            gi, g, beam_scheds, beams_all, col_sched, materials, opts, warn, key_names, col_defs), None)
+            gi, g, beam_scheds, beams_all, col_sched, materials, opts, warn, key_names, col_defs,
+            notes), None)
         if b:
             buildings.append(b)
 
@@ -1918,7 +2136,9 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
                 w[k2] = round(w[k2], 3)
 
     same_bld = len(set(dw['building_name'] for dw in drawings if dw['building_name'])) == 1
+    unknown = stage('ما لم يُتعرَّف عليه', lambda: unknown_report(E, drawings, notes), [])
     return dict(ok=bool(buildings), scale=scale, scale_src=src, angle=round(ang, 2), tables=tables or [],
+                notes=notes, text_stats=dict(tstats, fixes=dict(txt_fix)), unknown=unknown,
                 n_ents=len(E), drawings=drawings, buildings=buildings,
                 schedules=dict(beams=beams_all, columns=col_sched,
                                beam_tables=[dict(id=i, x=round(bs['x'], 2), y=round(bs['y'], 2), beams=bs['beams'],
@@ -2405,7 +2625,7 @@ def _between(op, ax):
     return dict(x=rng(op['x0'], op['x1'], ax['x'].values()), y=rng(op['y0'], op['y1'], ax['y'].values()))
 
 
-VIEW_KINDS = ('elev', 'section', 'detail', 'site', 'finish')
+VIEW_KINDS = ('elev', 'section', 'detail', 'site', 'finish', 'stair', 'tank', 'fence', 'joint', 'landscape')
 
 
 def _group_drawings(drawings, merge):
@@ -2445,6 +2665,34 @@ def _group_drawings(drawings, merge):
             best[1].append(dw)
         else:
             groups.append([dw])
+    # مساقط بلا محاور بقيت وحيدة (بيت نموذجي: أرضي · أول · سطح متجاورة بصف واحد): تُجمع بالتجاور،
+    # ويبدأ بيت جديد متى تكرّر طابق أو ابتعدت الرسمة أو اختلف مقاسها
+    singles = [g for g in groups if len(g) == 1 and not g[0]['ax']['x'] and g[0].get('floor')]
+    if len(singles) >= 2:
+        rest = [g for g in groups if g not in singles]
+        ds = sorted((g[0] for g in singles), key=lambda d: (d['rect'][1], d['rect'][0]))
+        rows = []
+        for d_ in ds:
+            h_ = d_['rect'][3] - d_['rect'][1]
+            row = next((r for r in rows if abs(r[0]['rect'][1] - d_['rect'][1]) <= 0.35 * h_), None)
+            (row.append(d_) if row else rows.append([d_]))
+        for row in rows:
+            row.sort(key=lambda d: d['rect'][0])
+            cur = []
+            for d_ in row:
+                w_ = d_['rect'][2] - d_['rect'][0]
+                if cur:
+                    last = cur[-1]
+                    lw = last['rect'][2] - last['rect'][0]
+                    gap = d_['rect'][0] - last['rect'][2]
+                    keys = set((q.get('floor') or {}).get('key') for q in cur)
+                    if (d_['floor']['key'] in keys or gap > 1.2 * max(w_, lw) or not (0.6 <= w_ / max(lw, 1e-6) <= 1.6)):
+                        rest.append(cur)
+                        cur = []
+                cur.append(d_)
+            if cur:
+                rest.append(cur)
+        groups = rest
     for v in views:
         if not groups:
             groups.append([])
@@ -2494,8 +2742,21 @@ def _clusters1(vals, tol=0.3):
 
 
 def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn, key_names=None,
-              col_defs=None):
+              col_defs=None, notes=None):
     plans = [d for d in grp if d['kind'] not in VIEW_KINDS]
+    # نظام البلاطة العام للمبنى: من لوحاته (عنوان/ملاحظة/طبقة)، وإلا من الملاحظات العامة للملف
+    gsys = None
+    ids_ = set(d['id'] for d in grp)
+    cand_ = [d['slab_type'] for d in grp if d.get('slab_type')]
+    if cand_:
+        gsys = max(cand_, key=lambda s_: sum(1 for q in cand_ if q['key'] == s_['key']))
+    else:
+        for n in (notes or []):
+            if n.get('slab') and (n['drawing'] is None or n['drawing'] in ids_):
+                st_ = K.slab_type(n['text'])
+                gsys = dict(st_, src='ملاحظة عامة', evidence=n['text'][:80])
+                break
+    drop_ = any(DROP_RX_OK(n['text']) for n in (notes or []) if n['drawing'] is None or n['drawing'] in ids_)
     views = [d for d in grp if d['kind'] in VIEW_KINDS]
     if not plans:
         return None
@@ -2659,7 +2920,9 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
                               span=round(abs(s['b'] - s['a']), 3), cant=s.get('cant', False),
                               rebar=_beam_rebar(rec), guess=guess, src=src_b['id']))
         assumed = False
-        if not beams and len(cols) >= 2:
+        sys_ = next((d['slab_type'] for d in (sl, bk, ar) if d and d.get('slab_type')), None) or gsys
+        beamless = bool(sys_ and sys_['key'] in ('flat', 'bubble'))
+        if not beams and len(cols) >= 2 and not beamless:
             fr = PL.build_frame([dict(x=c['x'], y=c['y'], b=c['b'], h=c['h']) for c in cols])
             for bm in (fr or {}).get('beams', []):
                 L = bm['span']
@@ -2721,18 +2984,38 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
         t_src = 'title' if t else None
         if not t and meas and meas.get('t'):
             t, t_src = meas['t'], 'section'           # سماكة البلاطة المرسومة بالمقطع
+        if not t and sys_:
+            t, t_src = sys_['t'], 'system'             # السماكة النموذجية لنظام البلاطة
         t = t or 200
+        ribs = drops = None
+        if sys_ and sys_['key'] in ('hordi', 'ribbed', 'waffle'):
+            two = sys_['key'] == 'waffle' or bool(re.search(r'باتجاهين|two[- ]way', sys_.get('evidence') or '', re.I))
+            ribs = dict(spacing=0.52 if sys_['key'] == 'hordi' else 0.6, width=120 if sys_['key'] == 'hordi' else 150,
+                        topping=60 if sys_['key'] == 'hordi' else 70, two_way=two)
+        if sys_ and sys_['key'] == 'flat' and (drop_ or DROP_RX_OK(sys_.get('evidence') or '')) and cols:
+            sp_ = _med([a['next'] for a in (gx + gy) if a.get('next')], 6.0) if (gx or gy) else 6.0
+            dsz = round(max(1.5, sp_ / 3.0), 2)
+            drops = [dict(x=c['x'], y=c['y'], s=dsz, t=int(max(100, t / 4))) for c in cols]
         floors.append(dict(key=fk, name=K.FLOOR_NAMES.get(fk, fk), level=round(levels[fi], 3), h=h,
                            h_src=h_src[fi], t_src=t_src, cols_proposed=proposed,
                            columns=cols, beams=beams, walls=walls, beams_assumed=assumed,
                            slab=dict(t=t, rects=[[round(v, 3) for v in r] for r in rects],
                                      openings=opens, callouts=calls, mesh=_slab_mesh(calls),
-                                     t_from_title=bool((sl or {}).get('thickness'))),
+                                     t_from_title=bool((sl or {}).get('thickness')),
+                                     system=sys_, ribs=ribs, drops=drops, beamless=beamless),
                            sheets=dict(slab=sl['id'] if sl else None, beams=bk['id'] if bk else None,
                                        arch=ar['id'] if ar else None)))
+        if not rects and (cols or beams):
+            warn.append('سقف %s: لم تُحدَّد ألواح بلاطة — لا لوح مغلق بجسور/جدران ولا نداء تسليح '
+                        '(غالباً مخطط مفتاحي أو لوحة تفاصيل)؛ لم تُرسم البلاطة بدل تخمينها.' % K.FLOOR_NAMES.get(fk, fk))
         if assumed:
             warn.append('سقف %s: لا مخطط جسور — افتُرضت جسور 250 مم بين الأعمدة المتجاورة (عمقها ≈ البحر/12)، '
                         'معلَّمة «تخمين».' % K.FLOOR_NAMES.get(fk, fk))
+        if sys_:
+            warn.append('سقف %s: نظام البلاطة «%s» (من %s: «%s»)%s.' % (
+                K.FLOOR_NAMES.get(fk, fk), sys_['name'], sys_.get('src', '—'), (sys_.get('evidence') or '')[:50],
+                ' — بلا جسور، والقص الثاقب حول الأعمدة هو الحاكم' if beamless else
+                (' — أعصاب بتباعد %.2f م تحت بلاطة علوية %d مم' % (ribs['spacing'], ribs['topping']) if ribs else '')))
     for f in floors:                                  # أعمدة خارج حدود البلاطات = أعمدة مدخل/مظلة
         R_ = f['slab']['rects']
         out_ = [c for c in f['columns'] if R_ and not any(r[0] - 1.0 <= c['x'] <= r[2] + 1.0 and r[1] - 1.0 <= c['y'] <= r[3] + 1.0
@@ -2882,6 +3165,10 @@ def _strip_design(floors, opts, warn):
                     '(الحمل الخدمي ≤ %.0f كن/م، التربة %.0f كن/م²) — مصمَّمة بالكود، ليست من الملف.' % (
                         len(out), Bs[0], Bs[-1], max(o['P'] for o in out), qa))
     return out
+
+
+def DROP_RX_OK(t):
+    return bool(t) and bool(K.DROP_RX.search(t))
 
 
 def _beam_rebar(rec):

@@ -103,11 +103,40 @@ const CAD3D = (() => {
         if (w.o === 'h') box(L, H, th, P(mx, my, f.level + H / 2), mat('wall', { transparent: true, opacity: 0.9 }), info, conc);
         else box(th, H, L, P(mx, my, f.level + H / 2), mat('wall', { transparent: true, opacity: 0.9 }), info, conc);
       });
+      const SYS = f.slab.system || null, RB = f.slab.ribs || null;
+      const tTop = RB ? RB.topping / 1000 : t;          // هوردي/معصبة: البلاطة العلوية فقط مصمتة
       (f.slab.rects || []).forEach(r => {
         const w = r[2] - r[0], d = r[3] - r[1];
-        box(w, t, d, P((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, top - t / 2),
+        box(w, tTop, d, P((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, top - tTop / 2),
             mat('slab', { transparent: true, opacity: 0.93 }),
-            { kind: 'slab', floor: f.name, t: f.slab.t, mesh: f.slab.mesh }, conc);
+            { kind: 'slab', floor: f.name, t: f.slab.t, mesh: f.slab.mesh, sys: SYS && SYS.name, ribs: RB }, conc);
+      });
+      // الأعصاب (هوردي/معصبة/وافل): باتجاه البحر القصير لكل لوح (وباتجاهين إن ذُكر)، InstancedMesh واحد للطابق
+      if (RB && (f.slab.rects || []).length) {
+        const rw = RB.width / 1000, rd = t - tTop, list = [];
+        (f.slab.rects || []).forEach(r => {
+          const w = r[2] - r[0], d = r[3] - r[1];
+          const alongY = w >= d;                          // الأعصاب تمتد بالبحر القصير
+          const dirs = RB.two_way ? [true, false] : [alongY];
+          dirs.forEach(ay => {
+            const L = ay ? d : w, span = ay ? w : d;
+            for (let u = RB.spacing / 2; u < span - 0.05; u += RB.spacing)
+              list.push(ay ? [r[0] + u, (r[1] + r[3]) / 2, rw, L] : [(r[0] + r[2]) / 2, r[1] + u, L, rw]);
+          });
+        });
+        if (list.length && list.length < 60000) {
+          const geo = keep(new THREE.BoxGeometry(1, 1, 1));
+          const im = new THREE.InstancedMesh(geo, mat('rib', { color: 0xd8dde6 }), list.length);
+          const M = new THREE.Matrix4(), q0 = new THREE.Quaternion(), sv = new THREE.Vector3();
+          list.forEach((v, i) => { M.compose(P(v[0], v[1], top - tTop - rd / 2), q0, sv.set(v[2], rd, v[3])); im.setMatrixAt(i, M); });
+          im.userData = { kind: 'slab', floor: f.name, t: f.slab.t, sys: SYS && SYS.name, ribs: RB };
+          pickables.push(im); conc.add(im);
+        }
+      }
+      // تسقيط حول الأعمدة (Drop Panel) للبلاطات المسطحة
+      (f.slab.drops || []).forEach(dp => {
+        const dt = dp.t / 1000;
+        box(dp.s, dt, dp.s, P(dp.x, dp.y, top - t - dt / 2), mat('slab'), { kind: 'slab', floor: f.name, t: f.slab.t, drop: dp, sys: SYS && SYS.name }, conc);
       });
     });
 

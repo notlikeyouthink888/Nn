@@ -240,6 +240,30 @@ class TestBlock4(unittest.TestCase):
                 self.assertEqual(f['slab']['t'], 200)
 
 
+class TestArabicText(unittest.TestCase):
+    def test_keyboard_arabic(self):
+        self.assertEqual(K.fix_text("Hglsr' HBtrD gg],v HBvqD"), ('المسقط الافقي للدور الارضي', 'keyboard'))
+        self.assertEqual(K.fix_text("ovshkm vy,dm sl; lj,s' 7 sL")[0], 'خرسانة رغوية سمك متوسط 7 سم')
+        for en in ('drawn by', 'SUMP PIT FOR WASTE WATER', 'for %%C 8 mm', 'span (bb2)', 'TYPICAL DETAIL', 'C1'):
+            self.assertIsNone(K.fix_text(en)[1], en)
+
+    def test_word_order_and_codes(self):
+        self.assertEqual(K.fix_text('المفصلي المقعد النزول حالة في'), ('في حالة النزول المقعد المفصلي', 'word-order'))
+        self.assertIsNone(K.fix_text('انظر التسليح في جدول الجسور')[1])
+        self.assertIsNone(K.fix_text('مسقـط الميدات ومحاور الأعمدة')[1])
+        self.assertEqual(K.fix_text('abc %%176 x')[0], 'abc ° x')
+        self.assertEqual(K.fix_text('عµ؛ڑZ لڈ£• وأµ¸¥ڑ')[1], 'undecodable')
+
+    def test_slab_types(self):
+        self.assertEqual(K.slab_type('مقطع في بلاطة هوردي باتجاهين')['key'], 'hordi')
+        self.assertEqual(K.slab_type('FLAT SLAB 250 mm')['key'], 'flat')
+        self.assertEqual(K.slab_type('BUBBLE DECK')['key'], 'bubble')
+        self.assertIsNone(K.slab_type('توصيل الجدران ببلاطات السقف'))
+        self.assertEqual(K.slab_type('مقطع طولي في بلاطة معصبة')['key'], 'ribbed')
+        self.assertEqual(K.layer_hint('ابيام_السقف'), 'beam')
+        self.assertEqual(K.sheet_kind('المسقط الافقي لسقف الدور الرابع'), 'finish')
+
+
 class TestTablesAndScale(unittest.TestCase):
     def test_generic_table(self):
         import cadread as C
@@ -332,8 +356,10 @@ class TestHospital(unittest.TestCase):
         k = {}
         for dw in self.R['drawings']:
             k.setdefault(dw['title'] or '', set()).add(dw['kind'])
-        self.assertIn('arch', k['GROUND FLOOR PLAN'])        # الرئيسي (والمكبَّرات بالعنوان نفسه تفاصيل)
-        self.assertIn('detail', k['GROUND FLOOR PLAN'])
+        self.assertIn('arch', k['GROUND FLOOR PLAN'])        # الرئيسي
+        # المساقط المكبَّرة (بعنوانها الإنجليزي أو العربي المفكوك من خط SHX) تفاصيل لا مساقط رئيسية
+        self.assertIn('detail', k.get('GROUND FLOOR PLAN', set()) | k.get('المسقط الافقي للدور الارضي', set()))
+        self.assertEqual(k.get('المسقط الافقي للدور الارضي'), {'detail'})
         self.assertEqual(k['GROUND FLOOR FINISHES PLAN'], {'finish'})
         self.assertEqual(k['FIRST FLOOR FINISHES PLAN'], {'arch'})   # لا مسقط رئيسي للأول
 

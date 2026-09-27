@@ -16,12 +16,13 @@ const CADPAGE = (() => {
   const tie = t => t ? 'Ø' + t.d + '@' + t.s + (t.sets ? ' (' + t.sets + '/مجموعة)' : '') : '—';
   const KIND = { slab_rft: 'تسليح سقف', beams_key: 'مفتاح جسور', cols_key: 'مفتاح أعمدة', found: 'أساسات',
                  beam_sched: 'جدول جسور', col_sched: 'جدول أعمدة', section: 'مقطع', detail: 'تفصيلة',
-                 elev: 'واجهة', site: 'موقع', arch: 'مسقط معماري', finish: 'مسقط تشطيبات/أثاث' };
+                 elev: 'واجهة', site: 'موقع', arch: 'مسقط معماري', finish: 'مسقط تشطيبات/أثاث',
+                 stair: 'تفصيلة درج', tank: 'خزان', fence: 'سور', joint: 'فاصل تمدد', landscape: 'تنسيق موقع' };
   const FLOORS = [['basement', 'السرداب'], ['ground', 'الأرضي'], ['mezzanine', 'الميزانين'], ['first', 'الأول'],
                   ['second', 'الثاني'], ['third', 'الثالث'], ['fourth', 'الرابع'], ['fifth', 'الخامس'],
                   ['sixth', 'السادس'], ['seventh', 'السابع'], ['eighth', 'الثامن'], ['ninth', 'التاسع'],
                   ['tenth', 'العاشر'], ['typical', 'المتكرر'], ['roof', 'السطح']];
-  const TABS = [['file', '📂 الملف'], ['sheets', '🗺️ المخططات'], ['axes', '📏 المحاور'], ['tables', '📋 الجداول'],
+  const TABS = [['file', '📂 الملف'], ['sheets', '🗺️ المخططات'], ['axes', '📏 المحاور'], ['tables', '📋 الجداول'], ['notes', '📝 الملاحظات'],
                 ['floors', '🏢 الطوابق'], ['layers', '🧠 الطبقات والتعريفات'], ['3d', '🧊 المجسم 3D'],
                 ['send', '📤 إرسال للتحليل']];
 
@@ -31,6 +32,10 @@ const CADPAGE = (() => {
     st.id = 'cadcss';
     st.textContent = `
 #cad .ctabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+#cad .nt{border-top:1px solid var(--line);padding:8px 0}
+#cad .nt-t{font-size:13.5px;line-height:1.8;unicode-bidi:plaintext}
+#cad .nt-m{margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
+#cad .nt-o{font-size:11.5px;color:var(--mut);margin-top:3px;unicode-bidi:plaintext}
 #cad .ctabs button{background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:10px;
   padding:7px 12px;font-size:12.5px;cursor:pointer;font-family:inherit}
 #cad .ctabs button.on{background:linear-gradient(135deg,#0ea5e9,#0891b2);border-color:transparent;color:#fff}
@@ -199,7 +204,7 @@ const CADPAGE = (() => {
     if (!P('file')) return;
     if (!RES) {
       P('file').innerHTML = `<div class="card"><h3>ماذا يفهم هذا القسم؟</h3>${dictHtml(true)}</div>`;
-      ['sheets', 'axes', 'tables', 'floors', 'layers', '3d', 'send'].forEach(k =>
+      ['sheets', 'axes', 'tables', 'notes', 'floors', 'layers', '3d', 'send'].forEach(k =>
         P(k).innerHTML = '<div class="note">ارفع الملف أولاً.</div>');
       return;
     }
@@ -207,6 +212,7 @@ const CADPAGE = (() => {
     P('sheets').innerHTML = sheetsTab();
     P('axes').innerHTML = axesTab();
     P('tables').innerHTML = tablesTab();
+    P('notes').innerHTML = notesTab();
     P('floors').innerHTML = floorsTab();
     P('layers').innerHTML = layersTab();
     P('3d').innerHTML = view3dTab();
@@ -260,6 +266,7 @@ const CADPAGE = (() => {
         ${RAW && (RAW.collapsed || []).length ? `<div>📦 ملف ضخم: ${RAW.collapsed.length} بلوك زخرفي ثقيل (أبواب/أشجار/أثاث — ${RAW.collapsed.reduce((a, c) => a + c.n, 0).toLocaleString('en-US')} نسخة)
           قُرئ كنقطة بدل عشرات الخطوط لكل نسخة، لتسريع القراءة — الأعمدة والمحاور والمناسيب والعناوين تُفكّ دائماً.</div>` : ''}
         ${RAW && RAW.truncated ? '<div>⚠️ تجاوز الملف الحد الأقصى للعناصر — قد تنقص بعض اللوحات الأخيرة.</div>' : ''}</div>
+      ${unknownCard()}
       ${(RES.files || []).length > 1 ? `<div class="note" style="margin-top:8px">📂 مشروع من ${RES.files.length} ملفات مدموجة:
         ${RES.files.map(f => `<div>• <b>${E(f.name)}</b> — ${f.n_ents.toLocaleString('en-US')} عنصر · المقياس ${N(f.scale, 4)} م/وحدة (${E(f.scale_src)}) · ${f.drawings} لوحة</div>`).join('')}</div>` : ''}
       ${(RES.warnings || []).length ? `<ul class="warn">${RES.warnings.map(w => '<li>⚠️ ' + E(w) + '</li>').join('')}</ul>` : ''}
@@ -310,7 +317,7 @@ const CADPAGE = (() => {
         </div>
         <div class="t">${E(dw.title || '—')}</div>
         ${sheetSvg(dw)}
-        ${['elev', 'section', 'detail', 'site', 'finish'].includes(dw.kind)
+        ${['elev', 'section', 'detail', 'site', 'finish', 'stair', 'tank', 'fence', 'joint', 'landscape'].includes(dw.kind)
           ? `<div class="note" style="margin-top:6px">${dw.kind === 'elev'
               ? 'واجهة' + ({ S: ' جنوبية', N: ' شمالية', E: ' شرقية', W: ' غربية' }[dw.view || dw.view_auto] || '') +
                 (dw.view_auto && !dw.view ? ' (الجهة من ترتيب المحاور)' : '') +
@@ -318,11 +325,13 @@ const CADPAGE = (() => {
               : dw.kind === 'section' ? 'مقطع' + (dw.letter ? ' ' + dw.letter + '-' + dw.letter : '') +
                 ' — يُركَّب على خط قطعه بالمسقط، ومنه تُقاس المناسيب وسماكة البلاطة'
               : dw.kind === 'finish' ? 'مسقط تشطيبات/أثاث/سطح علوي — مرجع للقراءة، والمسقط المعماري للطابق هو الذي يُركَّب'
-              : 'لوحة عرض (تفصيلة) — مرجع للقراءة، لا تدخل تركيب العناصر'}${dw.levels && dw.levels.k
+              : (KIND[dw.kind] || 'لوحة عرض (تفصيلة)') + ' — تُقرأ ملاحظاتها وجداولها ونظام بلاطتها، ولا تدخل تركيب المبنى'}
+              ${dw.slab_type ? '<div>🧩 نظام البلاطة: <b>' + E(dw.slab_type.name) + '</b> (من ' + E(dw.slab_type.src) + ')</div>' : ''}
+              ${(RES.notes || []).filter(n => n.drawing === dw.id).length ? '<div>📝 ' + RES.notes.filter(n => n.drawing === dw.id).length + ' ملاحظة — بتبويب «الملاحظات»</div>' : ''}${dw.levels && dw.levels.k
               ? `<div>📏 ${dw.levels.marks.filter(m => m.ok).length} علامة منسوب مقروءة${(dw.levels.slabs || []).length ? ' · ' + dw.levels.slabs.length + ' بلاطة مرسومة' : ''}${(dw.levels.axes || []).length ? ' · ' + dw.levels.axes.length + ' محور مطابَق مع المسقط' : ''}</div>` : ''}</div>`
           : `<div class="note" style="margin-top:6px">${dw.ax.x.length}×${dw.ax.y.length} محور · ${dw.columns.length} عمود ·
           ${dw.beams.length} بحر جسر (${dw.beams.filter(b => b.mark).length} بعلامة) · ${dw.openings.length} فتحة ·
-          ${dw.callouts.length} نداء تسليح${(dw.walls || []).length && dw.kind === 'arch' ? ' · ' + dw.walls.length + ' جدار' : ''}${dw.thickness ? ' · بلاطة ' + dw.thickness + ' مم' : ''}</div>`}
+          ${dw.callouts.length} نداء تسليح${(dw.walls || []).length && dw.kind === 'arch' ? ' · ' + dw.walls.length + ' جدار' : ''}${dw.thickness ? ' · بلاطة ' + dw.thickness + ' مم' : ''}${dw.slab_type ? ' · 🧩 ' + E(dw.slab_type.name) : ''}</div>`}
       </div>`;
     return `<div class="card">${bsel()}
       <div class="legend" style="margin:8px 0"><span><i style="background:#ef4444"></i>عمود</span>
@@ -419,10 +428,13 @@ const CADPAGE = (() => {
         <span class="tag t-ok">منسوب ${f.level >= 0 ? '+' : ''}${N(f.level, 2)} م</span> ${HS[f.h_src] || ''}</h3>
         <div class="f" style="margin-bottom:8px"><div><label>ارتفاع الطابق (م)</label>
           <input type="number" step="0.05" min="2.4" max="12" class="sm" data-fh="${f.key}" value="${f.h}"></div></div>
+        ${f.slab.system ? `<div class="note" style="margin-bottom:6px">🧩 <b>${E(f.slab.system.name)}</b> — ${E(f.slab.system.desc || '')}
+          <br><small>المصدر: ${E(f.slab.system.src || '')} «${E((f.slab.system.evidence || '').slice(0, 90))}»${f.slab.beamless ? ' · لم تُفترض جسور لأن النظام بلا جسور' : ''}${(f.slab.drops || []).length ? ' · ' + f.slab.drops.length + ' تسقيط حول الأعمدة' : ''}</small></div>` : ''}
         ${f.beams_assumed ? '<div class="note" style="margin-bottom:6px">⚠️ لا مخطط جسور لهذا السقف — الجسور مفترضة بين الأعمدة (250 مم، عمق ≈ البحر/12) ومعلَّمة «تخمين». ارفع مخطط الجسور أو عرّفها بتبويب «التعريفات».</div>' : ''}
         <div class="kg">${kpi('أعمدة', f.columns.length)}${kpi('بحور جسور', f.beams.length, f.beams_assumed ? 'warn' : '')}
           ${(f.walls || []).length ? kpi('جدران', f.walls.length) : ''}
-          ${kpi(f.t_src === 'section' ? 'بلاطة (من المقطع)' : 'بلاطة', s.t + ' مم', s.t_from_title || f.t_src === 'section' ? 'ok' : 'warn')}${kpi('فتحات', s.openings.length)}
+          ${kpi(f.t_src === 'section' ? 'بلاطة (من المقطع)' : f.t_src === 'system' ? 'بلاطة (نموذجية للنظام)' : 'بلاطة', s.t + ' مم', s.t_from_title || f.t_src === 'section' ? 'ok' : 'warn')}
+          ${s.system ? kpi('نظام البلاطة', E(s.system.name), 'ok') : ''}${kpi('فتحات', s.openings.length)}
           ${kpi('شبكة سفلية', m.bot ? 'Ø' + m.bot.d + '@' + m.bot.s : '—')}${kpi('شبكة علوية', m.top ? 'Ø' + m.top.d + '@' + m.top.s : '—')}</div>
         ${s.openings.length ? `<div class="note" style="margin-top:6px">الفتحات: ${s.openings.map(o =>
           `<span class="ltr">${o.between && o.between.x ? E(AX(o.between.x[0])) + '→' + E(AX(o.between.x[1])) : ''} × ${o.between && o.between.y ? E(AX(o.between.y[0])) + '→' + E(AX(o.between.y[1])) : ''}</span>
@@ -449,6 +461,37 @@ const CADPAGE = (() => {
       ${B.footings.map(ft => `<tr><td class="ltr">${E(ft.col || '—')}</td><td class="ltr">${N(ft.B, 2)}</td><td>${ft.h}</td>
         <td class="ltr">${N(ft.PD, 0)} / ${N(ft.PL, 0)}</td><td class="ltr">${N(ft.Pu, 0)}</td><td class="ltr">${E(ft.bars)}</td>
         <td>${ft.ok ? '<span class="tag t-ok">✓</span>' : '<span class="tag t-bad">✗</span>'}</td></tr>`).join('')}</table></div></div>` : '');
+  }
+
+  // كل الملاحظات المكتوبة بالملف — مصلَحة اللغة، مصنَّفة، ومنسوبة لرسمتها
+  function notesTab() {
+    const NS = RES.notes || [], ST = RES.text_stats || {};
+    const FIX = { keyboard: '⌨️ عربي بمواضع المفاتيح (خط SHX قديم) — فُكّ', reversed: '🔁 حروف مقلوبة — عُدّلت',
+                  'word-order': '↔️ ترتيب كلمات مقلوب — قراءة مقترحة', undecodable: '❓ خط SHX خاص لا يُفكّ', codes: '🔣 رموز %%nnn — فُكّت' };
+    const byDw = {};
+    NS.forEach(n => { const k = n.drawing == null ? 'g' : n.drawing; (byDw[k] = byDw[k] || []).push(n); });
+    const dname = k => k === 'g' ? 'ملاحظات عامة (خارج الرسمات)' : (() => { const d = RES.drawings.find(x => x.id === +k);
+      return '#' + (+k + 1) + ' ' + (d ? E(d.title || d.kind_name || '') : ''); })();
+    const tot = Object.entries(ST).filter(([k]) => k !== 'fixes').reduce((a, [, v]) => a + v, 0);
+    const lab = { note_line: 'أسطر ملاحظات', title: 'عناوين', mark: 'علامات عناصر/محاور', number: 'أرقام وأبعاد', callout: 'نداءات تسليح',
+                  label: 'تسميات قصيرة', room: 'أسماء فضاءات', table_cell: 'خلايا جداول', undecodable: 'غير مقروء', empty: 'فارغ' };
+    return `<div class="card"><h3>📝 كل نص بالملف مقروء (${tot.toLocaleString('en-US')} نص)</h3>
+      <div class="kg">${Object.entries(lab).filter(([k]) => ST[k]).map(([k, t]) => kpi(t, ST[k].toLocaleString('en-US'), k === 'undecodable' ? 'warn' : '')).join('')}</div>
+      ${ST.fixes ? `<div class="note" style="margin-top:6px">إصلاح اللغة: ${Object.entries(ST.fixes).filter(([k]) => k !== 'ok').map(([k, v]) => (FIX[k] || k) + ': ' + v).join(' · ') || 'كل النصوص سليمة'}</div>` : ''}
+    </div>` + Object.entries(byDw).map(([k, arr]) => `<div class="card" style="margin-top:10px"><h3>${dname(k)} <small>(${arr.length})</small></h3>
+      ${arr.map(n => `<div class="nt"><div class="nt-t" dir="auto">${E(n.alt || n.text).replace(/\n/g, '<br>')}</div>
+        <div class="nt-m">${(n.kinds || []).map(x => `<span class="tag">${E(x)}</span>`).join(' ')}
+          ${n.slab ? '<span class="tag t-ok">نظام بلاطة</span>' : ''}${(n.fix || []).map(f => `<span class="tag t-warn">${FIX[f] || f}</span>`).join(' ')}</div>
+        ${n.alt ? `<div class="nt-o" dir="auto">الأصل: ${E(n.text).replace(/\n/g, ' / ')}</div>` : ''}
+        ${n.orig ? `<div class="nt-o ltr">الأصل بالملف: ${E(n.orig).replace(/\n/g, ' / ')}</div>` : ''}</div>`).join('')}</div>`).join('');
+  }
+
+  function unknownCard() {
+    const U = RES.unknown || [];
+    if (!U.length) return '<div class="card" style="margin-top:10px"><h3>🔍 ما لم أتعرّف عليه</h3><div class="note">لا شيء — كل الرسمات والنصوص والطبقات فُهمت.</div></div>';
+    return `<div class="card" style="margin-top:10px"><h3>🔍 ما لم أتعرّف عليه (${U.length}) — راجعه أو أخبرني به</h3>
+      ${U.map(u => `<div class="nt"><div class="nt-t"><b>${E(u.title)}</b></div><div class="note">${E(u.detail)}</div>
+        ${(u.samples || []).length ? `<div class="nt-o">أمثلة: ${u.samples.map(x => '<span class="ltr" dir="auto">' + E(x) + '</span>').join(' · ')}</div>` : ''}</div>`).join('')}</div>`;
   }
 
   function dictHtml(short) {
@@ -563,7 +606,9 @@ const CADPAGE = (() => {
         ${rb ? 'سفلي <b class="ltr">' + bar(rb.bot.cont) + (rb.bot.extra ? ' + ' + bar(rb.bot.extra) : '') + '</b> · علوي <b class="ltr">' +
           bar(rb.top.cont) + (rb.top.sup ? ' + ' + bar(rb.top.sup) : '') + '</b> · أتاري <b class="ltr">' + tie(rb.stir.end) + ' / ' + tie(rb.stir.mid) + '</b>'
           : 'لا حديد بالجدول لهذه العلامة'}`,
-      slab: () => `⬜ <b>بلاطة سقف ${E(u.floor)}</b> · ${u.t} مم · سفلي ${u.mesh && u.mesh.bot ? 'Ø' + u.mesh.bot.d + '@' + u.mesh.bot.s : '—'}
+      slab: () => `⬜ <b>${u.drop ? 'تسقيط حول العمود (Drop Panel) ' + N(u.drop.s, 2) + '×' + N(u.drop.s, 2) + ' م × ' + u.drop.t + ' مم — ' : ''}بلاطة سقف ${E(u.floor)}</b> · ${u.t} مم
+        ${u.sys ? '· <b>' + E(u.sys) + '</b>' : ''}${u.ribs ? ' · أعصاب ' + u.ribs.width + ' مم كل ' + N(u.ribs.spacing, 2) + ' م' + (u.ribs.two_way ? ' باتجاهين' : '') + ' + بلاطة علوية ' + u.ribs.topping + ' مم' : ''}
+        · سفلي ${u.mesh && u.mesh.bot ? 'Ø' + u.mesh.bot.d + '@' + u.mesh.bot.s : '—'}
         · علوي ${u.mesh && u.mesh.top ? 'Ø' + u.mesh.top.d + '@' + u.mesh.top.s : '—'}`,
       strip: () => `🧱 <b>أساس شريطي</b> · العرض ${u.w} مم × السماكة ${u.h} مم · الطول ${N(u.L, 2)} م` +
         (u.P ? ` · الحمل الخدمي ${N(u.P, 0)} كن/م` : '') + (u.designed ? ' · <span class="tag t-warn">مصمَّم بالكود</span>' : ' · من الملف'),

@@ -16,7 +16,12 @@
 import functools
 import re
 
-from plan import parse_rebar_callout, clean_text
+from plan import parse_rebar_callout, clean_text as _pl_clean
+
+
+def clean_text(t):
+    """تنظيف النص + حذف التطويل («مسـقط» = «مسقط») قبل أي مطابقة."""
+    return (_pl_clean(t) or '').replace('ـ', '')
 
 # ------------------------------ أنواع اللوحات ------------------------------
 # الترتيب مهم: الأخصّ أولاً («Schedule of Beams» قبل «Beams Key Plan» قبل «Plan»).
@@ -38,15 +43,22 @@ SHEET_KINDS = [
      r'توقيع\s*الأعمدة)'),
     ('found', 'مخطط الأساسات',
      r'(foundation\s+plan|footings?\s+(plan|layout)|raft\s+plan|piles?\s+(plan|layout)|'
-     r'مخطط\s*الأساسات|الأساسات|القواعد)'),
+     r'مخطط\s*الأساسات|الأساسات|القواعد|\bالأساس\b|\bالاساس\b|الميدات|\bميدات\b)'),
     # مساقط مرجعية (تشطيبات/أثاث/سقف مستعار/السطح العلوي) — تُعرض ولا تُركَّب بدل المسقط الأصلي
     ('finish', 'مسقط تشطيبات/أثاث', r'(finish(es)?\s+plan|furniture\s+(plan|layout)|sitting\s+layout|seating\s+layout|'
-                                   r'reflected\s+ceiling|ceiling\s+plan|upper\s+roof|مسقط\s*(التشطيبات|الأثاث|السقف\s*المستعار))'),
+                                   r'reflected\s+ceiling|ceiling\s+plan|upper\s+roof|مسقط\s*(التشطيبات|الأثاث|السقف\s*المستعار)|'
+                                   r'لتشطيبات|لتشطبات|تشطيبات\s*الدور|للسقف\s*المستعار|مسقط\s*(ال)?(افقي|أفقي)\s*لسقف|المفروش|مفروش)'),
+    # تفاصيل تخصّصية (تُقرأ ملاحظاتها ولا تُركَّب مبنى)
+    ('stair', 'تفصيلة درج', r'(stair\s+(detail|plan|section)|\bالسلم\b|\bسلم\b|\bالدرج\b|\bدرج\b|\bللسلم\b|\bللدرج\b)'),
+    ('tank', 'خزان', r'(\btank\b|خزان)'),
+    ('fence', 'سور', r'(\bfence\b|boundary\s+wall|\bالسور\b|\bسور\b|\bللسور\b)'),
+    ('joint', 'فاصل تمدد', r'(expansion\s+joint|فاصل\s*(التمدد|تمدد|القطع))'),
+    ('landscape', 'تنسيق موقع', r'(landscape|بركة|نافورة|حوض\s*زرع|تنسيق\s*الموقع)'),
     ('section', 'مقطع', r'(\bsection\b|\bsec\.\s*[a-z0-9]|مقطع)'),
     ('detail', 'تفصيلة', r'(typical\s+detail|\bdetail\b|تفصيل)'),
     ('elev', 'واجهة', r'(\belevation\b|facade|واجهة|واجهات)'),
-    ('site', 'موقع عام', r'(site\s+plan|layout\s+plan|الموقع\s*العام)'),
-    ('arch', 'مسقط معماري', r'(floor\s+plan|ground\s+plan|مسقط)'),
+    ('site', 'موقع عام', r'(site\s+plan|layout\s+plan|الموقع\s*العام|للموقع\s*العام|موقع\s*عام|كروكي\s*الموقع)'),
+    ('arch', 'مسقط معماري', r'(floor\s+plan|ground\s+plan|مسقط|مخطط\s+(ال)?(طابق|دور|بيتونة|سطح|قبو|سرداب|بدروم))'),
 ]
 _SHEET_RX = [(k, n, re.compile(p, re.I)) for k, n, p in SHEET_KINDS]
 SHEET_NAMES = {k: n for k, n, _ in SHEET_KINDS}
@@ -70,7 +82,7 @@ FLOORS = [
     ('ninth', 9.0, 'التاسع', r'ninth|9th', r'التاسع|تاسع'),
     ('tenth', 10.0, 'العاشر', r'tenth|10th', r'العاشر|عاشر'),
     ('typical', 50.0, 'المتكرر', r'typical|repeated', r'متكرر|المتكرر'),
-    ('roof', 99.0, 'السطح', r'roof\s+floor|top\s+roof|terrace', r'السطح|سطح'),
+    ('roof', 99.0, 'السطح', r'roof\s+floor|top\s+roof|terrace', r'السطح|سطح|البيتونة|بيتونة'),
 ]
 FLOOR_ORDER = {k: o for k, o, *_ in FLOORS}
 FLOOR_NAMES = {k: n for k, _, n, *_ in FLOORS}
@@ -111,8 +123,17 @@ def parse_floor(text):
     return None
 
 
+_LEAD_SECTION = re.compile(r'^\s*(مقطع|مقاطع|قطاع|قطاعات|section|sec\.)', re.I)
+_LEAD_DETAIL = re.compile(r'^\s*(تفصيلة|تفاصيل|تفصيل|detail|typical\s+detail)', re.I)
+
+
 def sheet_kind(text):
     s = clean_text(text)
+    # الكلمة الأولى تحسم: «مقطع من الأساس» مقطع لا مخطط أساسات، و«تفصيلة …» تفصيلة
+    if _LEAD_SECTION.match(s):
+        return 'section'
+    if _LEAD_DETAIL.match(s) and not re.search(r'(schedule|جدول)', s, re.I):
+        return 'detail'
     for k, n, rx in _SHEET_RX:
         if rx.search(s):
             return k
@@ -155,10 +176,20 @@ def parse_title(text):
                 building=(b.group(1) or b.group(2)).replace(' ', '-') if b else None)
 
 
+_NOTE_START = {'يتم', 'ينفذ', 'تنفذ', 'يجب', 'ملاحظة', 'ملحوظة', 'ملاحظات', 'تهبط', 'تهبّط', 'يكسح', 'يمتد',
+               'مساحة', 'أحمال', 'احمال', 'لا', 'انظر', 'راجع', 'يراعى', 'يعمل', 'تعمل', 'يترك', '-', 'ـ', '*'}
+
+
 def is_title(text):
-    """نص يصلح عنواناً للوحة (لا نداء تسليح ولا علامة عنصر)."""
+    """نص يصلح عنواناً للوحة (لا نداء تسليح ولا علامة عنصر ولا جملة ملاحظة)."""
     s = clean_text(text)
-    return len(s) >= 8 and sheet_kind(s) is not None
+    if len(s) < 8 or sheet_kind(s) is None:
+        return False
+    if re.search('[\u0600-\u06FF]', s):
+        ws = s.replace(':', ' ').split()
+        if not ws or ws[0] in _NOTE_START or len(ws) > 12:
+            return False                       # جملة تنفيذية/ملاحظة فيها كلمة «الأساس» ليست عنوان لوحة
+    return True
 
 
 # ------------------------------ علامات العناصر ------------------------------
@@ -338,15 +369,25 @@ def parse_definition(text):
 # ------------------------------ الطبقات ------------------------------
 LAYER_HINTS = [
     ('axis', 'محاور', r'(axis|axes|grid|center|centre|c-?l\b|محور|محاور)'),
-    ('col', 'أعمدة', r'(^|[^a-z])(col|colom|column|s-col|عمود|اعمدة|أعمدة)'),
-    ('beam', 'جسور', r'(beam|^b-|joist|جسر|جسور|كمرة|كمرات)'),
-    ('slab', 'بلاطات', r'(slab|roof|سقف|بلاطة)'),
-    ('found', 'أساسات', r'(found|fdn|footing|raft|pile|أساس|اساس|قواعد)'),
+    ('col', 'أعمدة', r'(^|[^a-z])(col|colom|column|s-col|عمود|اعمدة|أعمدة|اعمده)'),
+    ('beam', 'جسور', r'(beam|^b-|joist|جسر|جسور|كمرة|كمرات|ابيام|بيم|جوائز|جائز)'),
+    ('slab', 'بلاطات', r'(slab|roof|سقف|بلاطة|هوردي|هردي|هــردي|hordi|hourdi)'),
+    ('found', 'أساسات', r'(found|fdn|footing|foot|raft|pile|أساس|اساس|قواعد|ميدة|ميدات)'),
     ('rebar', 'تسليح', r'(reinf|rebar|steel|rft|bar|تسليح|حديد)'),
     ('hidden', 'خط مخفي', r'(hidden|dash)'),
     ('dim', 'أبعاد', r'(^dim$|dimension|^dims?$)'),
     ('text', 'نصوص', r'(text|txt|anno|نص)'),
-    ('frame', 'إطار ورقة', r'(frame|border|sheet|title|إطار)'),
+    ('frame', 'إطار ورقة', r'(frame|border|burder|sheet|title|إطار)'),
+    # طبقات معمارية وموقع (تُعرف فلا تُعدّ «مجهولة»)
+    ('wall', 'جدران', r'(wall|حوائط|حائط|جدار|جدران|بلوك|brick|block|concreat|concrete|خرسان)'),
+    ('door', 'أبواب', r'(door|ابواب|أبواب|باب|d&w)'),
+    ('window', 'شبابيك', r'(win|glaz|glass|شبابيك|شباك|نوافذ|زجاج|curtain)'),
+    ('stair', 'سلالم', r'(stair|سلالم|سلم|درج|handrail|rail)'),
+    ('furn', 'أثاث وتجهيزات', r'(furn|fur\.|^fur$|bed|sanit|san$|wc|lav|fixture|equip|أثاث|مغاسل|panel)'),
+    ('land', 'موقع وتشجير', r'(tree|arbre|plant|shrub|landscape|green|garden|road|curb|soil|site|موقع|أشجار|تشجير|شعار)'),
+    ('hatch', 'تهشير', r'(hatch|hath|hatsh|تهشير|هاتش)'),
+    ('finish', 'تشطيبات', r'(finish|marble|tile|رخام|سيراميك|بلاط|gyps|جبس|wood|metal|خشب|الديكور|decor)'),
+    ('elev', 'واجهات ومقاطع', r'(elev|^ele|section|cut|visib|اسقاطات|واجهة|مقطع)'),
 ]
 _LAYER_RX = [(k, re.compile(p, re.I)) for k, _, p in LAYER_HINTS]
 
@@ -418,4 +459,173 @@ def dictionary():
         layers=[dict(key=k, name=n, pattern=p) for k, n, p in LAYER_HINTS],
         symbols=SYMBOLS,
         precedence='تعريف المستخدم بالواجهة ← تعريف المهندس داخل الملف ← هذه القاعدة',
+        slab_types=[dict(key=k, name=n, pattern=p, t=t, desc=d) for k, n, p, t, d in SLAB_TYPES],
+        beam_types=[dict(key=k, name=n, pattern=p) for k, n, p in BEAM_TYPES],
+        text_fixes=[dict(key='keyboard', name='عربي بمواضع المفاتيح', how="«Hglsr' HBtrD» ← «المسقط الافقي»"),
+                    dict(key='reversed', name='حروف مقلوبة', how='«ةيضرلأا» ← «الأرضية»'),
+                    dict(key='word-order', name='ترتيب كلمات مقلوب', how='«المفصلي المقعد النزول حالة في» ← «في حالة النزول المقعد المفصلي»'),
+                    dict(key='codes', name='رموز %%nnn', how='«%%176» ← «°» (صفحة 1256)'),
+                    dict(key='undecodable', name='خط SHX خاص', how='يُبلَّغ عنه بقسم «ما لم أتعرّف عليه»')],
     )
+
+
+
+# ------------------------------ أنظمة البلاطات ------------------------------
+# (المفتاح، الاسم، النمط، السماكة الافتراضية مم، الوصف الهندسي)
+SLAB_TYPES = [
+    ('bubble', 'بلاطة ببل ديك (كرات مفرغة)', r'(bubble\s*deck|bubble|ببل\s*ديك|\bببل\b|كرات\s*بلاستيك|cobiax|u-?boot)', 280,
+     'كرات بلاستيك مفرغة بين شبكتين — بلا جسور غالباً؛ وزن أقل ~35%، والقص قرب الأعمدة يُحسب بمنطقة مصمتة.'),
+    ('waffle', 'وافل (أعصاب باتجاهين)', r'(waffle|وافل|اعصاب\s*باتجاهين|أعصاب\s*باتجاهين|two[- ]way\s*(rib|joist))', 350,
+     'أعصاب متعامدة بقوالب؛ رؤوس مصمتة حول الأعمدة.'),
+    ('hordi', 'هوردي (بلوك مفرغ + أعصاب)', r'(hordi|hourdi|hurdi|هوردي|هردي|هــردي|بلوك\s*مفرغ|hollow\s*block)', 300,
+     'بلوك مفرغ 40×20×(20–25) سم بين أعصاب 10–15 سم، وبلاطة علوية 5–7 سم؛ الأعصاب باتجاه البحر القصير (أو باتجاهين).'),
+    ('ribbed', 'بلاطة معصبة (أعصاب باتجاه واحد)', r'(ribbed|joist|معصب|اعصاب|أعصاب|عصب)', 300,
+     'أعصاب متوازية بتباعد 50–70 سم وبلاطة علوية رقيقة.'),
+    ('flat', 'بلاطة مسطحة (فلات سلاب) بلا جسور', r'(flat\s*slab|فلات|بلاطة\s*مسطحة|لا\s*كمرية|بدون\s*جسور|بلا\s*جسور)', 250,
+     'تحمل مباشرة على الأعمدة؛ القص الثاقب حول العمود هو الحاكم (ACI 318-19 §22.6)، وقد يُضاف تسقيط Drop Panel.'),
+    ('hollowcore', 'بلاطات مسبقة الصب (هولوكور)', r'(hollow\s*core|precast|مسبق(ة)?\s*الصب)', 200,
+     'ألواح مسبقة الصب مفرغة، ترتكز على جسور/جدران وتُربط بطبقة علوية.'),
+    ('solid', 'بلاطة مصمتة على جسور', r'(solid\s*slab|مصمت|مصمتة)', 200, 'بلاطة خرسانية كاملة السماكة على جسور.'),
+]
+_SLAB_RX = [(k, n, re.compile(p, re.I), t, d) for k, n, p, t, d in SLAB_TYPES]
+DROP_RX = re.compile(r'(drop\s*panel|تسقيط|ساقط(ة)?\s*حول|capital|تاج\s*العمود)', re.I)
+BEAM_TYPES = [('hidden', 'جسر مخفي (بسماكة البلاطة)', r'(hidden\s*beam|concealed\s*beam|جسر\s*مخفي|جسور\s*مخفية|مدفون|مخفية)'),
+              ('inverted', 'جسر مقلوب (فوق البلاطة)', r'(inverted\s*beam|upstand|مقلوب)'),
+              ('cantilever', 'كابولي', r'(cantilever|كابولي|كابولية|ظفر)'),
+              ('tie', 'ميدة / جسر ربط', r'(tie\s*beam|grade\s*beam|ميدة|ميدات|جسر\s*ربط)')]
+_BEAM_RX = [(k, n, re.compile(p, re.I)) for k, n, p in BEAM_TYPES]
+
+
+def slab_type(text):
+    """نظام البلاطة من نص (عنوان/ملاحظة/اسم طبقة) — يرجع (المفتاح، الاسم، السماكة الافتراضية، الوصف) أو None."""
+    s = clean_text(text or '')
+    for k, n, rx, t, d in _SLAB_RX:
+        if rx.search(s):
+            return dict(key=k, name=n, t=t, desc=d)
+    return None
+
+
+def beam_types(text):
+    s = clean_text(text or '')
+    return [dict(key=k, name=n) for k, n, rx in _BEAM_RX if rx.search(s)]
+
+
+# ------------------------------ إصلاح النص العربي ------------------------------
+# ١) عربي مكتوب بخطوط SHX قديمة بمواضع لوحة المفاتيح: «Hglsr' HBtrD gg],v HBvqD» = «المسقط الافقي للدور الارضي».
+_KB = {'q': 'ض', 'w': 'ص', 'e': 'ث', 'r': 'ق', 't': 'ف', 'y': 'غ', 'u': 'ع', 'i': 'ه', 'o': 'خ', 'p': 'ح',
+       '[': 'ج', ']': 'د', 'a': 'ش', 's': 'س', 'd': 'ي', 'f': 'ب', 'g': 'ل', 'h': 'ا', 'j': 'ت', 'k': 'ن',
+       'l': 'م', ';': 'ك', "'": 'ط', 'z': 'ئ', 'x': 'ء', 'c': 'ؤ', 'v': 'ر', 'b': 'لا', 'n': 'ى', 'm': 'ة',
+       ',': 'و', '.': 'ز', '/': 'ظ', '`': 'ذ'}
+_KB_SHIFT = {'<': ',', '>': '.', ':': ';', '"': "'", '{': '[', '}': ']', '?': '/', '~': '`'}
+_KB_WORD = re.compile(r"[A-Za-z',;\[\]`<>:\"{}?~\\_]+")
+
+
+def _kb_decode(s):
+    out = []
+    for ch in s:
+        c = _KB_SHIFT.get(ch, ch)
+        c = c.lower() if c.isalpha() and c.isascii() else c
+        if c in ('\\', '_'):
+            continue                                  # مدّة/تطويل بالخط القديم
+        out.append(_KB.get(c, ch))
+    return ''.join(out)
+
+
+def _looks_kb_arabic(s):
+    """نص لاتيني هو في الحقيقة عربي بمواضع المفاتيح: كلمات تبدأ بـ Hg/hg (= ال) أو فيها ,;'[] داخل الكلمة
+    وقليلة الحروف الصوتية (الإنجليزية ≈ 38%)."""
+    words = _KB_WORD.findall(s or '')
+    if not words or re.search(r'[؀-ۿ]', s or ''):
+        return False
+    if any(w.lower().strip("',;:()") in _ENG for w in words):
+        return False                                  # كلمة إنجليزية معروفة = نص إنجليزي
+    letters = [c.lower() for w in words for c in w if c.isalpha()]
+    if len(letters) < 3:
+        return False
+    al = sum(1 for w in words if re.match(r"^[Hh]g\S", w) or re.match(r"^[Hh]B", w))
+    punct_in = sum(1 for w in words if re.search(r"\w[',;\[\]<>:]\w", w) or re.search(r"\w[',;\]]$", w))
+    vow = sum(1 for c in letters if c in 'aeiou') / float(len(letters))
+    upper_words = sum(1 for w in words if len(w) > 2 and w.isupper())
+    if upper_words >= max(1, len(words) * 0.6):
+        return False                                  # «SUMP PIT FOR WASTE WATER» إنجليزي
+    return al >= 1 or (punct_in >= 1 and vow < 0.3) or (vow < 0.18 and len(letters) >= 6)
+
+
+_PREP = {'في', 'من', 'على', 'الى', 'إلى', 'عن', 'مع', 'و', 'ثم', 'او', 'أو', 'لل', 'بين', 'حتى', 'عند', 'تحت', 'فوق'}
+_START = {'مسقط', 'مقطع', 'تفصيلة', 'تفاصيل', 'واجهة', 'يتم', 'ينفذ', 'تنفذ', 'ملحوظة', 'ملاحظة', 'ملاحظات',
+          'تسليح', 'جدول', 'أبعاد', 'ابعاد', 'حامل', 'مصباح', 'منظور', 'لقطة', 'مخطط', 'قطاع', 'قطاعات',
+          'يجب', 'تهبط', 'انظر', 'أنظر', 'راجع', 'تفصيل', 'مساقط'}
+_ENG = set('''a an and at by for from in of on or the to with mm cm m kg mpa bar bars top bottom bot mid end ends span
+plan section detail typical level floor roof ground first second third fourth wall walls slab beam beams column columns
+footing foundation stair stairs door window drawn checked approved date scale sheet no note notes see type size
+reinforcement steel concrete cover lap spacing thick thickness main ties rft ref elevation upper lower left right'''.split())
+
+
+def _norm_ar(w):
+    return w.replace('ـ', '')
+
+
+def _word_order_score(ws):
+    if not ws:
+        return 0
+    sc = 0
+    if ws[0] in _START:
+        sc += 2
+    if ws[-1] in _PREP:
+        sc -= 3
+    if ws[0] in _PREP and len(ws) > 2:
+        sc += 1
+    if ws[-1] in _START:
+        sc -= 1
+    return sc
+
+
+_MOJIBAKE = re.compile('[£¥µ¸¹º»«‹›“”•–—¾¼¤¨Œœ†‡‰]')
+
+
+_PCT = re.compile(r'%%(\d{3})')
+
+
+def _pct_decode(s):
+    """«%%195%%218» = رموز الأوتوكاد برقم المحرف (صفحة ويندوز العربية 1256)."""
+    def one(m):
+        n = int(m.group(1))
+        try:
+            return bytes([n]).decode('cp1256') if 32 <= n <= 255 else ''
+        except Exception:
+            return ''
+    return _PCT.sub(one, s)
+
+
+def fix_text(s):
+    """يرجع (النص المُصلَح، الطريقة): keyboard = عربي بمواضع المفاتيح · reversed = حروف مقلوبة ·
+    word-order = ترتيب كلمات مقلوب (قراءة مقترحة) · undecodable = خط SHX عربي خاص لا يُفكّ · None = سليم."""
+    s0 = s or ''
+    if not s0.strip():
+        return s0, None
+    pct = False
+    if _PCT.search(s0):
+        s0, pct = _pct_decode(s0), True
+    if re.search(r'[\u0600-\u06FF]', s0) and re.search(r'\b[Hh]g[a-zA-Z\',;\[\]]*', s0):
+        # خليط: بعض الكلمات عربية فعلاً وبعضها بمواضع المفاتيح («hg» + أعم…)
+        s1 = re.sub(r"[A-Za-z',;\[\]`<>:{}?~_]+", lambda m: _kb_decode(m.group(0))
+                    if _looks_kb_arabic(m.group(0)) or m.group(0).lower().startswith('hg') else m.group(0), s0)
+        if s1 != s0:
+            return s1, 'keyboard'
+    if len(_MOJIBAKE.findall(s0)) >= 2 and re.search(r'[؀-ۿ]', s0) and re.search(r'[A-Za-z|\\\\]', s0):
+        return s0, 'undecodable'
+    if _looks_kb_arabic(s0):
+        return _kb_decode(s0), 'keyboard'
+    if re.search(r'[؀-ۿ]', s0):
+        ws = s0.split()
+        # حروف مقلوبة (ترتيب مرئي): كلمات تنتهي بـ«لا» (= «ال» معكوسة) أكثر من التي تبدأ بـ«ال»
+        ends = sum(1 for w in ws if len(w) > 3 and w.endswith('لا'))
+        starts = sum(1 for w in ws if len(w) > 3 and w.startswith('ال'))
+        if ends >= 2 and ends > starts + 1:
+            return s0[::-1], 'reversed'
+        wn = [_norm_ar(w) for w in ws]
+        # ترتيب كلمات مقلوب (سطر عربي كُتب بمحرر لا يدعم الاتجاه): السطر ينتهي بحرف جر/عطف،
+        # أو آخر كلماته كلمة افتتاحية («تفاصيل», «مسقط») وأوله ليس كذلك
+        if len(ws) >= 3 and (wn[-1] in _PREP or (wn[-1] in _START and wn[0] not in _START)):
+            return ' '.join(ws[::-1]), 'word-order'
+    return s0, ('codes' if pct else None)

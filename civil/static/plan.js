@@ -91,6 +91,7 @@ const PlanIO = (() => {
           for (const bp of (e.boundaryPaths || e.paths || [])) {
             const p = [];
             for (const ed of (bp.edges || [])) {
+              if (!ed) continue;                          // حافة فارغة بملفات 2010 — تُتجاوز
               if (ed.start) p.push(ed.start.x, ed.start.y);
               else if (ed.center && ed.radius) {          // حافة قوسية
                 p.push(ed.center.x + ed.radius, ed.center.y);
@@ -281,7 +282,11 @@ const PlanIO = (() => {
       (layers[e.l] = layers[e.l] || { name: e.l, color: 7, n: 0, lt: '' }).n++;
     };
 
-    function emit(e, m, ctx, depth) {
+    let nBad = 0;
+    function emit(e, m, ctx, depth) {           // عنصر تالف واحد لا يوقف قراءة الملف: يُعدّ ويُتجاوز
+      try { emit0(e, m, ctx, depth); } catch (err) { nBad++; }
+    }
+    function emit0(e, m, ctx, depth) {
       if (!e || SKIP.has(e.type)) return;
       // الطبقة «0» داخل البلوك ترث طبقة الإدراج (قاعدة الأوتوكاد)
       const lay = (ctx.lay && (!e.layer || e.layer === '0')) ? ctx.lay : (e.layer || '0');
@@ -352,6 +357,7 @@ const PlanIO = (() => {
           for (const bp of (e.boundaryPaths || e.paths || [])) {
             const p = [];
             for (const ed of (bp.edges || [])) {
+              if (!ed) continue;
               if (ed.start) { const q = ap(mo, ed.start.x, ed.start.y); p.push(q[0], q[1]); }
               else if (ed.center && ed.radius) { const q = ap(mo, ed.center.x + ed.radius, ed.center.y); p.push(q[0], q[1]); }
             }
@@ -399,7 +405,7 @@ const PlanIO = (() => {
     for (const e of top) emit(e, ID, {}, 0);
     const hdr = db.header || {};
     return { source: source, mode: 'full', insunits: hdr.INSUNITS ?? 4,
-             dimlfac: hdr.DIMLFAC ?? null, ents: ents, truncated: truncated,
+             dimlfac: hdr.DIMLFAC ?? null, ents: ents, truncated: truncated, bad: nBad,
              collapsed: [...collapsed].map(n => ({ name: n, n: (blocks[n] || {}).n || 0 })),
              blocks: Object.values(blocks).sort((a, b) => b.n - a.n),
              layers: Object.values(layers).filter(l => l.n > 0).sort((a, b) => b.n - a.n) };

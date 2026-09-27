@@ -23,7 +23,7 @@ const CADPAGE = (() => {
                   ['sixth', 'السادس'], ['seventh', 'السابع'], ['eighth', 'الثامن'], ['ninth', 'التاسع'],
                   ['tenth', 'العاشر'], ['typical', 'المتكرر'], ['roof', 'السطح']];
   const TABS = [['file', '📂 الملف'], ['sheets', '🗺️ المخططات'], ['axes', '📏 المحاور'], ['tables', '📋 الجداول'], ['notes', '📝 الملاحظات'],
-                ['floors', '🏢 الطوابق'], ['layers', '🧠 الطبقات والتعريفات'], ['3d', '🧊 المجسم 3D'],
+                ['floors', '🏢 الطوابق'], ['stairs', '🪜 الأدراج'], ['layers', '🧠 الطبقات والتعريفات'], ['3d', '🧊 المجسم 3D'],
                 ['send', '📤 إرسال للتحليل']];
 
   function css() {
@@ -197,6 +197,7 @@ const CADPAGE = (() => {
     qa('#cad .ctabs button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
     qa('#cad .cp').forEach(p => p.classList.toggle('on', p.dataset.p === t));
     if (t === '3d') show3d(); else if (VIEW) { /* يبقى مبنياً لكن لا يُرسم وهو مخفي */ }
+    if (t === 'stairs' && !SVIEW && q('#cad_st3d')) showStair(STSEL);
   }
 
   function render() {
@@ -204,7 +205,7 @@ const CADPAGE = (() => {
     if (!P('file')) return;
     if (!RES) {
       P('file').innerHTML = `<div class="card"><h3>ماذا يفهم هذا القسم؟</h3>${dictHtml(true)}</div>`;
-      ['sheets', 'axes', 'tables', 'notes', 'floors', 'layers', '3d', 'send'].forEach(k =>
+      ['sheets', 'axes', 'tables', 'notes', 'floors', 'stairs', 'layers', '3d', 'send'].forEach(k =>
         P(k).innerHTML = '<div class="note">ارفع الملف أولاً.</div>');
       return;
     }
@@ -214,6 +215,7 @@ const CADPAGE = (() => {
     P('tables').innerHTML = tablesTab();
     P('notes').innerHTML = notesTab();
     P('floors').innerHTML = floorsTab();
+    P('stairs').innerHTML = stairsTab();
     P('layers').innerHTML = layersTab();
     P('3d').innerHTML = view3dTab();
     P('send').innerHTML = sendTab();
@@ -589,12 +591,173 @@ const CADPAGE = (() => {
     if (fs) fs.addEventListener('change', () => VIEW && VIEW.floor(fs.value));
   }
 
-  function drop3d() { if (VIEW) { try { VIEW.dispose(); } catch (e) { /* */ } VIEW = null; } }
+  function drop3d() {
+    if (VIEW) { try { VIEW.dispose(); } catch (e) { /* */ } VIEW = null; }
+    if (SVIEW) { try { SVIEW.dispose(); } catch (e) { /* */ } SVIEW = null; }
+  }
+
+  // ---------------- الأدراج ----------------
+  let SVIEW = null, STSEL = null;
+  const TYPE = { waist: 'بلاطة مائلة بين جسرين', cantilever: 'كابولي من جسر مائل', spiral: 'حلزوني' };
+  function allStairs() {
+    const L = [];
+    (RES.stairs || []).forEach((st, i) => L.push({ key: 's' + i, st, sec: true }));
+    (RES.buildings || []).forEach((b, bi) => b.floors.forEach(f => (f.stairs || []).forEach((st, j) =>
+      L.push({ key: 'p' + bi + '_' + f.key + '_' + j, st, b, f }))));
+    return L;
+  }
+  // الدرج بإحداثيات موضعية (يبدأ من 0.8 م) ليُعرض منفرداً بالعارض
+  function stairB(it) {
+    const st = it.st, pts = [];
+    (st.flights3d || st.flights || []).forEach(q => {
+      const se = (q.n - 1) * q.T;
+      [[0, 0], [se, 0], [0, q.w], [se, q.w]].forEach(([a, d]) => pts.push([q.p0[0] + q.u[0] * a + q.v[0] * d, q.p0[1] + q.u[1] * a + q.v[1] * d]));
+    });
+    (st.landings || []).forEach(l => pts.push([l.x0, l.y0], [l.x1, l.y1]));
+    if (st.spiral) pts.push([st.spiral.x - st.spiral.r_out, st.spiral.y - st.spiral.r_out], [st.spiral.x + st.spiral.r_out, st.spiral.y + st.spiral.r_out]);
+    if (!pts.length) return null;
+    const x0 = Math.min(...pts.map(p => p[0])) - 0.8, y0 = Math.min(...pts.map(p => p[1])) - 0.8;
+    const x1 = Math.max(...pts.map(p => p[0])) + 0.8, y1 = Math.max(...pts.map(p => p[1])) + 0.8;
+    const sh = p => [p[0] - x0, p[1] - y0];
+    const s2 = Object.assign({}, st, {
+      title: st.title || ('درج ' + (it.f ? it.f.name : '')),
+      flights3d: (st.flights3d || st.flights || []).map(q => Object.assign({}, q, { p0: sh(q.p0) })),
+      landings: (st.landings || []).map(l => Object.assign({}, l, { x0: l.x0 - x0, x1: l.x1 - x0, y0: l.y0 - y0, y1: l.y1 - y0 })),
+      beams3d: (st.beams3d || []).map(b => Object.assign({}, b, { a: [b.a[0] - x0, b.a[1] - y0, b.a[2]], b: [b.b[0] - x0, b.b[1] - y0, b.b[2]] })),
+      spiral: st.spiral ? Object.assign({}, st.spiral, { x: st.spiral.x - x0, y: st.spiral.y - y0 }) : null });
+    s2.flights = undefined;
+    return { name: s2.title, floors: [], stairs: [s2], grid: { x: [], y: [] }, size: [x1 - x0, y1 - y0], height: st.H || 3.5 };
+  }
+  function showStair(key) {
+    const L = allStairs(), it = L.find(x => x.key === key) || L[0], host = q('#cad_st3d');
+    if (!it || !host || !window.CAD3D) return;
+    STSEL = it.key;
+    if (SVIEW) { try { SVIEW.dispose(); } catch (e) { /* */ } SVIEW = null; }
+    const B = stairB(it);
+    if (!B) return;
+    SVIEW = CAD3D.mount(host, B, { onPick: u => { const el = q('#cad_st_pick'); if (el) el.innerHTML = u ? pickHtml(u) : ''; } });
+    const t = q('#cad_st_name');
+    if (t) t.innerHTML = '🧊 ' + E(B.name) + ' — من ' + lv(it.st.z_floor != null ? it.st.z_floor : (it.f ? it.f.level : 0)) +
+      ' حتى ' + lv((it.st.z_floor != null ? it.st.z_floor : (it.f ? it.f.level : 0)) + it.st.H);
+    qa('#cad [data-stv]').forEach(b => b.classList.toggle('on', b.dataset.stv === it.key));
+  }
+  const lv = z => (Math.abs(z) < 0.005 ? '±0.00' : (z > 0 ? '+' : '') + Number(z).toFixed(2));
+  // مقطع جانبي للدرج كاملاً: القلبات بترتيبها، والحارة الخلفية منقّطة، وخطا منسوب الطابقين
+  function stairSvg(st) {
+    const FL = st.flights3d || st.flights || [];
+    if (st.spiral || !FL.length) return '';
+    const segs = [], z0 = st.z_floor != null ? st.z_floor : Math.min(...FL.map(q => q.z0)), H = st.H || 3;
+    let xmin = 1e9, xmax = -1e9, zmin = 1e9, zmax = -1e9;
+    const ax = (q, s0) => q.p0[along] + q.u[along] * s0;
+    const main0 = FL.find(q => Math.abs(q.u[0]) >= Math.abs(q.u[1])) || FL[0];
+    const along = Math.abs(main0.u[0]) >= Math.abs(main0.u[1]) ? 0 : 1;
+    FL.forEach(q => {
+      if (Math.abs(q.u[along]) < 0.5) {                // قلبة متعامدة على المقطع: تُرى من طرفها كتلة درجات
+        const a = [q.p0[along], q.p0[along] + q.v[along] * q.w].sort((m, n) => m - n);
+        const pts = [[a[0], q.z0], [a[0], q.z0 + q.n * q.R], [a[1], q.z0 + q.n * q.R], [a[1], q.z0]];
+        segs.push({ pts, sof: [[a[1], q.z0 - 0.12], [a[0], q.z0 - 0.12]], back: false, read: q.read !== false, perp: true });
+        pts.forEach(p => { xmin = Math.min(xmin, p[0]); xmax = Math.max(xmax, p[0]); zmin = Math.min(zmin, p[1]); zmax = Math.max(zmax, p[1]); });
+        return;
+      }
+      const pts = [[ax(q, 0), q.z0]];
+      for (let k = 0; k < q.n; k++) { pts.push([ax(q, k * q.T), q.z0 + (k + 1) * q.R]); if (k < q.n - 1) pts.push([ax(q, (k + 1) * q.T), q.z0 + (k + 1) * q.R]); }
+      const th = Math.atan2(q.R, q.T), wv = (q.waist || 150) / 1000 / Math.cos(th), se = (q.n - 1) * q.T;
+      const sof = [[ax(q, 0), q.z0 - wv], [ax(q, se), q.z0 + (q.n - 1) * q.R - wv]];
+      segs.push({ pts, sof, back: (q.lane || 0) === 1, read: q.read !== false });
+      pts.concat(sof).forEach(p => { xmin = Math.min(xmin, p[0]); xmax = Math.max(xmax, p[0]); zmin = Math.min(zmin, p[1]); zmax = Math.max(zmax, p[1]); });
+    });
+    const LD = (st.landings || []).map(l => {
+      const a = along === 0 ? [l.x0, l.x1] : [l.y0, l.y1];
+      xmin = Math.min(xmin, a[0]); xmax = Math.max(xmax, a[1]);
+      return { a, z: l.z, t: (l.t || 150) / 1000 };
+    });
+    zmin = Math.min(zmin, z0 - 0.3); zmax = Math.max(zmax, z0 + H + 0.2);
+    const W = 320, pad = 34, sc = Math.min((W - 2 * pad) / Math.max(xmax - xmin, 0.5), 190 / Math.max(zmax - zmin, 0.5));
+    const Hh = Math.round((zmax - zmin) * sc + 30);
+    const X = x => pad + (x - xmin) * sc, Z = z => Hh - 15 - (z - zmin) * sc;
+    const pl = a => a.map(p => X(p[0]).toFixed(1) + ',' + Z(p[1]).toFixed(1)).join(' ');
+    let g = '';
+    [[z0, lv(z0)], [z0 + H, lv(z0 + H)]].forEach(([z, t]) => {
+      g += `<line x1="4" x2="${W - 4}" y1="${Z(z)}" y2="${Z(z)}" stroke="#fbbf24" stroke-dasharray="4 3" stroke-width="1"/>
+            <text x="4" y="${Z(z) - 3}" fill="#fbbf24" font-size="10" direction="ltr">${t}</text>`; });
+    LD.forEach(l => { g += `<rect x="${X(l.a[0])}" y="${Z(l.z)}" width="${Math.max(1, (l.a[1] - l.a[0]) * sc)}" height="${l.t * sc}" fill="#64748b" opacity=".75"/>`; });
+    segs.sort((a, b) => (b.back ? 1 : 0) - (a.back ? 1 : 0)).forEach(s0 => {
+      const col = s0.read ? '#e2e8f0' : '#a5b4fc';
+      g += `<polygon points="${pl(s0.pts.concat([s0.sof[1], s0.sof[0]]))}" fill="${s0.back ? 'none' : (s0.read ? '#334155' : '#312e81')}" stroke="${col}"
+              stroke-width="${s0.back ? 1 : 1.4}" ${s0.back ? 'stroke-dasharray="3 2" opacity=".7"' : ''}/>`; });
+    return `<svg viewBox="0 0 ${W} ${Hh}" style="width:100%;background:#0b1222;border-radius:8px">${g}</svg>`;
+  }
+  function chkRows(C) {
+    return `<table><tr><th>الفحص</th><th>القيمة</th><th>الحد</th><th>البند</th></tr>${C.map(c => `<tr>
+      <td>${c.ok ? '<span class="tag t-ok">✓</span>' : c.warn ? '<span class="tag t-warn">⚠</span>' : '<span class="tag t-bad">✗</span>'} ${E(c.name)}</td>
+      <td class="ltr">${E(c.val)}</td><td>${E(c.lim)}</td><td style="font-size:11px;color:var(--mut)">${E(c.clause)}</td></tr>`).join('')}</table>`;
+  }
+  const rbl = b => !b ? '—' : (b.n && b.s && Math.abs(1000 / b.n - b.s) < 2 ? b.n + 'Ø' + b.d + '/م (@' + b.s + ')' : b.s ? 'Ø' + b.d + '@' + b.s : (b.n || '') + 'Ø' + b.d);
+  function stairsTab() {
+    const L = allStairs();
+    if (!L.length) return `<div class="card"><h3>🪜 الأدراج</h3><div class="note">ما لقيت درجاً بالملف — لا مقاطع «أبعاد وتسليح السلم»
+      (درجات قائمة/نائمة) ولا قلبات بالمساقط (خطوط نائمات متوازية متساوية).</div></div>`;
+    const secs = L.filter(x => x.sec), plans = L.filter(x => !x.sec);
+    const nb = L.reduce((a, x) => a + (x.st.checks || []).filter(c => !c.ok && !c.warn).length, 0);
+    const ni = L.reduce((a, x) => a + (x.st.issues || []).length, 0);
+    return `<div class="card"><h3>🪜 الأدراج (${L.length}) — كل درج من منسوب طابقه حتى الطابق الذي فوقه</h3>
+      <div class="kg">${kpi('من المقاطع', secs.length)}${kpi('من المساقط', plans.length)}${kpi('فحص لم يتحقق', nb, nb ? 'warn' : '')}${kpi('تعارض مكتوب/مرسوم', ni, ni ? 'warn' : '')}</div>
+      <div class="note" style="margin-top:6px">المقطع: الدرجات (قائمة/نائمة) والبطن والبسطات والمناسيب والتسليح وجسور الإسناد تُقرأ من الرسم،
+        وإذا المرسوم نصف طابق (قلبة حتى بسطة) <b>يُكمَّل</b> بقلبات بنفس القائمة والنائمة حتى منسوب الطابق الذي فوقه (القلبات المكمَّلة بلون بنفسجي).
+        المسقط: القلبات من خطوط النائمات، واتجاه الصعود من أرقام الدرجات أو كلمة UP، والارتفاع من مناسيب الطوابق — وفتحة الدرج تُقطع من السقف.</div></div>
+      <div class="card" style="margin-top:10px"><h3 id="cad_st_name">🧊 المجسم</h3>
+        <div class="bar3d"><button data-sv="rebar">🧵 التسليح</button><button data-sv="only">🔩 التسليح فقط</button>
+          <button data-sv="xray">🩻 أشعة</button><button data-sv="reset">🎯 الكاميرا</button></div>
+        <div id="cad_st3d"></div><div class="pick" id="cad_st_pick">اضغط على قلبة أو بسطة أو جسر لترى تفاصيلها.</div>
+        <div class="legend" style="margin-top:6px"><span><i style="background:#d9d4ca"></i>مقروء من اللوحة</span>
+          <span><i style="background:#c7d2fe"></i>مكمَّل حتى منسوب الطابق</span><span><i style="background:#ef4444"></i>رئيسي</span>
+          <span><i style="background:#3b82f6"></i>توزيع</span><span><i style="background:#22c55e"></i>علوي عند الانكسار</span></div></div>
+      ${plans.length ? `<div class="card" style="margin-top:10px"><h3>🏢 أدراج المباني (من المساقط)</h3><div class="scroll"><table>
+        <tr><th></th><th>المبنى · الطابق</th><th>من → إلى</th><th>القلبات</th><th>القائمة × العدد</th><th>النائمة</th><th>العرض</th><th>السماكة والحديد</th><th>المصدر</th></tr>
+        ${plans.map(x => `<tr><td><button class="btn gh" style="padding:3px 8px" data-stv="${x.key}">🧊</button></td>
+          <td>${E(x.b.name)} · ${E(x.f.name)}</td><td class="ltr">${lv(x.f.level)} → ${lv(x.f.level + x.st.H)}</td>
+          <td>${x.st.flights.length}${x.st.completed ? ' <span class="tag t-warn">مكمَّل</span>' : ''}</td>
+          <td class="ltr">${x.st.N} × ${N(x.st.R * 1000, 0)}</td><td class="ltr">${N(x.st.T * 1000, 0)}</td><td class="ltr">${N(x.st.width, 2)}</td>
+          <td>${x.st.design ? E(x.st.design.waist + ' مم · ' + x.st.design.main + ' · توزيع ' + x.st.design.dist) : '—'}</td>
+          <td style="font-size:11px">${E(x.st.src)}</td></tr>`).join('')}</table></div></div>` : ''}
+      ${secs.length ? `<div class="sg" style="margin-top:10px">${secs.map(x => stairCard(x)).join('')}</div>` : ''}`;
+  }
+  function stairCard(x) {
+    const st = x.st, C = st.checks || [];
+    const bad = C.filter(c => !c.ok && !c.warn).length, wr = C.filter(c => c.warn).length;
+    const rb = st.rebar || {}, FL = st.flights || [];
+    return `<div class="sheet"><div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start">
+        <b style="font-size:13px" dir="auto">🪜 ${E(st.title)}</b>
+        <button class="btn gh" style="padding:3px 8px;white-space:nowrap" data-stv="${x.key}">🧊 المجسم</button></div>
+      <div class="nt-m"><span class="tag">${E(TYPE[st.type] || st.type)}</span>${st.floor ? `<span class="tag">${E((FLOORS.find(f => f[0] === st.floor) || [0, st.floor])[1])}</span>` : ''}
+        <span class="tag ${bad ? 't-bad' : 't-ok'}">${bad ? '✗ ' + bad : '✓'} فحوص</span>${wr ? `<span class="tag t-warn">⚠ ${wr}</span>` : ''}
+        ${(st.issues || []).length ? `<span class="tag t-warn">تعارض ${st.issues.length}</span>` : ''}</div>
+      <div class="note" style="margin:6px 0">الارتفاع <b class="ltr">${lv(st.z_floor)} → ${lv(st.z_floor + st.H)}</b> (${N(st.H, 2)} م) — ${E(st.H_src)}<br>
+        ${st.n_risers} قائمة × <b class="ltr">${N(st.R * 1000, 0)}</b> مم · نائمة <b class="ltr">${N(st.T * 1000, 0)}</b> مم · العرض ${N(st.width, 2)} م (${E(st.width_src)})</div>
+      ${stairSvg(Object.assign({}, st, { flights3d: st.flights3d }))}
+      <div class="scroll" style="max-height:220px;margin-top:6px"><table><tr><th>#</th><th>قائمات</th><th>R×T مم</th><th>من → إلى</th><th>البطن</th><th>البسطة</th><th></th></tr>
+        ${FL.map((f, i) => `<tr><td>${i + 1}</td><td>${f.n} ${f.s > 0 ? '↗' : '↖'}</td><td class="ltr">${N(f.R * 1000, 0)}×${N(f.T * 1000, 0)}</td>
+          <td class="ltr">${lv(f.z0)} → ${lv(f.z1)}</td><td>${f.waist ? f.waist + ' مم' : '—'}</td><td>${f.land_top ? N(f.land_top, 2) + ' م' : '—'}</td>
+          <td>${f.read ? '<span class="tag t-ok">مقروء</span>' : '<span class="tag t-warn">مكمَّل</span>'}</td></tr>`).join('')}</table></div>
+      <div class="note" style="margin-top:6px">🧵 الحديد: رئيسي <b class="ltr">${rbl(rb.main)}</b> · توزيع <b class="ltr">${rbl(rb.dist)}</b> ·
+        علوي <b class="ltr">${rbl(rb.top)}</b>${rb.stir ? ' · أتاري الجسر <b class="ltr">' + rbl(rb.stir) + '</b>' : ''}
+        ${(st.beams || []).filter(b => b.h || b.desc).length ? '<br>🟩 جسور الإسناد: ' + st.beams.filter(b => b.h || b.desc).map(b =>
+          E((b.mark || '') + ' ' + (b.h ? b.b + '×' + b.h : '') + (b.bars && b.bars.length ? ' ' + b.bars.join('+') : '') +
+            (b.desc ? ' (علوي ' + (b.desc.top || '—') + ' / سفلي ' + (b.desc.bot || '—') + (b.desc.kind === 'cantilever' ? '، كابولي' : '') + ')' : ''))).join(' · ') : ''}
+        ${(st.marks || []).length ? '<br>🏷️ علامات: <span class="ltr">' + E(st.marks.join(' · ')) + '</span>' : ''}
+        ${st.design ? `<br>📐 التصميم بالكود: Mu=${N(st.design.Mu, 1)} kN·m/م · المطلوب ${E(st.design.main)} · توزيع ${E(st.design.dist)}` : ''}</div>
+      <details style="margin-top:6px"><summary style="cursor:pointer;font-size:12.5px">فحوص ACI 318-19 والراحة (${C.length})</summary>${chkRows(C)}</details>
+      ${(st.issues || []).length ? `<div class="warn" style="margin-top:6px"><b>⚠️ أخطاء/تعارضات باللوحة:</b><ul>${st.issues.map(i => `<li>${E(i)}</li>`).join('')}</ul></div>` : ''}
+      ${(st.notes || []).length ? `<div class="note" style="margin-top:4px">${st.notes.map(E).join('<br>')}</div>` : ''}</div>`;
+  }
 
   function pick(u) {
     const el = q('#cad_pick');
     if (!el) return;
     if (!u) { el.innerHTML = 'اضغط على أي عنصر لترى تفاصيله.'; return; }
+    el.innerHTML = pickHtml(u);
+  }
+  function pickHtml(u) {
     const rb = u.rebar;
     const L = {
       col: () => `🟥 <b>عمود ${E(u.mark || '')}</b> · ${E(u.at)} · ${E(u.size)} مم · طابق ${E(u.floor)}<br>
@@ -615,9 +778,17 @@ const CADPAGE = (() => {
       wall: () => u.parapet ? `🧱 <b>ستارة السطح</b> · ارتفاع ${N(u.parapet, 2)} م (مقاس من المقطع/الواجهة) · سماكة ${u.t} مم`
                             : `🧱 <b>جدار</b> · سماكة ${u.t} مم · طول ${N(u.L, 2)} م · طابق ${E(u.floor)}`,
       foot: () => `🟫 <b>أساس ${E(u.mark || '')}</b> · ${E(u.size)} · PD ${N(u.PD, 0)} / PL ${N(u.PL, 0)} كن · Pu ${N(u.Pu, 0)} كن ·
-        ${E(u.bars)} · ${u.ok ? '✓ القص مقبول' : '✗ راجع'} <span class="tag t-warn">مصمَّم بالكود</span>`
+        ${E(u.bars)} · ${u.ok ? '✓ القص مقبول' : '✗ راجع'} <span class="tag t-warn">مصمَّم بالكود</span>`,
+      stair: () => `🪜 <b>${u.spiral ? 'درج حلزوني' : u.landing ? 'بسطة' : 'قلبة ' + (u.flight || '')}</b> ${u.title ? '· ' + E(u.title) : ''} · ${E(u.floor || '')}<br>
+        ${u.landing ? 'منسوب ' + lv(u.z) + ' · سماكة ' + (u.t || '—') + ' مم' :
+          u.spiral ? u.spiral.n + ' درجة · Ø العمود ' + Math.round(u.spiral.r_core * 2000) + ' مم · نصف القطر ' + N(u.spiral.r_out, 2) + ' م' :
+          (u.n || '') + ' قائمة × ' + N((u.R || 0) * 1000, 0) + ' مم · نائمة ' + N((u.T || 0) * 1000, 0) + ' مم · من ' + lv(u.z0) + ' إلى ' + lv(u.z1) +
+          ' · البطن ' + (u.waist || '—') + ' مم'}
+        ${u.read === false ? ' <span class="tag t-warn">مكمَّل حتى منسوب الطابق</span>' : ' <span class="tag t-ok">مقروء</span>'}
+        ${u.rebar && u.rebar.main ? '<br>الحديد: رئيسي <b class="ltr">' + rbl(u.rebar.main) + '</b> · توزيع <b class="ltr">' + rbl(u.rebar.dist) + '</b>' : ''}
+        ${u.design ? '<br>التصميم: ' + E(u.design.main) + ' · Mu=' + N(u.design.Mu, 1) + ' kN·m/م' : ''}`
     }[u.kind];
-    el.innerHTML = L ? L() : '';
+    return L ? L() : '';
   }
 
   function sendTab() {
@@ -665,6 +836,16 @@ const CADPAGE = (() => {
     });
     const sd = q('#cad_send');
     if (sd) sd.addEventListener('click', sendToWizard);
+    qa('#cad [data-stv]').forEach(b => b.addEventListener('click', () => {
+      showStair(b.dataset.stv); const h = q('#cad_st3d'); if (h && h.scrollIntoView) h.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }));
+    const sst = { rebar: false, only: false, xray: false };
+    qa('#cad [data-sv]').forEach(b => b.addEventListener('click', () => {
+      const v = b.dataset.sv;
+      if (v === 'reset') return SVIEW && SVIEW.reset();
+      sst[v] = !sst[v]; b.classList.toggle('on', sst[v]); SVIEW && SVIEW[v](sst[v]);
+    }));
+    if (TAB === 'stairs' && q('#cad_st3d')) showStair(STSEL);
   }
 
   let RUNNING = null;

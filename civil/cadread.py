@@ -28,6 +28,7 @@ import re
 
 import plan as PL
 import cadkb as K
+import cadstair as CS
 from engine import footing_module
 
 # ------------------------------------------------------------------ أدوات
@@ -2060,6 +2061,19 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
                 # بلا محاور: مستطيلات صغيرة مغروسة بالجدران = أعمدة ربط (بناء حامل مقيَّد)
                 dw['columns'] = stage('أعمدة الربط بالجدران', lambda r=r, dw=dw: _cols_in_walls(
                     E, sorted(EG.query(*r)), dw['walls'], r), [])
+        if dw['kind'] in ('arch', 'stair'):
+            # الأدراج بالمسقط: خطوط نائمات متوازية متساوية (قلبات)، ودرج حلزوني حول عمود دائري
+            def _st_plan(r=r, dw=dw):
+                ss_ = [segs[k] for k in SG.query(*r)]
+                ids_ = [i for i in EG.query(*r)]
+                tx_ = [E[i] for i in ids_ if E[i]['t'] == 'T']
+                runs = CS.tread_runs(ss_)
+                gs = CS.plan_groups(runs, tx_, ss_) if runs else []
+                sp = []
+                if CS._SPIRAL.search(dw.get('title') or '') or any(CS._SPIRAL.search(t.get('s') or '') for t in tx_):
+                    sp = [q for q in CS.spirals(E, [i for i in ids_ if E[i]['t'] == 'C'], ss_) if q['n'] >= 8]
+                return gs, sp
+            dw['stair_groups'], dw['spirals'] = stage('الأدراج بالمسقط', _st_plan, ([], []))
         dw['sketch'] = _sketch([segs[k] for k in SG.query(*r)], E, r, cap=4000 if view_only else 2500)
         for c in dw['columns']:
             ax_ = _snap(c['x'], dw['ax']['x'].values(), 0.9)
@@ -2116,7 +2130,22 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
         if b:
             buildings.append(b)
 
+    # ---- الأدراج من لوحات المقاطع (أبعاد وتسليح السلم): تُقرأ وتُكمَّل حتى منسوب الطابق الذي فوقه ----
+    floor_h = {}
+    for b in buildings:
+        for f in b['floors']:
+            if f.get('h_src') in ('measured', 'user'):
+                floor_h.setdefault(f['key'], f['h'])
+    stairs, st_unk = stage('الأدراج (المقاطع)', lambda: CS.find_stairs(E, segs, drawings, titles, materials, floor_h),
+                           ([], []))
+    for st in stairs:
+        st['flights3d'] = [] if st.get('spiral') else CS.section_to_world(st)
+    if stairs:
+        nb = sum(1 for st in stairs for c in st['checks'] if not c['ok'] and not c['warn'])
+        warn.append('🪜 %d درج مقروء من لوحات المقاطع (القائمة/النائمة/البطن/البسطات/التسليح) — كل درج مكمَّل حتى '
+                    'منسوب الطابق الذي فوقه؛ %d فحص لم يتحقق (تبويب «الأدراج»).' % (len(stairs), nb))
     for dw in drawings:                          # إخراج مختصر
+        dw.pop('stair_groups', None)
         for c in dw['columns']:
             c['x'], c['y'] = round(c['x'], 3), round(c['y'], 3)
         for s in dw['beams']:
@@ -2137,7 +2166,17 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
 
     same_bld = len(set(dw['building_name'] for dw in drawings if dw['building_name'])) == 1
     unknown = stage('ما لم يُتعرَّف عليه', lambda: unknown_report(E, drawings, notes), [])
-    return dict(ok=bool(buildings), scale=scale, scale_src=src, angle=round(ang, 2), tables=tables or [],
+    if st_unk:
+        unknown.append(dict(kind='stair', title='%d درج لم تكتمل قراءته' % len(st_unk),
+                            detail='وجدت درجات مرسومة تحت هذه العناوين لكن تعذّر تركيبها — راجع اللوحة.',
+                            samples=['%s: %s' % (u.get('title'), u.get('why')) for u in st_unk[:6]]))
+    iss = [(st['title'], i) for st in stairs for i in st.get('issues', [])]
+    if iss:
+        unknown.append(dict(kind='stair', title='%d تعارض بين المكتوب والمرسوم بلوحات الأدراج' % len(iss),
+                            detail='قيمة مكتوبة (قائمة/نائمة/منسوب) لا تطابق الرسم — اعتُمد المرسوم، وراجع اللوحة.',
+                            samples=['%s — %s' % (t[:40], i) for t, i in iss[:8]]))
+    return dict(ok=bool(buildings) or bool(stairs), scale=scale, scale_src=src, angle=round(ang, 2), tables=tables or [],
+                stairs=stairs,
                 notes=notes, text_stats=dict(tstats, fixes=dict(txt_fix)), unknown=unknown,
                 n_ents=len(E), drawings=drawings, buildings=buildings,
                 schedules=dict(beams=beams_all, columns=col_sched,
@@ -2812,7 +2851,7 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
         if dw['kind'] in ('slab_rft', 'beams_key', 'arch', 'found') and fl:
             by_floor.setdefault(fl['key'], {})[dw['kind']] = dw
     if not by_floor:                                # لوحات بلا عناوين طوابق: طابق واحد افتراضي
-        mk = master['kind'] if master['kind'] in ('slab_rft', 'beams_key', 'arch') else 'arch'
+        mk = master['kind'] if master['kind'] in ('slab_rft', 'beams_key', 'arch', 'found') else 'arch'
         if not master['kind'] and len(master.get('beams') or []) >= 4 and not master.get('walls'):
             # لوحة بلا عنوان فيها جسور مرسومة (خطّان متوازيان) ولا جدران: مخطط جسور، لا تُفترض جسور بدلها
             mk = 'beams_key'
@@ -2986,6 +3025,49 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             loc_ax = {'x': {str(i): dict(name=str(i), pos=v) for i, v in enumerate(px)},
                       'y': {str(i): dict(name=str(i), pos=v) for i, v in enumerate(py)}}
         rects = slab_panels(loc_ax, spans, opens, calls)
+        # ---- الدرج: من منسوب هذا الطابق حتى الذي فوقه، وفتحته تُقطع من بلاطة السقف ----
+        f_stairs = []
+        for dw in (ar,):
+            if not dw:
+                continue
+            for g in dw.get('stair_groups') or []:
+                try:
+                    st = CS.build_plan_stair(g, h, levels[fi], lambda x, y, dw=dw: T(dw, x, y))
+                except ValueError:
+                    continue                          # خطوط متوازية منتظمة ليست درج طابق (كسوة/مواقف/شبابيك)
+                except Exception as ex:
+                    warn.append('تعذّر تركيب درج بمسقط %s: %s' % (K.FLOOR_NAMES.get(fk, fk), ex))
+                    continue
+                pts = []
+                for q in st['flights']:
+                    for a_ in (0.0, q['going']):
+                        for b_ in (0.0, q['w']):
+                            pts.append((q['p0'][0] + q['u'][0] * a_ + q['v'][0] * b_, q['p0'][1] + q['u'][1] * a_ + q['v'][1] * b_))
+                for l_ in st['landings']:
+                    pts += [(l_['x0'], l_['y0']), (l_['x1'], l_['y1'])]
+                fp = [min(p_[0] for p_ in pts), min(p_[1] for p_ in pts), max(p_[0] for p_ in pts), max(p_[1] for p_ in pts)]
+                if any(_overlap(fp, q_['box']) > 0.4 or _overlap(q_['box'], fp) > 0.4 for q_ in f_stairs if q_.get('box')):
+                    continue                          # الدرج نفسه من خطوط متداخلة (نسخة/خطوط مزدوجة)
+                st['box'] = [round(v_, 3) for v_ in fp]
+                nxt_ = []
+                for r_ in rects:
+                    nxt_ += _rect_minus(r_, fp)
+                rects = nxt_
+                try:
+                    CS.plan_design(st, float(materials.get('fc') or 25), float(materials.get('fy') or 420))
+                except Exception:
+                    pass
+                f_stairs.append(st)
+                warn.append('🪜 درج %s: %d قلبة · %d قائمة × %.0f مم · نائمة %.0f مم — من %s حتى %s (اتجاه الصعود: %s)، '
+                            'وفتحته مقطوعة من السقف.' % (
+                                K.FLOOR_NAMES.get(fk, fk), len(st['flights']), st['N'], st['R'] * 1000, st['T'] * 1000,
+                                _fmt_lv(levels[fi]), _fmt_lv(levels[fi] + h), st['src']))
+            for q in dw.get('spirals') or []:
+                x_, y_ = T(dw, q['x'], q['y'])
+                n_ = max(8, int(round(h / 0.18)))
+                f_stairs.append(dict(spiral=dict(x=round(x_, 3), y=round(y_, 3), r_core=q['r_core'], r_out=q['r_out'],
+                                                 n=n_, step_deg=q['step_deg'], a0=q['a0'], z0=levels[fi], H=h),
+                                     flights=[], landings=[], H=h, R=round(h / n_, 4), N=n_, src='مسقط حلزوني'))
         t = (sl or {}).get('thickness') or (bk or {}).get('thickness')
         t_src = 'title' if t else None
         if not t and meas and meas.get('t'):
@@ -3004,7 +3086,7 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             drops = [dict(x=c['x'], y=c['y'], s=dsz, t=int(max(100, t / 4))) for c in cols]
         floors.append(dict(key=fk, name=K.FLOOR_NAMES.get(fk, fk), level=round(levels[fi], 3), h=h,
                            h_src=h_src[fi], t_src=t_src, cols_proposed=proposed,
-                           columns=cols, beams=beams, walls=walls, beams_assumed=assumed,
+                           columns=cols, beams=beams, walls=walls, beams_assumed=assumed, stairs=f_stairs,
                            slab=dict(t=t, rects=[[round(v, 3) for v in r] for r in rects],
                                      openings=opens, callouts=calls, mesh=_slab_mesh(calls),
                                      t_from_title=bool((sl or {}).get('thickness')),
@@ -3038,6 +3120,11 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
     # أساسات شريطية مرسومة (طبقة الأساس: خطّان متوازيان تحت الجدران الحاملة)
     strips = []
     srcs = [dw for dw in plans if dw.get('strips')]
+    if not srcs and master['kind'] == 'found' and master.get('walls'):
+        # مخطط أساسات/ميدات وحده: الخطوط المتوازية ميدات (جسور أرضية) بمنسوب التأسيس، لا جدران بارتفاع طابق
+        srcs = [dict(master, strips=master['walls'])]
+        warn.append('المبنى %d: مخطط أساسات/ميدات فقط (%s) — رُسمت خطوطه ميدات بمنسوب التأسيس، لا جدراناً.' % (
+            gi + 1, master.get('title') or 'بلا عنوان'))
     if srcs:
         sd = max(srcs, key=lambda d: (d['kind'] == 'found', len(d['strips'])))
         for w in sd['strips']:

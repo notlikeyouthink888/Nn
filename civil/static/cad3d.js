@@ -46,6 +46,7 @@ const CAD3D = (() => {
     const mat = (k, o) => mats[k] || (mats[k] = keep(new THREE.MeshStandardMaterial(Object.assign(
       { color: COL[k], roughness: 0.82, metalness: k === 'main' || k === 'tie' ? 0.35 : 0.05 }, o || {}))));
 
+    const cylR = keep(new THREE.CylinderGeometry(1, 1, 1, 8));
     const floorsG = [];      // مجموعة لكل طابق: خرسانة + حديد
     const concrete = [];     // كل شبكات الخرسانة (للأشعة ووضع «التسليح فقط»)
     const pickables = [];
@@ -103,6 +104,7 @@ const CAD3D = (() => {
         if (w.o === 'h') box(L, H, th, P(mx, my, f.level + H / 2), mat('wall', { transparent: true, opacity: 0.9 }), info, conc);
         else box(th, H, L, P(mx, my, f.level + H / 2), mat('wall', { transparent: true, opacity: 0.9 }), info, conc);
       });
+      (f.stairs || []).forEach(st => drawStair(st, conc, f.name));
       const SYS = f.slab.system || null, RB = f.slab.ribs || null;
       const tTop = RB ? RB.topping / 1000 : t;          // هوردي/معصبة: البلاطة العلوية فقط مصمتة
       (f.slab.rects || []).forEach(r => {
@@ -139,6 +141,107 @@ const CAD3D = (() => {
         box(dp.s, dt, dp.s, P(dp.x, dp.y, top - t - dt / 2), mat('slab'), { kind: 'slab', floor: f.name, t: f.slab.t, drop: dp, sys: SYS && SYS.name }, conc);
       });
     });
+
+    // درج منفرد (تبويب «الأدراج»): مجموعة بمفردها كطابق وهمي ليُبنى حديده عند الطلب
+    if ((B.stairs || []).length) {
+      const g = new THREE.Group(), conc = new THREE.Group(), bars = new THREE.Group();
+      bars.visible = false; g.add(conc); g.add(bars); root.add(g);
+      B.stairs.forEach(st => drawStair(st, conc, st.title || 'الدرج'));
+      floorsG.push({ g, conc, bars, f: { key: 'stairs', name: 'الدرج', stairs: B.stairs, columns: [], beams: [], walls: [],
+                                          slab: { rects: [] }, level: 0, h: 0 }, built: false });
+    }
+
+    // ---------------- الأدراج: قلبات بمقطعها الجانبي الحقيقي (درجات + بطن مائل) مبثوقة بعرض القلبة ----------------
+    function flightM(q) {                             // محاور القلبة المحلية: s على المشي، h رأسي، d عرضي
+      const U = new THREE.Vector3(q.u[0], 0, -q.u[1]), V = new THREE.Vector3(q.v[0], 0, -q.v[1]);
+      const M = new THREE.Matrix4().makeBasis(U, new THREE.Vector3(0, 1, 0), V);
+      M.setPosition(P(q.p0[0], q.p0[1], q.z0));
+      return M;
+    }
+    function rod(a, b, r, m, grp) {
+      const d = new THREE.Vector3().subVectors(b, a), L = d.length();
+      if (L < 1e-3) return;
+      const me = new THREE.Mesh(cylR, m);
+      me.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
+      me.scale.set(r, L, r);
+      me.position.copy(a).add(b).multiplyScalar(0.5);
+      grp.add(me);
+    }
+    function drawStair(st, grp, fname) {
+      const sm = mat('stair', { color: 0xd9d4ca, side: THREE.DoubleSide });
+      const FL = st.flights3d || st.flights || [];
+      const info0 = { kind: 'stair', floor: fname, title: st.title, H: st.H, N: st.N || st.n_risers, R: st.R, T: st.T,
+                      src: st.src || st.H_src, design: st.design, rebar: st.rebar, type: st.type, completed: st.completed };
+      FL.forEach((q, i) => {
+        const th = Math.atan2(q.R, q.T), wv = (q.waist || 150) / 1000 / Math.cos(th), se = (q.n - 1) * q.T;
+        const sh = new THREE.Shape();
+        sh.moveTo(0, -wv); sh.lineTo(0, 0);
+        for (let k = 0; k < q.n; k++) { sh.lineTo(k * q.T, (k + 1) * q.R); if (k < q.n - 1) sh.lineTo((k + 1) * q.T, (k + 1) * q.R); }
+        sh.lineTo(se, (q.n - 1) * q.R - wv); sh.lineTo(0, -wv);
+        const geo = keep(new THREE.ExtrudeGeometry(sh, { depth: q.w, bevelEnabled: false }));
+        let Mq = flightM(q);
+        if (Mq.determinant() < 0) {                    // محاور معكوسة ← الوجوه مقلوبة (سوداء): اعكس العرض وابدأ من الطرف الآخر
+          Mq = flightM(Object.assign({}, q, { v: [-q.v[0], -q.v[1]], p0: [q.p0[0] + q.v[0] * q.w, q.p0[1] + q.v[1] * q.w] }));
+        }
+        geo.applyMatrix4(Mq);
+        const me = new THREE.Mesh(geo, q.read === false ? mat('stairC', { color: 0xc7d2fe, side: THREE.DoubleSide }) : sm);
+        me.userData = Object.assign({}, info0, { flight: i + 1, n: q.n, z0: q.z0, z1: q.z0 + q.n * q.R, waist: q.waist, read: q.read !== false });
+        pickables.push(me); concrete.push(me); grp.add(me);
+        // الدرابزين على جهة البئر (نحو القلبة الأخرى) على ارتفاع 0.9 م من أنف الدرجة
+        const others = FL.filter(o => o !== q);
+        let dR = q.w - 0.05;
+        if (others.length) {
+          const cq = [q.p0[0] + q.u[0] * se / 2 + q.v[0] * q.w / 2, q.p0[1] + q.u[1] * se / 2 + q.v[1] * q.w / 2];
+          const co = others.reduce((a, o) => [a[0] + (o.p0[0] + o.u[0] * (o.n - 1) * o.T / 2 + o.v[0] * o.w / 2) / others.length,
+                                              a[1] + (o.p0[1] + o.u[1] * (o.n - 1) * o.T / 2 + o.v[1] * o.w / 2) / others.length], [0, 0]);
+          dR = ((co[0] - cq[0]) * q.v[0] + (co[1] - cq[1]) * q.v[1]) > 0 ? q.w - 0.05 : 0.05;
+        }
+        const M = flightM(q), L = (s, h, d) => new THREE.Vector3(s, h, d).applyMatrix4(M);
+        const rm = mat('rail', { color: 0x94a3b8, metalness: 0.6, roughness: 0.35 });
+        rod(L(0, q.R + 0.9, dR), L(se, q.n * q.R + 0.9, dR), 0.025, rm, grp);
+        [0, se].forEach((s0, j) => rod(L(s0, (j ? q.n : 1) * q.R, dR), L(s0, (j ? q.n : 1) * q.R + 0.9, dR), 0.02, rm, grp));
+      });
+      (st.landings || []).forEach(l => {
+        const t = (l.t || 150) / 1000;
+        box(l.x1 - l.x0, t, l.y1 - l.y0, P((l.x0 + l.x1) / 2, (l.y0 + l.y1) / 2, l.z - t / 2), sm,
+            Object.assign({}, info0, { landing: true, z: l.z, t: l.t, read: l.read }), grp);
+      });
+      (st.beams3d || []).forEach(bm => {
+        const a = P(bm.a[0], bm.a[1], bm.a[2]), b = P(bm.b[0], bm.b[1], bm.b[2]);
+        const d = new THREE.Vector3().subVectors(b, a), L = d.length();
+        if (L < 0.05) return;
+        const bw = bm.bw / 1000, bh = bm.bh / 1000;
+        const me = new THREE.Mesh(keep(new THREE.BoxGeometry(L, bh, bw)), mat('beam'));
+        me.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), d.clone().normalize());
+        me.position.copy(a).add(b).multiplyScalar(0.5).add(new THREE.Vector3(0, -bh / 2, 0));
+        me.userData = { kind: 'beam', floor: fname, mark: bm.mark || (bm.kind === 'inclined' ? 'جسر مائل' : 'جسر بسطة'),
+                        size: bm.bw + '×' + bm.bh, span: L, guess: !bm.mark };
+        pickables.push(me); concrete.push(me); grp.add(me);
+      });
+      if (st.spiral) {                                 // حلزوني: عمود أوسط + درجات إسفينية كل منها قائمة أعلى
+        const S = st.spiral, dA = S.step_deg * Math.PI / 180, R = S.H / S.n, tS = 0.12;
+        const col = new THREE.Mesh(keep(new THREE.CylinderGeometry(S.r_core, S.r_core, S.H + 1.0, 24)), mat('col'));
+        col.position.copy(P(S.x, S.y, S.z0 + (S.H + 1.0) / 2));
+        col.userData = Object.assign({}, info0, { spiral: S }); pickables.push(col); concrete.push(col); grp.add(col);
+        for (let i = 0; i < S.n; i++) {
+          const a = S.a0 + i * dA, sh = new THREE.Shape();
+          sh.moveTo(S.r_core * Math.cos(a), S.r_core * Math.sin(a));
+          sh.lineTo(S.r_out * Math.cos(a), S.r_out * Math.sin(a));
+          sh.absarc(0, 0, S.r_out, a, a + dA * 1.08, false);
+          sh.lineTo(S.r_core * Math.cos(a + dA * 1.08), S.r_core * Math.sin(a + dA * 1.08));
+          sh.absarc(0, 0, S.r_core, a + dA * 1.08, a, true);
+          const g2 = keep(new THREE.ExtrudeGeometry(sh, { depth: tS, bevelEnabled: false }));
+          const me = new THREE.Mesh(g2, sm);
+          me.rotation.x = -Math.PI / 2;
+          me.position.copy(P(S.x, S.y, S.z0 + (i + 1) * R - tS));
+          me.userData = Object.assign({}, info0, { step: i + 1, spiral: S }); pickables.push(me); concrete.push(me); grp.add(me);
+        }
+        const rm = mat('rail', { color: 0x94a3b8, metalness: 0.6, roughness: 0.35 });
+        const pts = [];
+        for (let i = 0; i <= S.n; i++) { const a = S.a0 + i * dA; pts.push(P(S.x + (S.r_out - 0.05) * Math.cos(a), S.y + (S.r_out - 0.05) * Math.sin(a), S.z0 + i * R + 0.9)); }
+        for (let i = 0; i < pts.length - 1; i++) rod(pts[i], pts[i + 1], 0.02, rm, grp);
+      }
+    }
 
     // ستارة السطح (من المقطع/الواجهة): جدار رقيق على حواف بلاطة السطح غير الملاصقة لبلاطة أخرى
     const parH = B.levels && B.levels.parapet;
@@ -225,6 +328,11 @@ const CAD3D = (() => {
     const grd = keep(new THREE.PlaneGeometry(sx + 16, sy + 16));
     const gm = new THREE.Mesh(grd, keep(new THREE.MeshStandardMaterial({ color: 0x142033, roughness: 1, transparent: true, opacity: 0.85 })));
     gm.rotation.x = -Math.PI / 2; gm.position.y = Math.min(0, z0f) - 0.01;
+    if ((B.stairs || []).length) {                   // الدرج المنفرد قد يبدأ تحت الصفر (قلبة مدخل −0.70)
+      const zs = [];
+      B.stairs.forEach(st => { (st.flights3d || []).forEach(q => zs.push(q.z0)); (st.landings || []).forEach(l => zs.push(l.z)); });
+      if (zs.length) gm.position.y = Math.min(gm.position.y, Math.min(...zs) - 0.35);
+    }
     root.add(gm);
 
     // ---------------- الواجهات: رسمة الواجهة تُسقَط على وجهها من المبنى ----------------
@@ -408,6 +516,25 @@ const CAD3D = (() => {
         };
         lay(mb, zB, mB);
         if (mt) lay(mt, zT, mT);
+      });
+      // الدرج: رئيسي سفلي موازٍ للميل ويمتد بالبسطة، توزيع عرضي فوقه، وحديد علوي عند الانكسار (ربع البحر)
+      (f.stairs || []).forEach(st => {
+        const rb = st.rebar || {}, mm = rb.main || { d: 12, s: 150 }, dd = rb.dist || { d: 10, s: 200 }, tt = rb.top || mm;
+        (st.flights3d || st.flights || []).forEach(q => {
+          const th = Math.atan2(q.R, q.T), tn = Math.tan(th), wv = (q.waist || 150) / 1000 / Math.cos(th), se = (q.n - 1) * q.T;
+          const M = flightM(q), L = (s0, h, d) => new THREE.Vector3(s0, h, d).applyMatrix4(M), c = 0.025;
+          const sm_ = (mm.s || 150) / 1000, sd_ = (dd.s || 200) / 1000;
+          const hb = s0 => s0 * tn - wv + c / Math.cos(th);
+          for (let d = c; d <= q.w - c + 1e-6; d += sm_) {
+            main.push([L(-0.25, hb(0) , d), L(se, hb(se), d), mm.d]);
+            main.push([L(se, hb(se), d), L(se + 0.6, hb(se), d), mm.d]);
+            const tz = s0 => s0 * tn - c;
+            mT.push([L(se - Math.max(0.8, se / 4), tz(se - Math.max(0.8, se / 4)), d), L(se, tz(se), d), tt.d]);
+            mT.push([L(se, tz(se), d), L(se + 0.7, tz(se), d), tt.d]);
+          }
+          for (let s0 = 0.05; s0 <= se; s0 += sd_ * Math.cos(th))
+            mB.push([L(s0, hb(s0) + (mm.d + dd.d) / 2000, c), L(s0, hb(s0) + (mm.d + dd.d) / 2000, q.w - c), dd.d]);
+        });
       });
       [[main, COL.main], [ties, COL.tie], [side, COL.side], [mB, COL.meshB], [mT, COL.meshT]].forEach(([l, c]) => {
         const im = barSet(l, c);

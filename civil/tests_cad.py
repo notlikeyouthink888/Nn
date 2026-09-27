@@ -363,6 +363,110 @@ class TestHospital(unittest.TestCase):
         self.assertEqual(k['GROUND FLOOR FINISHES PLAN'], {'finish'})
         self.assertEqual(k['FIRST FLOOR FINISHES PLAN'], {'arch'})   # لا مسقط رئيسي للأول
 
+    def test_stairs_full_height(self):
+        # درجا المبنى (قلبتان × 12) من منسوب كل طابق حتى الذي فوقه، والصعود من كلمة UP
+        B = self.R['buildings'][0]
+        g = B['floors'][0]
+        self.assertEqual(len(g['stairs']), 2)
+        for st in g['stairs']:
+            self.assertEqual(st['N'], 24)
+            self.assertAlmostEqual(st['R'], 0.175, places=3)
+            self.assertAlmostEqual(st['flights'][0]['z0'], g['level'], places=3)
+            top = st['flights'][-1]['z0'] + st['flights'][-1]['n'] * st['R']
+            self.assertAlmostEqual(top, g['level'] + g['h'], places=2)
+            self.assertEqual(len(st['landings']), 1)
+            self.assertIn('UP', st['src'])
+
+
+def _stair_section(x0=0.0, y0=0.0, n=10, R=0.175, T=0.30, land=1.2, waist=0.15):
+    """مقطع قلبة صناعي: درجات + بطن مائل + بسطة علوية + منسوب ±0.00 + نداءات تسليح."""
+    import math
+    E = []
+    x, y = x0, y0
+    E.append(dict(t='L', l='0', p=[x0 - 1.2, y0, x0, y0]))              # أرضية البداية
+    for i in range(n):
+        E.append(dict(t='L', l='0', p=[x, y, x, y + R]))
+        y += R
+        if i < n - 1:
+            E.append(dict(t='L', l='0', p=[x, y, x + T, y]))
+            x += T
+    E.append(dict(t='L', l='0', p=[x, y, x + land, y]))                  # البسطة
+    E.append(dict(t='L', l='0', p=[x, y - 0.15, x + land, y - 0.15]))    # بطن البسطة
+    th = math.atan2(R, T)
+    off = waist / math.cos(th)
+    E.append(dict(t='L', l='0', p=[x0, y0 - off, x, y - R - off]))       # البطن
+    E.append(dict(t='T', l='0', p=[x0 - 0.6, y0 + 0.05, 0.1], s='%%p0.00', rot=0))
+    E.append(dict(t='T', l='0', p=[x0 + 1.0, y0 - 0.5, 0.08], s='7%%c16/m', rot=0))
+    E.append(dict(t='T', l='0', p=[x0 + 2.0, y0 - 0.2, 0.08], s='5%%c12/m', rot=0))
+    E.append(dict(t='T', l='0', p=[x0 + 0.5, y0 + 1.0, 0.07], s='%.3f' % R, rot=90))
+    E.append(dict(t='T', l='0', p=[x0 + 1.5, y0 - 1.3, 0.12], s='أبعاد و تسليح السلم', rot=0))
+    return E
+
+
+class TestStairs(unittest.TestCase):
+    """الدرج: القراءة من المقطع، والتكميل حتى منسوب الطابق الذي فوقه، ودرج المسقط بقلبتين."""
+    def test_bar_callouts(self):
+        import cadstair as CS
+        b = CS.bar_callouts('7%%c16/m')[0]
+        self.assertEqual((b['n'], b['d'], b['per_m'], b['s']), (7, 16, True, 143))
+        b = CS.bar_callouts('%%c10@150')[0]
+        self.assertEqual((b['d'], b['s']), (10, 150))
+        b = CS.bar_callouts('2%%c16')[0]
+        self.assertEqual((b['n'], b['d'], b['per_m']), (2, 16, False))
+
+    def test_half_flight_completed_to_floor(self):
+        import cadread as CR, cadkb as K, cadstair as CS
+        E = _stair_section()
+        titles = [e for e in E if e['t'] == 'T' and K.is_title(e.get('s'))]
+        st, unk = CS.find_stairs(E, CR._segments(E), [], titles)
+        self.assertEqual(len(st), 1)
+        s = st[0]
+        f0 = s['flights'][0]
+        self.assertTrue(f0['read'])
+        self.assertEqual(f0['n'], 10)
+        self.assertAlmostEqual(f0['R'], 0.175, places=3)
+        self.assertAlmostEqual(f0['T'], 0.30, places=3)
+        self.assertAlmostEqual(f0['waist'], 150, delta=3)
+        # المرسوم حتى بسطة وسطية عند +1.75 ← يُكمَّل درجاً بقلبتين حتى +3.50
+        self.assertAlmostEqual(s['H'], 3.5, places=2)
+        self.assertEqual(s['n_risers'], 20)
+        self.assertFalse(s['flights'][1]['read'])
+        self.assertEqual(s['flights'][1]['s'], -f0['s'])
+        self.assertEqual(s['rebar']['main']['d'], 16)
+        self.assertEqual(s['rebar']['dist']['d'], 12)
+        names = {c['name']: c for c in s['checks']}
+        self.assertTrue(names['قاعدة بلوندل 2R+T']['ok'])
+        self.assertTrue(names['مجموع القائمات = ارتفاع الطابق']['ok'])
+
+    def test_plan_dogleg_from_step_numbers(self):
+        import cadstair as CS
+        E, segs = [], []
+        for i in range(10):                             # قلبة سفلية: خطوط رأسية y∈[0,1.1]، أرقام 1..10 تزيد مع x
+            x = 1.0 + 0.3 * i
+            segs.append((x, 0.0, x, 1.1, len(E)))
+            E.append(dict(t='T', l='0', p=[x + 0.1, 0.5, 0.1], s=str(i + 1), rot=0))
+        for i in range(10):                             # قلبة علوية: y∈[1.3,2.4]، أرقام 11..20 تزيد عكس x
+            x = 1.0 + 0.3 * i
+            segs.append((x, 1.3, x, 2.4, len(E)))
+            E.append(dict(t='T', l='0', p=[x + 0.1, 1.8, 0.1], s=str(20 - i), rot=0))
+        runs = CS.tread_runs(segs)
+        self.assertEqual(len(runs), 2)
+        g = CS.plan_groups(runs, [e for e in E if e['t'] == 'T'], segs)
+        self.assertEqual(len(g), 1)
+        st = CS.build_plan_stair(g[0], 3.5, 0.0, lambda x, y: (x, y))
+        self.assertEqual(st['N'], 20)
+        self.assertAlmostEqual(st['R'], 0.175, places=3)
+        self.assertEqual(st['flights'][0]['u'], [1.0, 0.0])            # الأرقام الصغرى تصعد باتجاه +x
+        self.assertAlmostEqual(st['landings'][0]['z'], 1.75, places=3)
+        self.assertGreater(st['landings'][0]['x0'], 3.6)                # بسطة الدوران بالطرف الأيمن
+
+    def test_not_a_stair_rejected(self):
+        import cadstair as CS
+        segs = [(1.0 + 0.3 * i, 0.0, 1.0 + 0.3 * i, 1.1, i) for i in range(6)]   # 6 خطوط لطابق 3.5 م = قائمة 0.58
+        g = CS.plan_groups(CS.tread_runs(segs), [], segs)
+        with self.assertRaises(ValueError):
+            CS.build_plan_stair(g[0], 3.5, 0.0, lambda x, y: (x, y))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -367,8 +367,9 @@ class TestHospital(unittest.TestCase):
         # درجا المبنى (قلبتان × 12) من منسوب كل طابق حتى الذي فوقه، والصعود من كلمة UP
         B = self.R['buildings'][0]
         g = B['floors'][0]
-        self.assertEqual(len(g['stairs']), 2)
-        for st in g['stairs']:
+        drawn = [st for st in g['stairs'] if not st.get('from_well')]
+        self.assertEqual(len(drawn), 2)
+        for st in drawn:
             self.assertEqual(st['N'], 24)
             self.assertAlmostEqual(st['R'], 0.175, places=3)
             self.assertAlmostEqual(st['flights'][0]['z0'], g['level'], places=3)
@@ -376,6 +377,44 @@ class TestHospital(unittest.TestCase):
             self.assertAlmostEqual(top, g['level'] + g['h'], places=2)
             self.assertEqual(len(st['landings']), 1)
             self.assertIn('UP', st['src'])
+
+    def test_stairs_connected_floor_to_floor(self):
+        # كل درج فوق الأرضي يبدأ من نهاية درج الطابق تحته (الأول بلا UP رُتّب ليتصل)، ولا درج مستنتج من المناور
+        B = self.R['buildings'][0]
+        for f in B['floors'][1:]:
+            for st in f['stairs']:
+                if st.get('connect'):
+                    self.assertTrue(st['connect']['ok'], (f['key'], st['connect']))
+        third = next(f for f in B['floors'] if f['key'] == 'third')
+        self.assertFalse(any(st.get('inferred') for st in third['stairs']))
+
+
+@unittest.skipUnless(SCHOOL, 'SCHOOL_FIXTURE غير مضبوط')
+class TestStairWells(unittest.TestCase):
+    """درج مرسوم فتحةً بعلامة X بلا نائمات (مدرسة) ودرج مستنتج من فتحة متكررة (Block_4)."""
+    def test_school_well_stair(self):
+        import cadread
+        R = cadread.read_set(json.load(open(SCHOOL)))
+        sts = [st for b in R['buildings'] for f in b['floors'] for st in f['stairs']]
+        self.assertEqual(len(sts), 1)
+        st = sts[0]
+        self.assertEqual(st['N'], 20)
+        self.assertAlmostEqual(st['R'], 0.175, places=3)
+        self.assertEqual(len(st['flights']), 2)
+        self.assertEqual(st['flights'][0]['u'], [-x for x in st['flights'][1]['u']])   # قلبتان متعاكستان
+
+    @unittest.skipUnless(FIX, 'CAD_FIXTURE غير مضبوط')
+    def test_block4_inferred_stairs_connected(self):
+        import cadread
+        R = cadread.read_set(json.load(open(FIX)))
+        A = R['buildings'][0]
+        g, m = A['floors'][0], A['floors'][1]
+        self.assertEqual(len(g['stairs']), 2)
+        self.assertEqual(len(m['stairs']), 2)
+        for st in m['stairs']:
+            self.assertTrue(st['inferred'])
+            self.assertTrue(st['connect']['ok'])
+            self.assertAlmostEqual(st['flights'][0]['z0'], m['level'], places=3)
 
 
 def _stair_section(x0=0.0, y0=0.0, n=10, R=0.175, T=0.30, land=1.2, waist=0.15):

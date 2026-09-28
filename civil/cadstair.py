@@ -1121,6 +1121,7 @@ def find_stairs(E, segs, drawings, titles, materials=None, floor_h=None):
                 st['notes'].append('حلزوني: %d درجة إسفينية حول عمود Ø%d مم، كل درجة %.1f° والنائمة %.0f مم عند خط '
                                    'المشي (نصف العرض)، حتى منسوب الطابق.' % (n, rc * 2000, st['spiral']['step_deg'],
                                                                            (st['T'] or 0.25) * 1000))
+            st['at'] = [round(st['x'], 2), round(st['y'], 2)]
             for key in ('base', 'fno', 'x', 'y', 'width_text', 'H_typ'):
                 st.pop(key, None)
             out.append(st)
@@ -1197,20 +1198,40 @@ def plan_groups(runs, texts, segs, k=1.0):
 
         def num_dir(r):
             pts = [(v, *coords(r, (v, x, y))) for v, x, y in nums]
-            pts = [(v, c, l) for v, c, l in pts if r['a'] - 0.1 / k <= l <= r['b'] + 0.1 / k
+            pts = [(v, c, l) for v, c, l in pts if r['a'] - 0.35 / k <= l <= r['b'] + 0.35 / k
                    and r['c0'] - 0.4 / k <= c <= r['c1'] + 0.4 / k]
             if len(pts) < 3:
-                return None, None
-            vs = [p[0] for p in pts]
-            cs = [p[1] for p in pts]
-            mv, mc = sum(vs) / len(vs), sum(cs) / len(cs)
-            cov = sum((v - mv) * (c - mc) for v, c, _ in pts)
-            return (1 if cov > 0 else -1), min(vs)
-        dirs = [num_dir(r) for r in rs]
+                return None, None, set()
+            # أرقام درجات طابقين على القلبة نفسها (11–16 من الدرج الذي تحتها و27–30 للصاعد) ← لكل مقطع
+            # متتالٍ اتجاهه، ويُقبل الاتجاه إن اتفقت المقاطع
+            pts.sort(key=lambda p: p[0])
+            runs_, cur = [], [pts[0]]
+            for p in pts[1:]:
+                if p[0] - cur[-1][0] <= 1:
+                    cur.append(p)
+                else:
+                    runs_.append(cur)
+                    cur = [p]
+            runs_.append(cur)
+            sg = set()
+            for rr in runs_:
+                if len(rr) >= 2:
+                    sg.add(1 if (rr[-1][1] - rr[0][1]) > 0 else -1)
+            if len(sg) != 1:
+                return None, None, set(p[0] for p in pts)
+            return sg.pop(), min(p[0] for p in pts), set(p[0] for p in pts)
+        dirs = [num_dir(r) for r in rs]      # (الاتجاه، أصغر رقم، الأرقام)
         src = 'أرقام الدرجات'
         if len(rs) == 2:
             if dirs[0][0] and dirs[1][0] and dirs[0][0] != dirs[1][0]:
-                order = sorted(range(2), key=lambda i: dirs[i][1])
+                # الترتيب من تسلسل الأرقام: القلبة التي آخر رقم فيها +1 يبدأ القلبة الأخرى هي الأولى
+                a_, b_ = dirs[0][2], dirs[1][2]
+                if max(a_) + 1 in b_:
+                    order = [0, 1]
+                elif max(b_) + 1 in a_:
+                    order = [1, 0]
+                else:
+                    order = sorted(range(2), key=lambda i: dirs[i][1])
                 d0 = dirs[order[0]][0]
             else:
                 order, d0 = [0, 1], None
@@ -1230,7 +1251,8 @@ def plan_groups(runs, texts, segs, k=1.0):
             if d0 is None:
                 d0, src = 1, 'اتجاه مفترض'
             seq = [(rs[0], d0)]
-        out.append(dict(walk=walk, seq=seq, src=src))
+        g_strength = 3 if src == 'أرقام الدرجات' else (2 if src == 'كلمة UP' else 1)
+        out.append(dict(walk=walk, seq=seq, src=src, strength=g_strength))
     return out
 
 
@@ -1393,4 +1415,248 @@ def plan_design(st, fc=25.0, fy=420.0):
              clause='ACI 318-19 24.4.3.2'),
         dict(name='القص', val='Vu=%.1f kN/م' % d['Vu'], lim='φVc=%.1f kN/م' % d['phiVc'], ok=d['shear_ok'], warn=False,
              clause='ACI 318-19 22.5.5.1')]
+    return st
+
+
+# ------------------------------------------------------------------ اتصال الأدراج بين الطوابق · فتحات X · جدول الدرج
+_LIFT_T = re.compile(r'(مصعد|lift|elev|shaft|منور|light\s*well|duct|شفت|فناء|court)', re.I)
+_STAIR_W = re.compile(r'(سلم|درج|stair|\bup\b|صعود)', re.I)
+
+
+def opening_label(texts, op, pad=0.4):
+    """نص داخل فتحة X أو ملاصق لها: «درج/UP» ← درج، «مصعد/منور/فناء» ← ليست درجاً."""
+    lab = None
+    for t in texts:
+        x, y = t['p'][0], t['p'][1]
+        if op['x0'] - pad <= x <= op['x1'] + pad and op['y0'] - pad <= y <= op['y1'] + pad:
+            s = t.get('s') or ''
+            if _LIFT_T.search(s):
+                return 'lift'
+            if _STAIR_W.search(s):
+                lab = 'stair'
+    return lab
+
+
+def plan_variants(g):
+    """البدائل الممكنة لدرج مسقط اتجاهه غير مؤكد: أي القلبتين أولاً × أي اتجاه."""
+    seq = g['seq']
+    out = []
+    if len(seq) == 2:
+        (a, _), (b, _) = seq
+        for first, second in ((a, b), (b, a)):
+            for d in (1, -1):
+                out.append(dict(g, seq=[(first, d), (second, -d)]))
+    else:
+        for d in (1, -1):
+            out.append(dict(g, seq=[(seq[0][0], d)]))
+    return out
+
+
+def well_fit(W, L, H, text=False):
+    """هل تتسع فتحة W×L لدرج بقلبتين يصعد H؟ يعيد (N, n1, T, w) أو None.
+    القائمة 150–190 مم (الأقرب لـ175)، والنائمة 250–300 مم، والبسطة بعرض القلبة ≥ 1.0 م."""
+    if W < 2.0 or W > 4.2:
+        return None
+    w = min(1.8, (W - 0.1) / 2.0)
+    land = max(w, 1.0)
+    best = None
+    for R in (0.175, 0.17, 0.18, 0.165, 0.185, 0.16, 0.19, 0.155, 0.15):
+        N = int(round(H / R))
+        Rr = H / N
+        if not (0.15 <= Rr <= 0.19):
+            continue
+        n1 = (N + 1) // 2
+        T = min(0.30, (L - land) / max(1, n1 - 1))
+        if T >= 0.25:
+            if best is None or abs(Rr - 0.175) < abs(best[0] - 0.175):
+                best = (Rr, N, n1, round(T, 3), round(w, 3))
+    if not best:
+        return None
+    Rr, N, n1, T, w = best
+    # فتحة أطول بكثير من الدرج (فناء/منور طولي) لا تُعتبر درجاً إلا بنص صريح
+    if not text and L > (n1 - 1) * 0.32 + max(w, 1.0) + 1.3:
+        return None
+    return dict(N=N, n1=n1, n2=N - n1, R=round(Rr, 4), T=T, w=w, land=max(w, 1.0))
+
+
+def straight_fit(W, L, H):
+    """درج مستقيم بقلبتين على خط واحد وبسطة وسطية داخل فتحة طولية W×L."""
+    if not (1.1 <= W <= 3.6):
+        return None
+    w = min(W, 2.4)
+    land = max(1.2, min(w, 1.8))
+    for R in (0.175, 0.17, 0.18, 0.165, 0.185, 0.16, 0.19):
+        N = int(round(H / R))
+        Rr = H / N
+        if not (0.15 <= Rr <= 0.19):
+            continue
+        n1 = (N + 1) // 2
+        n2 = N - n1
+        T = min(0.30, (L - land) / max(1, (n1 - 1) + (n2 - 1)))
+        need = ((n1 - 1) + (n2 - 1)) * T + land
+        if T >= 0.25 and L - need <= 3.2:
+            return dict(N=N, n1=n1, n2=n2, R=round(Rr, 4), T=round(T, 3), w=round(w, 3), land=round(land, 3),
+                        slack=round(L - need, 3))
+    return None
+
+
+def straight_stair(op, H, z0, walls=(), variant=0, why=''):
+    x0, y0, x1, y1 = op['x0'], op['y0'], op['x1'], op['y1']
+    along_x = (x1 - x0) >= (y1 - y0)
+    L, W = (x1 - x0, y1 - y0) if along_x else (y1 - y0, x1 - x0)
+    fit = straight_fit(W, L, H)
+    if not fit:
+        return None
+    lo_c, hi_c = (x0, x1) if along_x else (y0, y1)
+    l0 = ((y0 if along_x else x0) + (y1 if along_x else x1)) / 2.0 - fit['w'] / 2.0
+    d = 1 if not (variant & 1) else -1
+    start = lo_c + fit['slack'] / 2.0 if d > 0 else hi_c - fit['slack'] / 2.0
+    n1, n2, T, R, w = fit['n1'], fit['n2'], fit['T'], fit['R'], fit['w']
+    c1e = start + d * (n1 - 1) * T
+    c2s = c1e + d * fit['land']
+    fl = []
+    for k, (n, cs, zz) in enumerate(((n1, start, z0), (n2, c2s, z0 + n1 * R))):
+        p0 = [cs, l0] if along_x else [l0, cs]
+        u = [float(d), 0.0] if along_x else [0.0, float(d)]
+        v = [0.0, 1.0] if along_x else [1.0, 0.0]
+        fl.append(dict(p0=[round(p0[0], 3), round(p0[1], 3)], u=u, v=v, w=w, n=n, R=R, T=T, z0=round(zz, 3),
+                       going=round((n - 1) * T, 3), waist=150, read=False))
+    la, lb = sorted((c1e, c2s))
+    L_ = [la, l0, lb, l0 + w] if along_x else [l0, la, l0 + w, lb]
+    lands = [dict(x0=round(L_[0], 3), y0=round(L_[1], 3), x1=round(L_[2], 3), y1=round(L_[3], 3),
+                  z=round(z0 + n1 * R, 3), t=150, read=False)]
+    return dict(flights=fl, landings=lands, H=round(H, 3), R=R, N=n1 + n2, T=T, width=w, well=[x0, y0, x1, y1],
+                src='مُستنتج من فتحة X طولية %.2f×%.2f م %s — درج مستقيم ببسطة وسطية (أوقفه إن لم تكن درجاً)' % (L, W, why),
+                completed=False, from_well=True, inferred=True)
+
+
+def well_stair(op, H, z0, walls=(), text=False, force=False, variant=0, straight_ok=False):
+    """درج بقلبتين داخل فتحة الدرج (X) بإحداثيات المبنى: القلبتان على الضلع الطويل والبسطة الوسطية
+    بالطرف الملاصق للجدار، ويبدأ الصعود من الطرف المفتوح على الممر/البلاطة."""
+    x0, y0, x1, y1 = op['x0'], op['y0'], op['x1'], op['y1']
+    along_x = (x1 - x0) >= (y1 - y0)
+    L, W = (x1 - x0, y1 - y0) if along_x else (y1 - y0, x1 - x0)
+    fit = well_fit(W, L, H, text or force)
+    if not fit and (straight_ok or text or force):
+        st = straight_stair(op, H, z0, walls, variant, 'متكررة بالطوابق' if straight_ok else ('بنص «درج»' if text else '(بطلبك)'))
+        if st:
+            return st
+    if not fit and force:
+        N = max(4, int(round(H / 0.175)))
+        n1 = (N + 1) // 2
+        w = max(0.8, min(1.8, (W - 0.1) / 2.0))
+        fit = dict(N=N, n1=n1, n2=N - n1, R=round(H / N, 4), T=round(max(0.2, (L - max(w, 1.0)) / max(1, n1 - 1)), 3),
+                   w=round(w, 3), land=max(w, 1.0))
+    if not fit:
+        return None
+    # طرف البسطة: الأقرب لجدار موازٍ للعرض (الجدار خلف البسطة مباشرة)
+    lo_c, hi_c = (x0, x1) if along_x else (y0, y1)
+    l0, l1 = (y0, y1) if along_x else (x0, x1)
+    d_lo, d_hi = 9e9, 9e9
+    for w_ in walls:
+        o = w_.get('o')
+        if along_x and o == 'v':
+            c, a, b = w_['x1'], min(w_['y1'], w_['y2']), max(w_['y1'], w_['y2'])
+        elif not along_x and o == 'h':
+            c, a, b = w_['y1'], min(w_['x1'], w_['x2']), max(w_['x1'], w_['x2'])
+        else:
+            continue
+        if min(b, l1) - max(a, l0) < 0.5 * (l1 - l0):
+            continue
+        if c >= hi_c - 0.3:
+            d_hi = min(d_hi, max(0.0, c - hi_c))
+        if c <= lo_c + 0.3:
+            d_lo = min(d_lo, max(0.0, lo_c - c))
+    land_hi = d_hi <= d_lo                              # البسطة عند الطرف الأعلى إحداثياً
+    if variant & 2:
+        land_hi = not land_hi
+    lane_first = 0 if not (variant & 1) else 1
+    n1, n2, T, w, R = fit['n1'], fit['n2'], fit['T'], fit['w'], fit['R']
+    gap = W - 2 * w
+    d = 1 if land_hi else -1
+    c_land = hi_c - fit['land'] if land_hi else lo_c + fit['land']   # حافة البسطة
+    c_start = c_land - d * (n1 - 1) * T
+    lanes = [l0, l0 + w + gap]
+    fl = []
+    for k, (n, dd, lane, cs) in enumerate(((n1, d, lanes[lane_first], c_start), (n2, -d, lanes[1 - lane_first], c_land))):
+        if along_x:
+            p0, u, v = [cs, lane], [float(dd), 0.0], [0.0, 1.0]
+        else:
+            p0, u, v = [lane, cs], [0.0, float(dd)], [1.0, 0.0]
+        fl.append(dict(p0=[round(p0[0], 3), round(p0[1], 3)], u=u, v=v, w=w, n=n, R=R, T=T,
+                       z0=round(z0 + (0 if k == 0 else n1 * R), 3), going=round((n - 1) * T, 3), waist=150, read=False))
+    la, lb = sorted((c_land, hi_c if land_hi else lo_c))
+    L_ = [la, l0, lb, l1] if along_x else [l0, la, l1, lb]
+    lands = [dict(x0=round(L_[0], 3), y0=round(L_[1], 3), x1=round(L_[2], 3), y1=round(L_[3], 3),
+                  z=round(z0 + n1 * R, 3), t=150, read=False)]
+    return dict(flights=fl, landings=lands, H=round(H, 3), R=R, N=n1 + n2, T=T, width=w, well=[x0, y0, x1, y1],
+                src='من فتحة الدرج (X) %.2f×%.2f م%s' % (L, W, '، مؤكَّد بنص «درج»' if text else (' (بطلبك)' if force else '')),
+                completed=False, from_well=True)
+
+
+def stair_ends(st):
+    q0, q1 = st['flights'][0], st['flights'][-1]
+    a = (q0['p0'][0], q0['p0'][1])
+    b = (q1['p0'][0] + q1['u'][0] * q1['going'], q1['p0'][1] + q1['u'][1] * q1['going'])
+    return a, b
+
+
+_SCH_ROWS = [('waist', re.compile(r'سماكة|سمك|thick', re.I)),
+             ('top', re.compile(r'(رئيسي|main).*(علوي|top)|(علوي|top).*(رئيسي|main)', re.I)),
+             ('main', re.compile(r'رئيسي|main|طولي\s*سفلي|bottom', re.I)),
+             ('dist', re.compile(r'ثانوي|عرضي|توزيع|distrib|secondary|transverse', re.I)),
+             ('R', re.compile(r'القائمة|قائمة|riser', re.I)), ('T', re.compile(r'النائمة|نائمة|tread|going', re.I)),
+             ('width', re.compile(r'عرض|width', re.I)), ('landing', re.compile(r'البسطة|بسطة|landing', re.I))]
+
+
+def read_schedule(table):
+    """جدول تسليح الدرج («سماكة السحبة 20 سم · تسليح رئيسي طولي سفلي 10Ø16/م مستمر…»)."""
+    out = {}
+    for row in table.get('rows') or []:
+        cells = [str(c or '').strip() for c in row]
+        line = ' '.join(cells)
+        for key, rx in _SCH_ROWS:
+            if not rx.search(line) or key in out:
+                continue
+            if key in ('main', 'top', 'dist'):
+                b = next((bar_callouts(c)[0] for c in cells if bar_callouts(c)), None)
+                if b:
+                    note = next((c for c in cells if len(c) > 12 and not bar_callouts(c) and not rx.search(c)), '')
+                    out[key] = dict(n=b.get('n'), d=b['d'], s=b.get('s'), text=next(c for c in cells if bar_callouts(c)), note=note)
+                    break
+            else:
+                vals = [v for v in (_num(c) for c in cells) if v]
+                if vals:
+                    v = vals[0]
+                    if key == 'waist':
+                        v = v * 10 if v <= 60 else v           # سم ← مم
+                    elif key in ('R', 'T'):
+                        v = v / 100.0 if v > 1 else v          # سم ← م
+                    out[key] = v
+                    break
+    return out if any(k in out for k in ('waist', 'main', 'dist', 'top', 'R', 'T')) else None
+
+
+def apply_schedule(st, sch, fc=25.0, fy=420.0):
+    """الجدول يتقدّم على النداءات المرسومة، وكل فرق بينهما يُعرض تعارضاً."""
+    st['schedule'] = sch
+    rb = st.setdefault('rebar', {})
+    for key in ('main', 'top', 'dist'):
+        if sch.get(key):
+            old = rb.get(key)
+            if old and (old.get('d') != sch[key]['d'] or (old.get('s') and sch[key].get('s') and abs(old['s'] - sch[key]['s']) > 2)):
+                st.setdefault('issues', []).append('الحديد %s بالرسم %s لكنه بجدول الدرج %s — اعتُمد الجدول.' % (
+                    {'main': 'الرئيسي', 'top': 'العلوي', 'dist': 'التوزيع'}[key], old.get('text') or _lbl(old), sch[key]['text']))
+            rb[key] = dict(sch[key])
+    if sch.get('waist'):
+        for f in st['flights']:
+            if f.get('waist') and abs(f['waist'] - sch['waist']) > 10 and f.get('read'):
+                st.setdefault('issues', []).append('سماكة القلبة مرسومة %d مم وبالجدول %d مم — اعتُمد الجدول.' % (f['waist'], sch['waist']))
+                break
+        for f in st['flights']:
+            f['waist'] = int(sch['waist'])
+    st.setdefault('notes', []).append('طُبّق جدول الدرج: %s.' % ' · '.join(
+        ('السماكة %d مم' % sch['waist']) if k == 'waist' else ('%s %s' % ({'main': 'رئيسي سفلي', 'top': 'رئيسي علوي', 'dist': 'توزيع'}.get(k, k), sch[k]['text']))
+        for k in ('waist', 'main', 'top', 'dist') if sch.get(k)))
+    checks(st, fc, fy)
     return st

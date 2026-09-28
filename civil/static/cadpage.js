@@ -5,7 +5,7 @@
    كل نص قادم من الملف يُهرَّب قبل العرض. */
 const CADPAGE = (() => {
   let RAW = null, RES = null, NAME = '', BI = 0, TAB = 'file', VIEW = null, BUSY = false;
-  const OPTS = { merge: false, floor_h: {}, drawings: {}, definitions: [], qa: 150, LL: 3.0 };
+  const OPTS = { merge: false, floor_h: {}, drawings: {}, definitions: [], qa: 150, LL: 3.0, stair_wells: [], no_stairs: [] };
   const E = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const N = (x, n = 2) => (x === null || x === undefined || isNaN(x)) ? '—' :
     Number(x).toLocaleString('en-US', { minimumFractionDigits: n, maximumFractionDigits: n });
@@ -129,7 +129,7 @@ const CADPAGE = (() => {
       SITE = false;
       KEY = [NAME, RAWS.length, Math.random().toString(36).slice(2)].join('|');
       SENT = false;
-      Object.assign(OPTS, { merge: false, floor_h: {}, drawings: {}, definitions: [] });
+      Object.assign(OPTS, { merge: false, floor_h: {}, drawings: {}, definitions: [], stair_wells: [], no_stairs: [] });
       BI = 0;
       await run();
     } catch (e) {
@@ -544,6 +544,10 @@ const CADPAGE = (() => {
         key: f.key + '@' + i, name: b.name + ' · ' + f.name,
         columns: f.columns.map(c => X(c, ['x'])), beams: f.beams.map(m => X(m, ['x1', 'x2'])),
         walls: (f.walls || []).map(w => X(w, ['x1', 'x2'])),
+        stairs: (f.stairs || []).map(st => Object.assign({}, st, {
+          flights: (st.flights || []).map(q => Object.assign({}, q, { p0: [q.p0[0] + dx, q.p0[1]] })),
+          landings: (st.landings || []).map(l => X(l, ['x0', 'x1'])),
+          spiral: st.spiral ? X(st.spiral, ['x']) : null })),
         slab: Object.assign({}, f.slab, { rects: f.slab.rects.map(r => [r[0] + dx, r[1], r[2] + dx, r[3]]),
                                           openings: f.slab.openings.map(o => X(o, ['x0', 'x1'])), callouts: [] }) })));
       footings.push(...(b.footings || []).map(ft => X(ft, ['x'])));
@@ -713,14 +717,36 @@ const CADPAGE = (() => {
           <span><i style="background:#c7d2fe"></i>مكمَّل حتى منسوب الطابق</span><span><i style="background:#ef4444"></i>رئيسي</span>
           <span><i style="background:#3b82f6"></i>توزيع</span><span><i style="background:#22c55e"></i>علوي عند الانكسار</span></div></div>
       ${plans.length ? `<div class="card" style="margin-top:10px"><h3>🏢 أدراج المباني (من المساقط)</h3><div class="scroll"><table>
-        <tr><th></th><th>المبنى · الطابق</th><th>من → إلى</th><th>القلبات</th><th>القائمة × العدد</th><th>النائمة</th><th>العرض</th><th>السماكة والحديد</th><th>المصدر</th></tr>
+        <tr><th></th><th>المبنى · الطابق</th><th>من → إلى</th><th>القلبات</th><th>الاتصال</th><th>القائمة × العدد</th><th>النائمة</th><th>العرض</th><th>السماكة والحديد</th><th>المصدر</th></tr>
         ${plans.map(x => `<tr><td><button class="btn gh" style="padding:3px 8px" data-stv="${x.key}">🧊</button></td>
           <td>${E(x.b.name)} · ${E(x.f.name)}</td><td class="ltr">${lv(x.f.level)} → ${lv(x.f.level + x.st.H)}</td>
-          <td>${x.st.flights.length}${x.st.completed ? ' <span class="tag t-warn">مكمَّل</span>' : ''}</td>
+          <td>${x.st.flights.length}${x.st.completed ? ' <span class="tag t-warn">مكمَّل</span>' : ''}${x.st.inferred ? ' <span class="tag t-warn">مستنتج</span>' : ''}${x.st.copied ? ' <span class="tag t-warn">مكرَّر</span>' : ''}</td>
+          <td>${!x.st.connect ? '<span class="note">أول طابق</span>' : x.st.connect.ok ? '<span class="tag t-ok">✓ متصل بالذي تحته</span>' : '<span class="tag t-bad">✗ ' + N(x.st.connect.below, 2) + ' م</span>'}
+            ${(x.st.issues || []).map(i => '<div class="note" style="color:#fde68a">' + E(i) + '</div>').join('')}</td>
           <td class="ltr">${x.st.N} × ${N(x.st.R * 1000, 0)}</td><td class="ltr">${N(x.st.T * 1000, 0)}</td><td class="ltr">${N(x.st.width, 2)}</td>
           <td>${x.st.design ? E(x.st.design.waist + ' مم · ' + x.st.design.main + ' · توزيع ' + x.st.design.dist) : '—'}</td>
           <td style="font-size:11px">${E(x.st.src)}</td></tr>`).join('')}</table></div></div>` : ''}
+      ${wellsCard()}
       ${secs.length ? `<div class="sg" style="margin-top:10px">${secs.map(x => stairCard(x)).join('')}</div>` : ''}`;
+  }
+  // فتحات السقف (علامة X) وقرار كل منها — وزر لتغييره (اعتبرها درجاً / ليست درجاً)
+  function wellsCard() {
+    const ST = { yes: ['t-ok', 'فيها درج (من الفتحة)'], drawn: ['t-ok', 'فيها الدرج المرسوم'], lift: ['', 'مصعد/منور (مكتوب)'],
+                 void: ['', 'منور/فناء — أدراج المبنى مرسومة بغيرها'], nofit: ['', 'لا تتسع لدرج طابق'], off: ['t-warn', 'أوقفتَ الدرج فيها'] };
+    const L = [];
+    (RES.buildings || []).forEach(b => b.floors.forEach(f => (f.slab.openings || []).forEach(o => { if (o.key) L.push({ b, f, o }); })));
+    if (!L.length) return '';
+    return `<div class="card" style="margin-top:10px"><h3>⬚ فتحات السقوف (علامة X) — درج أم لا؟ (${L.length})</h3>
+      <div class="note">فتحة بمقاس بئر درج بقلبتين تُبنى فيها درجاً كاملاً، والطولية المتكررة بالطوابق درجاً مستقيماً ببسطة (لمبنى بلا درج مرسوم).
+        غيّر القرار بالزر وتُعاد القراءة.</div>
+      <div class="scroll" style="max-height:300px"><table><tr><th>الطابق</th><th>المقاس م</th><th>القرار</th><th></th></tr>
+      ${L.map(({ b, f, o }) => { const s0 = ST[o.stair] || ['', o.stair || '—'];
+        const act = o.stair === 'yes' ? `<button class="btn gh" style="padding:3px 8px" data-well-off="${E(o.key)}">❌ ليست درجاً</button>`
+          : o.stair === 'off' ? `<button class="btn gh" style="padding:3px 8px" data-well-back="${E(o.key)}">↩️ أرجعها</button>`
+          : o.stair === 'drawn' ? '' : `<button class="btn gh" style="padding:3px 8px" data-well-on="${E(o.key)}">🪜 اعتبرها درجاً</button>`;
+        return `<tr><td>${E(b.name)} · ${E(f.name)}</td><td class="ltr">${N(o.x1 - o.x0, 2)} × ${N(o.y1 - o.y0, 2)}</td>
+          <td><span class="tag ${s0[0]}">${E(s0[1])}</span>${o.label === 'stair' ? ' <span class="tag">مكتوب «درج»</span>' : ''}</td><td>${act}</td></tr>`; }).join('')}
+      </table></div></div>`;
   }
   function stairCard(x) {
     const st = x.st, C = st.checks || [];
@@ -839,6 +865,12 @@ const CADPAGE = (() => {
     qa('#cad [data-stv]').forEach(b => b.addEventListener('click', () => {
       showStair(b.dataset.stv); const h = q('#cad_st3d'); if (h && h.scrollIntoView) h.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }));
+    const wl = (attr, fn) => qa(`#cad [${attr}]`).forEach(b => b.addEventListener('click', async () => {
+      fn(b.getAttribute(attr)); STSEL = null; await safeRun();
+    }));
+    wl('data-well-on', k => { OPTS.no_stairs = OPTS.no_stairs.filter(x => x !== k); if (!OPTS.stair_wells.includes(k)) OPTS.stair_wells.push(k); });
+    wl('data-well-off', k => { OPTS.stair_wells = OPTS.stair_wells.filter(x => x !== k); if (!OPTS.no_stairs.includes(k)) OPTS.no_stairs.push(k); });
+    wl('data-well-back', k => { OPTS.no_stairs = OPTS.no_stairs.filter(x => x !== k); });
     const sst = { rebar: false, only: false, xray: false };
     qa('#cad [data-sv]').forEach(b => b.addEventListener('click', () => {
       const v = b.dataset.sv;

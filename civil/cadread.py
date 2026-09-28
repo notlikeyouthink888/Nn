@@ -2040,6 +2040,10 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
         if not view_only:
             dw['openings'] = stage('فتحات السقف', lambda r=r: detect_openings(
                 [segs[k] for k in SG.query(*r)], E, r), [])
+            if dw['openings']:
+                tx_ = [E[i] for i in EG.query(*r) if E[i]['t'] == 'T']
+                for op in dw['openings']:
+                    op['label'] = CS.opening_label(tx_, op)
             dw['columns'] = stage('الأعمدة', lambda r=r, dw=dw: detect_columns(
                 E, [segs[k] for k in SG.query(*r)], r, dw['ax'], sorted(EG.query(*r))), [])
             if dw['kind'] == 'arch':
@@ -2138,6 +2142,19 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
                 floor_h.setdefault(f['key'], f['h'])
     stairs, st_unk = stage('الأدراج (المقاطع)', lambda: CS.find_stairs(E, segs, drawings, titles, materials, floor_h),
                            ([], []))
+    # جدول تسليح الدرج («سماكة السحبة · تسليح رئيسي طولي سفلي/علوي · ثانوي عرضي») ← أقرب درج له، ويتقدّم على الرسم
+    for tb in tables or []:
+        if tb.get('kind') == 'columns' or not re.search(r'سلم|درج|stair|سحبة|السحبة', json.dumps(tb.get('rows') or [], ensure_ascii=False) + (tb.get('title') or '')):
+            continue
+        sch = CS.read_schedule(tb)
+        if not sch or not stairs:
+            continue
+        cx, cy = (tb['rect'][0] + tb['rect'][2]) / 2, (tb['rect'][1] + tb['rect'][3]) / 2
+        near = min(stairs, key=lambda st: math.hypot(st['at'][0] - cx, st['at'][1] - cy))
+        if math.hypot(near['at'][0] - cx, near['at'][1] - cy) > 30:
+            continue
+        CS.apply_schedule(near, sch, float(materials.get('fc') or 25), float(materials.get('fy') or 420))
+        warn.append('📋 جدول تسليح درج (%s) طُبّق على «%s».' % (' · '.join(k for k in ('waist', 'main', 'top', 'dist') if sch.get(k)), near['title'][:50]))
     for st in stairs:
         st['flights3d'] = [] if st.get('spiral') else CS.section_to_world(st)
     if stairs:
@@ -2997,8 +3014,8 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             for op in dw['openings']:
                 a = T(dw, op['x0'], op['y0'])
                 b = T(dw, op['x1'], op['y1'])
-                q = dict(x0=round(a[0], 3), y0=round(a[1], 3), x1=round(b[0], 3), y1=round(b[1], 3),
-                         between=op.get('between'), src=dw['id'])
+                q = dict(x0=round(min(a[0], b[0]), 3), y0=round(min(a[1], b[1]), 3), x1=round(max(a[0], b[0]), 3),
+                         y1=round(max(a[1], b[1]), 3), between=op.get('between'), src=dw['id'], label=op.get('label'))
                 if not any(abs(q['x0'] - o['x0']) < 0.4 and abs(q['y0'] - o['y0']) < 0.4 and
                            abs(q['x1'] - o['x1']) < 0.4 and abs(q['y1'] - o['y1']) < 0.4 for o in opens):
                     opens.append(q)
@@ -3031,37 +3048,27 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             if not dw:
                 continue
             for g in dw.get('stair_groups') or []:
+                Tf = (lambda x, y, dw=dw: T(dw, x, y))
+                vars_ = [g] + [v for v in CS.plan_variants(g) if v['seq'] != g['seq']]
                 try:
-                    st = CS.build_plan_stair(g, h, levels[fi], lambda x, y, dw=dw: T(dw, x, y))
+                    st = CS.build_plan_stair(g, h, levels[fi], Tf)
                 except ValueError:
                     continue                          # خطوط متوازية منتظمة ليست درج طابق (كسوة/مواقف/شبابيك)
                 except Exception as ex:
                     warn.append('تعذّر تركيب درج بمسقط %s: %s' % (K.FLOOR_NAMES.get(fk, fk), ex))
                     continue
-                pts = []
-                for q in st['flights']:
-                    for a_ in (0.0, q['going']):
-                        for b_ in (0.0, q['w']):
-                            pts.append((q['p0'][0] + q['u'][0] * a_ + q['v'][0] * b_, q['p0'][1] + q['u'][1] * a_ + q['v'][1] * b_))
-                for l_ in st['landings']:
-                    pts += [(l_['x0'], l_['y0']), (l_['x1'], l_['y1'])]
-                fp = [min(p_[0] for p_ in pts), min(p_[1] for p_ in pts), max(p_[0] for p_ in pts), max(p_[1] for p_ in pts)]
+                fp = _stair_box(st)
                 if any(_overlap(fp, q_['box']) > 0.4 or _overlap(q_['box'], fp) > 0.4 for q_ in f_stairs if q_.get('box')):
                     continue                          # الدرج نفسه من خطوط متداخلة (نسخة/خطوط مزدوجة)
                 st['box'] = [round(v_, 3) for v_ in fp]
+                st['strength'] = g.get('strength', 1)
+                st['_var'] = (lambda i, H_, z_, vars_=vars_, Tf=Tf: CS.build_plan_stair(vars_[i], H_, z_, Tf))
+                st['_nvar'], st['_vi'] = len(vars_), 0
                 nxt_ = []
                 for r_ in rects:
                     nxt_ += _rect_minus(r_, fp)
                 rects = nxt_
-                try:
-                    CS.plan_design(st, float(materials.get('fc') or 25), float(materials.get('fy') or 420))
-                except Exception:
-                    pass
                 f_stairs.append(st)
-                warn.append('🪜 درج %s: %d قلبة · %d قائمة × %.0f مم · نائمة %.0f مم — من %s حتى %s (اتجاه الصعود: %s)، '
-                            'وفتحته مقطوعة من السقف.' % (
-                                K.FLOOR_NAMES.get(fk, fk), len(st['flights']), st['N'], st['R'] * 1000, st['T'] * 1000,
-                                _fmt_lv(levels[fi]), _fmt_lv(levels[fi] + h), st['src']))
             for q in dw.get('spirals') or []:
                 x_, y_ = T(dw, q['x'], q['y'])
                 n_ = max(8, int(round(h / 0.18)))
@@ -3115,6 +3122,14 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
             warn.append('%s: %d عمود أبعد من متر عن أي بلاطة مقروءة%s — مرسومة بالمسقط (أعمدة مدخل/مظلة، أو حول فناء/فتحة) '
                         'وما فوقها غير مرسوم كبلاطة، فتظهر قائمة وحدها بالمجسم — ليست خطأً بالملف.' % (
                             K.FLOOR_NAMES.get(f['key'], f['key']), len(out_), (' (%d دائري)' % nr) if nr else ''))
+    try:
+        _stairs_connect(floors, materials, opts, warn)
+    except Exception as ex:
+        warn.append('تعذّر ربط الأدراج بين الطوابق: %s' % ex)
+        for f in floors:
+            for st in f['stairs']:
+                for k in ('_var', '_nvar', '_vi'):
+                    st.pop(k, None)
     masonry = bool(floors) and floors[0]['columns'] and all(c.get('how') == 'in-wall' for c in floors[0]['columns'])
     footings = [] if masonry else _footings(floors, materials, opts, warn)
     # أساسات شريطية مرسومة (طبقة الأساس: خطّان متوازيان تحت الجدران الحاملة)
@@ -3176,6 +3191,171 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
                 masonry=masonry,
                 height=round(sum(hs[g0:]), 3), depth=round(sum(hs[:g0]), 3),
                 levels=lv_info, ffl0=round(base0, 3))
+
+
+def _stair_box(st):
+    pts = []
+    for q in st['flights']:
+        for a_ in (0.0, q['going']):
+            for b_ in (0.0, q['w']):
+                pts.append((q['p0'][0] + q['u'][0] * a_ + q['v'][0] * b_, q['p0'][1] + q['u'][1] * a_ + q['v'][1] * b_))
+    for l_ in st['landings']:
+        pts += [(l_['x0'], l_['y0']), (l_['x1'], l_['y1'])]
+    return [min(p_[0] for p_ in pts), min(p_[1] for p_ in pts), max(p_[0] for p_ in pts), max(p_[1] for p_ in pts)]
+
+
+def _stairs_connect(floors, materials, opts, warn):
+    """الأدراج بين الطوابق: (١) درج داخل كل فتحة درج X لا درج مرسوم فيها، (٢) ترتيب كل درج اتجاهه غير مؤكد
+    ليبدأ من نهاية درج الطابق تحته (أو ينتهي عند بداية الذي فوقه)، (٣) طابق بلا درج مرسوم بين طابقين
+    فيهما الدرج (أو فتحته موجودة) يأخذ الدرج نفسه، (٤) التصميم والفحوص لكل درج."""
+    fc, fy = float(materials.get('fc') or 25), float(materials.get('fy') or 420)
+    force = set(opts.get('stair_wells') or [])
+    nost = set(opts.get('no_stairs') or [])
+    ov = lambda a, b: max(_overlap(a, b), 0.0)
+
+    def adopt(st, new, vi):
+        keep = {k: st[k] for k in ('box', 'strength', '_var', '_nvar', 'well_key') if k in st}
+        st.clear()
+        st.update(new)
+        st.update(keep)
+        st['_vi'] = vi
+    # (١) فتحات الدرج — مبنى أدراجه مرسومة (نائمات/UP/أرقام): فتحاته الأخرى منور/فناء ما لم يتكرر البئر أو يُكتب «درج»
+    drawn_any = any(q.get('flights') and not q.get('from_well') for f in floors for q in f['stairs'])
+    # القرار (درج/ليس درجاً) للبئر كله: الفتحة نفسها بكل الطوابق
+    kb = {}
+    for f in floors:
+        for op in f['slab'].get('openings') or []:
+            kb['%s:%.1f,%.1f' % (f['key'], op['x0'], op['y0'])] = [op['x0'], op['y0'], op['x1'], op['y1']]
+    same = lambda a, b: ov(a, b) > 0.7 and ov(b, a) > 0.7
+    nost_b = [kb[k] for k in nost if k in kb]
+    force_b = [kb[k] for k in force if k in kb]
+    for fi, f in enumerate(floors):
+        for op in f['slab'].get('openings') or []:
+            key = '%s:%.1f,%.1f' % (f['key'], op['x0'], op['y0'])
+            op['key'] = key
+            box = [op['x0'], op['y0'], op['x1'], op['y1']]
+            if key in nost or any(same(box, q) for q in nost_b):
+                op['stair'] = 'off'
+                continue
+            if any(same(box, q) for q in force_b):
+                force.add(key)
+            if any(ov(box, q['box']) > 0.3 or ov(q['box'], box) > 0.3 for q in f['stairs'] if q.get('box')):
+                op['stair'] = 'drawn'
+                continue
+            if op.get('label') == 'lift' and key not in force:
+                op['stair'] = 'lift'
+                continue
+            txt, frc = op.get('label') == 'stair', key in force
+            # الفتحة نفسها بالطابق المجاور = بئر مستمر (درج) لا منور/فناء لطابق واحد
+            rep = any(ov(box, [o['x0'], o['y0'], o['x1'], o['y1']]) > 0.7 and ov([o['x0'], o['y0'], o['x1'], o['y1']], box) > 0.7
+                      for g_ in (fi - 1, fi + 1) if 0 <= g_ < len(floors) for o in floors[g_]['slab'].get('openings') or [])
+            if drawn_any and not (rep or txt or frc):
+                op['stair'] = 'void'
+                continue
+            rep = rep and not drawn_any                  # الدرج المستقيم المستنتج فقط لمبنى بلا أي درج مرسوم
+            st = CS.well_stair(op, f['h'], f['level'], f.get('walls') or [], txt, frc, 0, rep)
+            if not st:
+                op['stair'] = 'nofit'
+                if txt:
+                    warn.append('⚠️ فتحة مكتوب عندها «درج» (%.2f×%.2f م بسقف %s) لكنها لا تتسع لدرج طابق ارتفاعه %.2f م — راجعها.' % (
+                        op['x1'] - op['x0'], op['y1'] - op['y0'], K.FLOOR_NAMES.get(f['key'], f['key']), f['h']))
+                continue
+            op['stair'] = 'yes'
+            st['box'] = [round(v, 3) for v in _stair_box(st)]
+            st['strength'] = 2 if (txt or frc) else 1
+            st['well_key'] = key
+            st['_var'] = (lambda i, H_, z_, op=op, f=f, txt=txt, frc=frc, rep=rep: CS.well_stair(op, H_, z_, f.get('walls') or [], txt, frc, i, rep))
+            st['_nvar'], st['_vi'] = 4, 0
+            f['stairs'].append(st)
+    # (٣) طابق بين طابقين فيهما الدرج نفسه (أو بسقفه فتحة عنده) ولا درج مرسوم بمسقطه
+    for fi, f in enumerate(floors):
+        if fi == 0:
+            continue
+        for P in [q for q in floors[fi - 1]['stairs'] if q.get('_var') and q.get('box')]:
+            if any(ov(P['box'], q['box']) > 0.3 or ov(q['box'], P['box']) > 0.3 for q in f['stairs'] if q.get('box')):
+                continue
+            up = fi + 1 < len(floors) and any(ov(P['box'], q['box']) > 0.3 for q in floors[fi + 1]['stairs'] if q.get('box'))
+            hole = any(ov(P['box'], [o['x0'], o['y0'], o['x1'], o['y1']]) > 0.3 for o in f['slab'].get('openings') or [])
+            if not (up or hole):
+                continue
+            new = None
+            try:
+                new = P['_var'](P['_vi'], f['h'], f['level'])
+            except Exception:
+                new = None
+            if not new:
+                continue
+            new.update(box=list(P['box']), strength=P.get('strength', 1), _var=P['_var'], _nvar=P['_nvar'], _vi=P['_vi'],
+                       copied=True)
+            new['src'] = (new.get('src') or '') + ' — مكرَّر من الطابق تحته (الدرج غير مرسوم بهذا المسقط والبئر مستمر)'
+            f['stairs'].append(new)
+            rs = []
+            for r_ in f['slab']['rects']:
+                rs += _rect_minus(r_, P['box'])
+            f['slab']['rects'] = [[round(v, 3) for v in r_] for r_ in rs]
+    # (٢) الاتصال: البداية عند نهاية درج الطابق تحته (والعكس للأضعف تحت الأقوى)
+    def best_var(st, target, at_start=True):
+        best = None
+        for i in range(st['_nvar']):
+            try:
+                c = st['_var'](i, st['H'], st['flights'][0]['z0'])
+            except Exception:
+                c = None
+            if not c:
+                continue
+            a, b = CS.stair_ends(c)
+            p = a if at_start else b
+            d = math.hypot(p[0] - target[0], p[1] - target[1])
+            if best is None or d < best[0] - 1e-6:
+                best = (d, i, c)
+        return best
+    for fi in range(1, len(floors)):
+        for st in floors[fi]['stairs']:
+            if not st.get('_var') or not st.get('box'):
+                continue
+            P = max((q for q in floors[fi - 1]['stairs'] if q.get('box') and q.get('flights')),
+                    key=lambda q: ov(st['box'], q['box']), default=None)
+            if P is None or ov(st['box'], P['box']) < 0.3:
+                continue
+            pe = CS.stair_ends(P)[1]
+            if st.get('strength', 1) <= P.get('strength', 1) and st.get('strength', 1) < 3:
+                b = best_var(st, pe, True)
+                if b and b[1] != st.get('_vi'):
+                    adopt(st, b[2], b[1])
+                    st.setdefault('notes', []).append('اتجاهه غير مكتوب بالمسقط ← رُتّب ليبدأ من نهاية درج الطابق تحته.')
+            gap = math.hypot(CS.stair_ends(st)[0][0] - pe[0], CS.stair_ends(st)[0][1] - pe[1])
+            lim = st['flights'][0]['w'] + 0.6
+            st['connect'] = dict(below=round(gap, 2), ok=gap <= lim)
+            if gap > lim:
+                st.setdefault('issues', []).append('لا يبدأ من نهاية درج الطابق تحته (بينهما %.2f م) — راجع موضع الدرج بالمسقطين.' % gap)
+    for fi in range(len(floors) - 2, -1, -1):
+        for st in floors[fi]['stairs']:
+            if not st.get('_var') or not st.get('box') or st.get('strength', 1) >= 2:
+                continue
+            U = max((q for q in floors[fi + 1]['stairs'] if q.get('box') and q.get('flights')),
+                    key=lambda q: ov(st['box'], q['box']), default=None)
+            if U is None or ov(st['box'], U['box']) < 0.3 or U.get('strength', 1) <= st.get('strength', 1):
+                continue
+            b = best_var(st, CS.stair_ends(U)[0], False)
+            if b and b[1] != st.get('_vi'):
+                adopt(st, b[2], b[1])
+                st.setdefault('notes', []).append('اتجاهه غير مكتوب بالمسقط ← رُتّب لينتهي عند بداية درج الطابق فوقه.')
+    # (٤) التصميم والتحذيرات
+    for fi, f in enumerate(floors):
+        for st in f['stairs']:
+            if st.get('spiral') or not st.get('flights'):
+                continue
+            try:
+                CS.plan_design(st, fc, fy)
+            except Exception:
+                pass
+            warn.append('🪜 درج %s: %d قلبة · %d قائمة × %.0f مم · نائمة %.0f مم — من %s حتى %s (%s)%s.' % (
+                K.FLOOR_NAMES.get(f['key'], f['key']), len(st['flights']), st['N'], st['R'] * 1000, st['T'] * 1000,
+                _fmt_lv(f['level']), _fmt_lv(f['level'] + f['h']), st['src'],
+                ('' if not st.get('connect') else (' · متصل بدرج الطابق تحته' if st['connect']['ok'] else ' · ⚠️ غير متصل بدرج الطابق تحته'))))
+        for st in f['stairs']:
+            for k in ('_var', '_nvar', '_vi'):
+                st.pop(k, None)
 
 
 def _fmt_lv(v):

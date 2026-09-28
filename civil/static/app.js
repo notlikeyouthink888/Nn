@@ -550,6 +550,7 @@ function go(id) {
   $('#view').innerHTML = p.html();
   $('#stat').textContent = 'جاهز';
   try { p.init && p.init(); } catch (e) { console.error(e); }
+  try { window.LAYERS && LAYERS.onPage(id); } catch (e) { console.error(e); }   // طبقة الفهم (دليل الصفحة) — إضافية
   window.scrollTo(0, 0);
 }
 
@@ -3731,9 +3732,31 @@ PAGES.fndpick = {
   init: () => { if (window.FNDPICK) FNDPICK.init(); }
 };
 
+/* ---------- طبقة الفهم: المختبر الفيزيائي وخريطة المنصة والقاموس (وحدات مستقلة) ---------- */
+PAGES.phys = {
+  ic: '🔬', name: 'المختبر الفيزيائي', ttl: 'المختبر الفيزيائي والميكانيكي التفاعلي',
+  sub: 'شوف الفيزياء خلف كل حساب: جسر · عمود · مقطع · زلزال · مسار الحمل · درج — بطبقات تُفعَّل فوق بعضها',
+  desc: 'محاكاة تفاعلية بالرسم الحي — عناصر محدّدة، أنماط ذاتية، نيومارك، بوسينسك',
+  html: () => (window.PHYSLAB ? PHYSLAB.html() : '<div class="card">وحدة المختبر غير محمَّلة (physlab.js).</div>'),
+  init: () => { if (window.PHYSLAB) PHYSLAB.init(); }
+};
+PAGES.map = {
+  ic: '🗺️', name: 'خريطة المنصة', ttl: 'خريطة المنصة — طبقات العمل الهندسي',
+  sub: 'من المدخلات إلى القراءة والتحليل والتصميم والمخرجات — اضغط أي قسم لتتبّع مساره',
+  desc: 'كيف ترتبط أقسام المنصة ببعض',
+  html: () => (window.LAYERS ? LAYERS.mapHtml() : ''), init: () => { if (window.LAYERS) LAYERS.mapInit(); }
+};
+PAGES.terms = {
+  ic: '📖', name: 'القاموس الهندسي', ttl: 'القاموس الهندسي — الرموز والمصطلحات',
+  sub: 'كل رمز بالعربي والإنكليزي مع تعريفه وبند الكود ومختبر يوضّحه',
+  desc: 'Mu، φ، εt، Pcr، T₁… بمعنى واضح',
+  html: () => (window.LAYERS ? LAYERS.termsHtml() : ''), init: () => { if (window.LAYERS) LAYERS.termsInit(); }
+};
+
 const ORDER = [
   ['المشروع', ['wizard', 'femproj', 'cad', 'room', 'bbs', 'detail66', 'projects']],
   ['التحليل الإنشائي', ['fem']],
+  ['الفهم والتعلّم', ['phys', 'map', 'terms']],
   ['ما تحت الصفر', ['survey', 'earth', 'soil', 'fndpick']],
   ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],
   ['مرجع', ['ref', 'home']],

@@ -721,7 +721,7 @@ const CADPAGE = (() => {
         ${plans.map(x => `<tr><td><button class="btn gh" style="padding:3px 8px" data-stv="${x.key}">🧊</button></td>
           <td>${E(x.b.name)} · ${E(x.f.name)}</td><td class="ltr">${lv(x.f.level)} → ${lv(x.f.level + x.st.H)}</td>
           <td>${x.st.flights.length}${x.st.completed ? ' <span class="tag t-warn">مكمَّل</span>' : ''}${x.st.inferred ? ' <span class="tag t-warn">مستنتج</span>' : ''}${x.st.copied ? ' <span class="tag t-warn">مكرَّر</span>' : ''}</td>
-          <td>${!x.st.connect ? '<span class="note">أول طابق</span>' : x.st.connect.ok ? '<span class="tag t-ok">✓ متصل بالذي تحته</span>' : '<span class="tag t-bad">✗ ' + N(x.st.connect.below, 2) + ' م</span>'}
+          <td>${!x.st.connect ? (x.f === x.b.floors[0] ? '<span class="tag">أول طابق</span>' : '<span class="tag">لا درج تحته</span>') : x.st.connect.ok ? '<span class="tag t-ok">✓ متصل بالذي تحته</span>' : '<span class="tag t-bad">✗ ' + N(x.st.connect.below, 2) + ' م</span>'}
             ${(x.st.issues || []).map(i => '<div class="note" style="color:#fde68a">' + E(i) + '</div>').join('')}</td>
           <td class="ltr">${x.st.N} × ${N(x.st.R * 1000, 0)}</td><td class="ltr">${N(x.st.T * 1000, 0)}</td><td class="ltr">${N(x.st.width, 2)}</td>
           <td>${x.st.design ? E(x.st.design.waist + ' مم · ' + x.st.design.main + ' · توزيع ' + x.st.design.dist) : '—'}</td>

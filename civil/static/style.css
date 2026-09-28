@@ -315,3 +315,31 @@ details.fold[open]>summary{border-bottom:1px solid var(--line);margin-bottom:10p
 @media print{.lyrbar,#guide,.pl-ctrl,.pl-layers,.pl-etabs{display:none!important}}
 .lyr-menu{display:none;margin-top:8px;background:var(--panel2);border:1px solid var(--line);color:var(--tx);font:inherit;font-size:12.5px;padding:6px 14px;border-radius:9px;cursor:pointer}
 @media(max-width:820px){.lyr-menu{display:inline-block}.side.lyr-fold .nav{display:none}.brand{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px}}
+
+/* ====================== دليل العنصر (dossier.js) ====================== */
+.dos-open{margin-top:10px;width:100%;font-size:12px;padding:8px 10px}
+.dos-ov{position:fixed;inset:0;z-index:1200;background:rgba(3,7,18,.72);backdrop-filter:blur(3px);display:none;align-items:flex-start;justify-content:center;padding:3vh 12px;overflow:auto}
+.dos{width:min(1100px,100%);background:var(--panel);border:1px solid var(--acc);border-radius:15px;box-shadow:0 24px 70px rgba(0,0,0,.6);overflow:hidden}
+.dos-h{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:14px 16px;background:linear-gradient(135deg,#0f2744,#121d33 70%);border-bottom:1px solid var(--line)}
+.dos-h b{font-size:16px;color:#fff}
+.dos-ic{font-size:20px;margin-left:8px}
+.dos-badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.dos-code{font-size:11px;color:var(--acc2);border:1px solid var(--line);border-radius:20px;padding:2px 9px}
+.dos-x{background:var(--panel2);border:1px solid var(--line);color:var(--tx);border-radius:9px;width:34px;height:34px;cursor:pointer;font-size:15px}
+.dos-tabs{display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.dos-tabs button{background:var(--panel2);border:1px solid var(--line);color:var(--mut);font:inherit;font-size:12.3px;padding:6px 12px;border-radius:9px;cursor:pointer}
+.dos-tabs button.on{border-color:var(--acc);color:#fff;background:rgba(56,189,248,.14)}
+.dos-b{padding:14px 16px;max-height:76vh;overflow:auto}
+.dos-grid{display:grid;grid-template-columns:minmax(0,380px) minmax(0,1fr);gap:16px;align-items:start}
+.dos-svg{max-width:380px}
+.dos-t td{white-space:normal}
+.dos-t td:first-child{color:var(--mut)}
+.dos-chk td:first-child{color:inherit;width:24px}
+.dos-chk tr.st-fail{background:rgba(248,113,113,.07)} .dos-chk tr.st-warn{background:rgba(251,191,36,.06)}
+.dos-why{color:var(--mut);font-size:11.3px;margin-top:3px}
+.dos-t .ltr,.dos-chk .ltr{direction:ltr;text-align:left;color:var(--acc2);white-space:nowrap}
+.dos-okbox{margin-top:10px;background:rgba(52,211,153,.1);border:1px solid rgba(52,211,153,.35);color:var(--ok);border-radius:9px;padding:9px 12px;font-size:12.5px}
+.dos-cv{width:100%;display:block;border-radius:10px;border:1px solid var(--line)}
+.dos-site li{margin:8px 0}
+@media(max-width:760px){.dos-grid{grid-template-columns:1fr}.dos-ov{padding:0}.dos{border-radius:0;min-height:100vh}.dos-b{max-height:none}}
+.dos-m{unicode-bidi:isolate;display:inline-block}

@@ -565,6 +565,15 @@ function pickPanel(u) {
     + ' — الطبقات والأسس والركائز والأعمدة</div>'; return; }
   p.innerHTML = `<h4>${u.title}</h4><table><tbody>${(u.rows || []).map(r =>
     `<tr><td style="color:var(--mut)">${r[0]}</td><td><b>${r[1]}</b></td></tr>`).join('')}</tbody></table>`;
+  // دليل العنصر (إضافة): كيف حُسب + تفاصيل الحديد الكاملة وفحوص ACI 318-19
+  try {
+    if (window.DOSSIER && DOSSIER.supports(u)) {
+      const b = document.createElement('button');
+      b.className = 'btn dos-open'; b.type = 'button'; b.textContent = '📘 الدليل: كيف حُسب؟ وتفاصيل الحديد';
+      b.onclick = () => DOSSIER.open(u);
+      p.appendChild(b);
+    }
+  } catch (e) { console.error(e); }
 }
 let REBAR_ON = false, XRAY_ON = false, MOM_ON = false, PUN_ON = false, DEF_ON = false;
 function mount3D(data, hostId) {

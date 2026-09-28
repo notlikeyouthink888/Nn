@@ -219,10 +219,18 @@ const CAD3D = (() => {
         pickables.push(me); concrete.push(me); grp.add(me);
       });
       if (st.spiral) {                                 // حلزوني: عمود أوسط + درجات إسفينية كل منها قائمة أعلى
-        const S = st.spiral, dA = S.step_deg * Math.PI / 180, R = S.H / S.n, tS = 0.12;
-        const col = new THREE.Mesh(keep(new THREE.CylinderGeometry(S.r_core, S.r_core, S.H + 1.0, 24)), mat('col'));
-        col.position.copy(P(S.x, S.y, S.z0 + (S.H + 1.0) / 2));
-        col.userData = Object.assign({}, info0, { spiral: S }); pickables.push(col); concrete.push(col); grp.add(col);
+        // عمود أوسط (نصف قطر ≤ 0.45 م) أو بئر مفتوح (درج حلزوني حول فراغ الأتريوم) — الدرجات بسماكة القائمة + 150 مم
+        // فتتراكب بلاطةً حلزونية متصلة لا ألواحاً منفصلة
+        const S = st.spiral, dA = S.step_deg * Math.PI / 180, R = S.H / S.n, tS = R + 0.15;
+        if (S.r_core <= 0.45) {
+          const col = new THREE.Mesh(keep(new THREE.CylinderGeometry(S.r_core, S.r_core, S.H + 1.0, 24)), mat('col'));
+          col.position.copy(P(S.x, S.y, S.z0 + (S.H + 1.0) / 2));
+          col.userData = Object.assign({}, info0, { spiral: S }); pickables.push(col); concrete.push(col); grp.add(col);
+        } else {
+          const rmI = mat('rail', { color: 0x94a3b8, metalness: 0.6, roughness: 0.35 }), pi = [];
+          for (let i = 0; i <= S.n; i++) { const a = S.a0 + i * dA; pi.push(P(S.x + (S.r_core + 0.05) * Math.cos(a), S.y + (S.r_core + 0.05) * Math.sin(a), S.z0 + i * R + 0.9)); }
+          for (let i = 0; i < pi.length - 1; i++) rod(pi[i], pi[i + 1], 0.02, rmI, grp);
+        }
         for (let i = 0; i < S.n; i++) {
           const a = S.a0 + i * dA, sh = new THREE.Shape();
           sh.moveTo(S.r_core * Math.cos(a), S.r_core * Math.sin(a));

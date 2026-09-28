@@ -367,7 +367,7 @@ class TestHospital(unittest.TestCase):
         # درجا المبنى (قلبتان × 12) من منسوب كل طابق حتى الذي فوقه، والصعود من كلمة UP
         B = self.R['buildings'][0]
         g = B['floors'][0]
-        drawn = [st for st in g['stairs'] if not st.get('from_well')]
+        drawn = [st for st in g['stairs'] if not st.get('from_well') and not st.get('spiral')]
         self.assertEqual(len(drawn), 2)
         for st in drawn:
             self.assertEqual(st['N'], 24)
@@ -377,6 +377,22 @@ class TestHospital(unittest.TestCase):
             self.assertAlmostEqual(top, g['level'] + g['h'], places=2)
             self.assertEqual(len(st['landings']), 1)
             self.assertIn('UP', st['src'])
+
+    def test_atrium_spiral_all_floors(self):
+        # الحلزوني بالأتريوم: مرسوم بمساقط الأول–الرابع (دائرة Ø1.8 م + نائمات شعاعية + UP) وبلا كلمة «حلزوني»؛
+        # الأرضي يأخذ الدرج الصاعد إليه، وكل دورة متصلة بالتي تحتها وبالمكان نفسه
+        B = self.R['buildings'][0]
+        sp = {f['key']: [st for st in f['stairs'] if st.get('spiral')] for f in B['floors']}
+        for k in ('ground', 'first', 'second', 'third', 'fourth'):
+            self.assertEqual(len(sp[k]), 1, k)
+        g = sp['ground'][0]['spiral']
+        for k in ('first', 'second', 'third', 'fourth'):
+            S = sp[k][0]['spiral']
+            self.assertAlmostEqual(S['x'], g['x'], delta=0.3)
+            self.assertAlmostEqual(S['y'], g['y'], delta=0.3)
+            self.assertTrue(sp[k][0]['connect']['ok'])
+            self.assertLessEqual(sp[k][0]['R'], 0.24)
+        self.assertGreater(g['r_core'], 0.8)                 # بئر مفتوح Ø≈1.8 م
 
     def test_stairs_connected_floor_to_floor(self):
         # كل درج فوق الأرضي يبدأ من نهاية درج الطابق تحته (الأول بلا UP رُتّب ليتصل)، ولا درج مستنتج من المناور

@@ -720,7 +720,7 @@ const CADPAGE = (() => {
         <tr><th></th><th>المبنى · الطابق</th><th>من → إلى</th><th>القلبات</th><th>الاتصال</th><th>القائمة × العدد</th><th>النائمة</th><th>العرض</th><th>السماكة والحديد</th><th>المصدر</th></tr>
         ${plans.map(x => `<tr><td><button class="btn gh" style="padding:3px 8px" data-stv="${x.key}">🧊</button></td>
           <td>${E(x.b.name)} · ${E(x.f.name)}</td><td class="ltr">${lv(x.f.level)} → ${lv(x.f.level + x.st.H)}</td>
-          <td>${x.st.flights.length}${x.st.completed ? ' <span class="tag t-warn">مكمَّل</span>' : ''}${x.st.inferred ? ' <span class="tag t-warn">مستنتج</span>' : ''}${x.st.copied ? ' <span class="tag t-warn">مكرَّر</span>' : ''}</td>
+          <td>${x.st.spiral ? '🌀 حلزوني' : x.st.flights.length}${x.st.completed ? ' <span class="tag t-warn">مكمَّل</span>' : ''}${x.st.inferred ? ' <span class="tag t-warn">مستنتج</span>' : ''}${x.st.copied ? ' <span class="tag t-warn">مكرَّر</span>' : ''}</td>
           <td>${!x.st.connect ? (x.f === x.b.floors[0] ? '<span class="tag">أول طابق</span>' : '<span class="tag">لا درج تحته</span>') : x.st.connect.ok ? '<span class="tag t-ok">✓ متصل بالذي تحته</span>' : '<span class="tag t-bad">✗ ' + N(x.st.connect.below, 2) + ' م</span>'}
             ${(x.st.issues || []).map(i => '<div class="note" style="color:#fde68a">' + E(i) + '</div>').join('')}</td>
           <td class="ltr">${x.st.N} × ${N(x.st.R * 1000, 0)}</td><td class="ltr">${N(x.st.T * 1000, 0)}</td><td class="ltr">${N(x.st.width, 2)}</td>
@@ -807,7 +807,7 @@ const CADPAGE = (() => {
         ${E(u.bars)} · ${u.ok ? '✓ القص مقبول' : '✗ راجع'} <span class="tag t-warn">مصمَّم بالكود</span>`,
       stair: () => `🪜 <b>${u.spiral ? 'درج حلزوني' : u.landing ? 'بسطة' : 'قلبة ' + (u.flight || '')}</b> ${u.title ? '· ' + E(u.title) : ''} · ${E(u.floor || '')}<br>
         ${u.landing ? 'منسوب ' + lv(u.z) + ' · سماكة ' + (u.t || '—') + ' مم' :
-          u.spiral ? u.spiral.n + ' درجة · Ø العمود ' + Math.round(u.spiral.r_core * 2000) + ' مم · نصف القطر ' + N(u.spiral.r_out, 2) + ' م' :
+          u.spiral ? u.spiral.n + ' درجة × ' + N(u.spiral.H / u.spiral.n * 1000, 0) + ' مم · ' + (u.spiral.r_core <= 0.45 ? 'Ø العمود ' : 'Ø البئر المفتوح ') + Math.round(u.spiral.r_core * 2000) + ' مم · نصف القطر ' + N(u.spiral.r_out, 2) + ' م · من ' + lv(u.spiral.z0) + ' إلى ' + lv(u.spiral.z0 + u.spiral.H) :
           (u.n || '') + ' قائمة × ' + N((u.R || 0) * 1000, 0) + ' مم · نائمة ' + N((u.T || 0) * 1000, 0) + ' مم · من ' + lv(u.z0) + ' إلى ' + lv(u.z1) +
           ' · البطن ' + (u.waist || '—') + ' مم'}
         ${u.read === false ? ' <span class="tag t-warn">مكمَّل حتى منسوب الطابق</span>' : ' <span class="tag t-ok">مقروء</span>'}

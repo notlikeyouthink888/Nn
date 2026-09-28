@@ -2073,9 +2073,7 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
                 tx_ = [E[i] for i in ids_ if E[i]['t'] == 'T']
                 runs = CS.tread_runs(ss_)
                 gs = CS.plan_groups(runs, tx_, ss_) if runs else []
-                sp = []
-                if CS._SPIRAL.search(dw.get('title') or '') or any(CS._SPIRAL.search(t.get('s') or '') for t in tx_):
-                    sp = [q for q in CS.spirals(E, [i for i in ids_ if E[i]['t'] == 'C'], ss_) if q['n'] >= 8]
+                sp = CS.spirals(E, [i for i in ids_ if E[i]['t'] == 'C'], ss_, 1.0, tx_)
                 return gs, sp
             dw['stair_groups'], dw['spirals'] = stage('الأدراج بالمسقط', _st_plan, ([], []))
         dw['sketch'] = _sketch([segs[k] for k in SG.query(*r)], E, r, cap=4000 if view_only else 2500)
@@ -2155,6 +2153,20 @@ def _read_core(E, scale, src, d, opts, warn, stages, stage, empty):
             continue
         CS.apply_schedule(near, sch, float(materials.get('fc') or 25), float(materials.get('fy') or 420))
         warn.append('📋 جدول تسليح درج (%s) طُبّق على «%s».' % (' · '.join(k for k in ('waist', 'main', 'top', 'dist') if sch.get(k)), near['title'][:50]))
+    # مقطع الحلزوني + مسقطه بالملف: نصف قطر العمود/البئر والعرض وزاوية الدرجة من المسقط (أقرب مسقط حلزوني)
+    sp_plans = [(dw, q) for dw in drawings for q in (dw.get('spirals') or [])]
+    for st in stairs:
+        if not st.get('spiral') or not sp_plans:
+            continue
+        dw, q = min(sp_plans, key=lambda t: math.hypot(t[1]['x'] - st['at'][0], t[1]['y'] - st['at'][1]))
+        S = st['spiral']
+        S.update(r_core=q['r_core'], r_out=q['r_out'], step_deg=q['step_deg'], a0=q['a0'])
+        S['x'] = S['y'] = round(q['r_out'] + 0.3, 3)
+        st['size'] = [round(2 * (q['r_out'] + 0.3), 3)] * 2
+        st['width'] = round(q['r_out'] - q['r_core'], 3)
+        st['width_src'] = 'من مسقط الحلزوني (اللوحة %d)' % (dw['id'] + 1)
+        st.setdefault('notes', []).append('نصف القطر %.2f م والعمود/البئر Ø%d مم وزاوية الدرجة %.1f° من مسقط الحلزوني «%s».' % (
+            q['r_out'], q['r_core'] * 2000, q['step_deg'], (dw.get('title') or '')[:40]))
     for st in stairs:
         st['flights3d'] = [] if st.get('spiral') else CS.section_to_world(st)
     if stairs:
@@ -3071,10 +3083,7 @@ def _assemble(gi, grp, beam_scheds, beams_all, col_sched, materials, opts, warn,
                 f_stairs.append(st)
             for q in dw.get('spirals') or []:
                 x_, y_ = T(dw, q['x'], q['y'])
-                n_ = max(8, int(round(h / 0.18)))
-                f_stairs.append(dict(spiral=dict(x=round(x_, 3), y=round(y_, 3), r_core=q['r_core'], r_out=q['r_out'],
-                                                 n=n_, step_deg=q['step_deg'], a0=q['a0'], z0=levels[fi], H=h),
-                                     flights=[], landings=[], H=h, R=round(h / n_, 4), N=n_, src='مسقط حلزوني'))
+                f_stairs.append(_spiral_stair(x_, y_, q, h, levels[fi]))
         t = (sl or {}).get('thickness') or (bk or {}).get('thickness')
         t_src = 'title' if t else None
         if not t and meas and meas.get('t'):
@@ -3202,6 +3211,74 @@ def _stair_box(st):
     for l_ in st['landings']:
         pts += [(l_['x0'], l_['y0']), (l_['x1'], l_['y1'])]
     return [min(p_[0] for p_ in pts), min(p_[1] for p_ in pts), max(p_[0] for p_ in pts), max(p_[1] for p_ in pts)]
+
+
+def _spiral_stair(x, y, q, H, z0, a0=None):
+    """درج حلزوني من منسوب الطابق حتى الذي فوقه: قائمة ≈175 مم (≤240 مم)، والزاوية لكل درجة من المسقط."""
+    n = max(8, int(round(H / 0.175)))
+    R = H / n
+    if R > 0.24:
+        n = int(math.ceil(H / 0.24))
+        R = H / n
+    rw = q['r_core'] + (q['r_out'] - q['r_core']) / 2.0
+    return dict(spiral=dict(x=round(x, 3), y=round(y, 3), r_core=q['r_core'], r_out=q['r_out'], n=n,
+                            step_deg=q['step_deg'], a0=q['a0'] if a0 is None else a0, z0=z0, H=H),
+                flights=[], landings=[], H=round(H, 3), R=round(R, 4), N=n, T=round(rw * math.radians(q['step_deg']), 3),
+                width=round(q['r_out'] - q['r_core'], 3), src='مسقط حلزوني (%d نائمة مرسومة%s)' % (
+                    q['n'], ' · UP' if q.get('up') else (' · DN' if q.get('dn') else '')),
+                up=q.get('up'), dn=q.get('dn'), plan=dict(q))
+
+
+def _spirals_connect(floors, warn):
+    """الحلزوني بين الطوابق: المسقط يرسمه بكل طابق يمرّ به. الطابق تحت أدنى ظهور له (أو الذي كُتب عنده DN)
+    يأخذ الدرج الصاعد إليه، وأعلى طابق (DN فقط بلا طابق فوقه فيه الحلزوني) هو الوصول فلا يصعد منه،
+    وكل دورة تبدأ من زاوية انتهاء التي تحتها."""
+    near = lambda a, b: math.hypot(a['spiral']['x'] - b['spiral']['x'], a['spiral']['y'] - b['spiral']['y']) < 0.8
+    sp = [[q for q in f['stairs'] if q.get('spiral')] for f in floors]
+    for fi in range(len(floors)):
+        for q in sp[fi]:
+            below = fi > 0 and any(near(q, o) for o in sp[fi - 1])
+            if fi > 0 and not below and (q.get('dn') or True):
+                g = floors[fi - 1]
+                new = _spiral_stair(q['spiral']['x'], q['spiral']['y'], q['plan'], g['h'], g['level'])
+                new['src'] += ' — درج الطابق تحته (بداية الحلزوني)'
+                g['stairs'].append(new)
+                sp[fi - 1].append(new)
+    for fi in range(len(floors) - 1, -1, -1):
+        for q in list(sp[fi]):
+            above = fi + 1 < len(floors) and any(near(q, o) for o in sp[fi + 1])
+            if not above and not q.get('up'):
+                floors[fi]['stairs'].remove(q)       # الوصول (DN فقط): لا يصعد من هذا الطابق
+                sp[fi].remove(q)
+                warn.append('🌀 الحلزوني ينتهي بطابق %s (الوصول).' % K.FLOOR_NAMES.get(floors[fi]['key'], floors[fi]['key']))
+    for fi in range(1, len(floors)):                 # استمرار الزاوية: الدورة تبدأ من حيث انتهت التي تحتها
+        for q in sp[fi]:
+            o = next((o for o in sp[fi - 1] if near(q, o)), None)
+            if o:
+                S = o['spiral']
+                q['spiral']['a0'] = round(S['a0'] + S['n'] * math.radians(S['step_deg']), 4)
+                q['connect'] = dict(below=0.0, ok=True)
+    for fi, f in enumerate(floors):
+        for q in sp[fi]:
+            box = [q['spiral']['x'] - q['spiral']['r_out'], q['spiral']['y'] - q['spiral']['r_out'],
+                   q['spiral']['x'] + q['spiral']['r_out'], q['spiral']['y'] + q['spiral']['r_out']]
+            q['box'] = [round(v, 3) for v in box]
+            rs = []
+            for r_ in f['slab']['rects']:
+                rs += _rect_minus(r_, box)
+            f['slab']['rects'] = [[round(v, 3) for v in r_] for r_ in rs]
+            per = 360.0 / max(q['spiral']['step_deg'], 1.0)
+            clr = per * q['R'] - 0.12
+            q['checks'] = [dict(name='القائمة R (حلزوني)', val='%.0f مم' % (q['R'] * 1000), lim='≤ 240 مم', ok=q['R'] <= 0.24,
+                                warn=False, clause='IBC 1011.10'),
+                           dict(name='النائمة عند خط المشي', val='%.0f مم' % (q['T'] * 1000), lim='≥ 190 مم', ok=q['T'] >= 0.19,
+                                warn=False, clause='IBC 1011.10'),
+                           dict(name='الارتفاع الصافي لكل دورة', val='%.2f م' % clr, lim='≥ 1.98 م', ok=clr >= 1.98, warn=False,
+                                clause='IBC 1011.10')]
+            warn.append('🌀 درج حلزوني %s: %d درجة × %.0f مم حول %s Ø%d مم (نصف القطر %.2f م) — من %s حتى %s%s.' % (
+                K.FLOOR_NAMES.get(f['key'], f['key']), q['N'], q['R'] * 1000,
+                'عمود' if q['spiral']['r_core'] <= 0.45 else 'بئر مفتوح', q['spiral']['r_core'] * 2000, q['spiral']['r_out'],
+                _fmt_lv(f['level']), _fmt_lv(f['level'] + f['h']), ' · متصل بالذي تحته' if q.get('connect') else ''))
 
 
 def _stairs_connect(floors, materials, opts, warn):
@@ -3340,6 +3417,10 @@ def _stairs_connect(floors, materials, opts, warn):
             if b and b[1] != st.get('_vi'):
                 adopt(st, b[2], b[1])
                 st.setdefault('notes', []).append('اتجاهه غير مكتوب بالمسقط ← رُتّب لينتهي عند بداية درج الطابق فوقه.')
+    try:
+        _spirals_connect(floors, warn)
+    except Exception as ex:
+        warn.append('تعذّر ربط الدرج الحلزوني بين الطوابق: %s' % ex)
     # (٤) التصميم والتحذيرات
     for fi, f in enumerate(floors):
         for st in f['stairs']:

@@ -630,35 +630,39 @@ def tread_runs(segs, k=1.0, min_n=4, max_n=26):
     return out
 
 
-def spirals(E, ids, segs, k=1.0):
-    """درج حلزوني بالمسقط: دائرة (العمود الأوسط) تخرج منها ≥8 خطوط شعاعية (النائمات)."""
+def spirals(E, ids, segs, k=1.0, texts=None):
+    """درج حلزوني بالمسقط: دائرة العمود الأوسط (نصف قطر 0.08–1.3 م) تخرج منها خطوط شعاعية (النائمات).
+    يُقبل بـ≥12 نائمة على ≥180° مع كلمة UP/DN/حلزوني قربه، أو ≥16 نائمة بلا نص. دوائر الكراسي المتحركة
+    بالحمّامات (قطر 1.5 م) تقطعها خطوط قليلة بأقواس جزئية فلا تُقبل."""
     out = []
+    texts = texts or []
     for i in ids:
         e = E[i]
         if e['t'] != 'C':
             continue
         cx, cy, r = e['p']
-        if not (0.08 <= r * k <= 0.8):
+        if not (0.08 <= r * k <= 1.3):
             continue
+        if any(abs(q['x'] - cx) * k < 0.2 and abs(q['y'] - cy) * k < 0.2 for q in out):
+            continue                                   # دائرتان متحدتا المركز (حافة العمود) = عمود واحد
         rad = []
-        for s in segs:
-            d0 = math.hypot(s[0] - cx, s[1] - cy)
-            d1 = math.hypot(s[2] - cx, s[3] - cy)
+        for sg in segs:
+            d0 = math.hypot(sg[0] - cx, sg[1] - cy)
+            d1 = math.hypot(sg[2] - cx, sg[3] - cy)
             a, b = (d0, d1) if d0 < d1 else (d1, d0)
-            if a > r * 1.6 or b < r * 2.0 or (b - a) * k < 0.5:
+            if a > r * 1.6 or b < r * 1.6 or (b - a) * k < 0.4:
                 continue
-            (px, py) = (s[0], s[1]) if d0 > d1 else (s[2], s[3])
-            (qx, qy) = (s[2], s[3]) if d0 > d1 else (s[0], s[1])
-            # الخط يتجه نحو المركز (لا مماس)
+            (px, py) = (sg[0], sg[1]) if d0 > d1 else (sg[2], sg[3])
+            (qx, qy) = (sg[2], sg[3]) if d0 > d1 else (sg[0], sg[1])
             ux, uy = px - qx, py - qy
             L = math.hypot(ux, uy) or 1
             cr = abs((qx - cx) * uy - (qy - cy) * ux) / L
-            if cr > r * 1.2:
+            if cr > r * 0.6:
                 continue
-            rad.append((math.atan2(py - cy, px - cx), b))
+            rad.append((math.atan2(py - cy, px - cx), b, a))
         if len(rad) < 8:
             continue
-        angs = sorted(set(round(a, 2) for a, _ in rad))
+        angs = sorted(set(round(a, 2) for a, _, _ in rad))
         if len(angs) < 8:
             continue
         gaps = sorted(((angs[(j + 1) % len(angs)] - angs[j]) % (2 * math.pi)) for j in range(len(angs)))
@@ -667,9 +671,17 @@ def spirals(E, ids, segs, k=1.0):
             continue
         span = 2 * math.pi - max(gaps) if max(gaps) > 2.5 * step else 2 * math.pi
         n = int(round(span / step)) + (0 if span >= 2 * math.pi - 0.01 else 1)
-        out.append(dict(x=cx, y=cy, r_core=round(r * k, 3), r_out=round(_med([b for _, b in rad]) * k, 3),
-                        n=n, step_deg=round(math.degrees(step), 1), a0=round(min(a for a, _ in rad), 3),
-                        sweep=round(math.degrees(span), 0)))
+        r_out = _med([b for _, b, _ in rad]) * k
+        near = [t for t in texts if math.hypot(t['p'][0] - cx, t['p'][1] - cy) * k <= r_out + 1.2]
+        up = any(re.match(r'^\s*(up|صعود)\s*$', t.get('s') or '', re.I) for t in near)
+        dn = any(re.match(r'^\s*(dn|down|نزول)\s*$', t.get('s') or '', re.I) for t in near)
+        word = any(_SPIRAL.search(t.get('s') or '') for t in near)
+        sweep = math.degrees(span)
+        if not ((n >= 12 and sweep >= 180 and (up or dn or word)) or (n >= 16 and sweep >= 240)):
+            continue
+        out.append(dict(x=cx, y=cy, r_core=round(r * k, 3), r_out=round(r_out, 3), n=n,
+                        step_deg=round(math.degrees(step), 1), a0=round(min(a for a, _, _ in rad), 3),
+                        sweep=round(sweep, 0), up=up, dn=dn))
     return out
 
 

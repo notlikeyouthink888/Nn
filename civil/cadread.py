@@ -20,6 +20,7 @@
 كل عنصر يحمل مصدره (رقم الرسمة) وثقته. ما بلا دليل كافٍ يُعلَّم «تخمين» ولا
 يدخل التركيب إلا إن طلب المستخدم ذلك صراحةً (opts.use_guesses).
 """
+import threading
 import collections
 import functools
 import json
@@ -1645,11 +1646,26 @@ def _sketch(segs, E, rect, cap=2500):
 
 
 # ------------------------------------------------------------------ الرئيسي
+# مراقِب اختياري لتقدّم التحليل (مهمة الخلفية بالسيرفر تعرض المرحلة الحالية للمستخدم).
+# لكل خيط مراقبه، ولا يغيّر أي نتيجة.
+PROGRESS = threading.local()
+
+
+def _progress(name):
+    cb = getattr(PROGRESS, 'cb', None)
+    if cb:
+        try:
+            cb(name)
+        except Exception:
+            pass
+
+
 def read_set(d, opts=None):
     opts = opts or {}
     warn, stages = [], []
 
     def stage(name, fn, default=None):
+        _progress(name)
         try:
             return fn()
         except Exception as ex:                 # مرحلة فاشلة = تحذير لا انهيار

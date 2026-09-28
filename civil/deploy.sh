@@ -21,6 +21,18 @@ rm -rf /tmp/civilsrc "$APP"; mkdir -p /tmp/civilsrc "$APP"
 curl -fsSL "$SRC" | tar xz -C /tmp/civilsrc --strip-components=1
 cp -r /tmp/civilsrc/civil/. "$APP"/ && rm -rf /tmp/civilsrc
 
+# ذاكرة احتياطية للسيرفرات الصغيرة: تحليل مخطط مستشفى (330 ألف عنصر) يحتاج ~0.5 غيغا لحظة الذروة،
+# وسيرفر 512م–1غ بلا swap يقتل العملية بصمت فيبقى المتصفح ينتظر. نضيف 1 غيغا swap مرة واحدة فقط.
+MEM_MB=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+SWAP_MB=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+if [ "${MEM_MB:-0}" -gt 0 ] && [ "$MEM_MB" -lt 1500 ] && [ "${SWAP_MB:-0}" -lt 256 ] && [ ! -e /swapfile ]; then
+  echo "==> [2b] ذاكرة السيرفر ${MEM_MB}م بلا swap — إضافة 1 غيغا swap حتى تتحمّل الملفات الضخمة"
+  (fallocate -l 1G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=1024 status=none) \
+    && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile \
+    && { grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab; } \
+    || echo "    (تعذّر إنشاء swap — يُكمل النشر بدونه)"
+fi
+
 echo "==> [3/5] إنشاء خدمة systemd على المنفذ $PORT"
 cat > "$UNIT" <<UNIT
 [Unit]

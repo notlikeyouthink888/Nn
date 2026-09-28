@@ -114,13 +114,13 @@ const CADPAGE = (() => {
         const file = files[i], tag = files.length > 1 ? `[${i + 1}/${files.length}] ` : '';
         msg(tag + 'قراءة ' + E(file.name) + '… (' + (file.size / 1048576).toFixed(2) + ' ميغا)');
         let r = null;
-        try { r = await PlanIO.read(file, t => msg(tag + E(t)), { full: true }); } catch (e) { r = null; }
-        if (!r || !r.ents || !r.ents.length) { bad.push(file.name); continue; }
+        try { r = await readFile(file, t => msg(tag + E(t))); } catch (e) { console.error(e); r = null; }
+        if (!r || !nEnts(r)) { bad.push(file.name); continue; }
         r.name = file.name;
         RAWS = RAWS.filter(x => x.name !== r.name).concat([r]);        // الملف نفسه مرتين = نسخة واحدة
       }
       if (!RAWS.length) throw new Error('الملف لا يحوي عناصر رسم مقروءة' + (bad.length > 1 ? ' (' + bad.map(E).join('، ') + ')' : ''));
-      RAW = RAWS.length === 1 ? RAWS[0] : { ents: [].concat(...RAWS.map(r => r.ents)), collapsed: [].concat(...RAWS.map(r => r.collapsed || [])),
+      RAW = RAWS.length === 1 ? RAWS[0] : { n: RAWS.reduce((a, r) => a + nEnts(r), 0), collapsed: [].concat(...RAWS.map(r => r.collapsed || [])),
                                              layers: [].concat(...RAWS.map(r => r.layers || [])),
                                              truncated: RAWS.some(r => r.truncated) };
       NAME = RAWS.map(r => r.name).join(' + ');
@@ -140,7 +140,7 @@ const CADPAGE = (() => {
 
   async function run() {
     if (!RAW) return;
-    msg('تحليل ' + RAW.ents.length.toLocaleString('en-US') + ' عنصر: المحاور، العناوين، الجداول، العناصر، ثم التركيب…');
+    msg('تحليل ' + nEnts(RAW).toLocaleString('en-US') + ' عنصر: المحاور، العناوين، الجداول، العناصر، ثم التركيب…');
     const t0 = performance.now();
     // الرفع مرة واحدة مضغوطاً؛ إعادة التحليل (تعديل ارتفاع/نوع لوحة) ترسل الخيارات فقط
     let r = null;
@@ -161,6 +161,7 @@ const CADPAGE = (() => {
     try { j = await r.json(); } catch (e) { throw new Error('ردّ السيرفر غير مفهوم (الحالة ' + r.status + ')'); }
     if (r.ok) SENT = true;
     if (!r.ok) throw new Error(j.error || 'خطأ بالتحليل');
+    if (j && j.job && !j.drawings) j = await pollJob(j.job, t0);        // مهمة خلفية: تابع التقدّم
     RES = j;
     if (BI >= (RES.buildings || []).length) BI = 0;
     const B = cur();
@@ -172,7 +173,84 @@ const CADPAGE = (() => {
   }
 
   let KEY = null, SENT = false, RAWS = [], SITE = false;
+  const nEnts = r => (r && (r.ents ? r.ents.length : r.n)) || 0;
+  const gzOk = !!(window.CompressionStream && window.Response && window.Blob);
+  const gzStr = s => new Response(new Blob([s]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+
+  /* قراءة ملف: بعامل مستقل (ذاكرة المحرّك تتحرّر بعده، والعناصر تُضغط على دفعات) — وإن تعذّر
+     العامل (متصفح قديم) فبالطريقة الأصلية PlanIO.read كما كانت. */
+  function readInWorker(file, onP) {
+    return new Promise(async (res, rej) => {
+      let w;
+      try { w = new Worker('/dwgworker.js', { type: 'module' }); } catch (e) { return rej(e); }
+      const done = (f, v) => { try { w.terminate(); } catch (e) { /* — */ } f(v); };
+      w.onerror = e => done(rej, new Error(e.message || 'worker'));
+      w.onmessage = ev => {
+        const m = ev.data || {};
+        if (m.type === 'progress') onP && onP(m.text);
+        else if (m.type === 'error') done(rej, new Error(m.message));
+        else if (m.type === 'done') done(res, m.empty ? null : Object.assign({ gz: m.gz }, m.meta));
+      };
+      const buf = await file.arrayBuffer();
+      w.postMessage({ buf, name: file.name }, [buf]);
+    });
+  }
+  async function readFile(file, onP) {
+    if (window.Worker && gzOk) {
+      try { const r = await readInWorker(file, onP); if (r) return r; } catch (e) { console.warn('worker read failed → main thread', e); }
+    }
+    return PlanIO.read(file, onP, { full: true });
+  }
+  // أجزاء gzip تُلصق ببعض: السيرفر يفكّها كتلة واحدة (gzip متعدد الأعضاء) — بلا إعادة ضغط الملفات
+  async function innerGz(r) {
+    if (r.gz) return r.gz;
+    const s = '"ents":' + JSON.stringify(r.ents) + ',"layers":' + JSON.stringify(r.layers || []) + ',"insunits":' + JSON.stringify(r.insunits ?? 4);
+    return gzStr(s);
+  }
+  async function bodyParts(meta) {
+    const head = JSON.stringify(meta).slice(0, -1) + ',';
+    if (RAWS.length === 1) return [await gzStr(head), await innerGz(RAWS[0]), await gzStr('}')];
+    const parts = [await gzStr(head + '"files":[')];
+    for (let i = 0; i < RAWS.length; i++) {
+      parts.push(await gzStr((i ? ',' : '') + '{"name":' + JSON.stringify(RAWS[i].name) + ','));
+      parts.push(await innerGz(RAWS[i]));
+      parts.push(await gzStr('}'));
+    }
+    parts.push(await gzStr(']}'));
+    return parts;
+  }
+  async function pollJob(id, t0) {
+    let fails = 0;
+    for (;;) {
+      await new Promise(z => setTimeout(z, 900));
+      let r;
+      try { r = await fetch('/api/cad/job?id=' + encodeURIComponent(id)); fails = 0; }
+      catch (e) { if (++fails > 40) throw new Error('انقطع الاتصال بالسيرفر أثناء متابعة التحليل'); continue; }
+      if (r.headers.get('X-Job-State') === 'done') return r.json();
+      let j = {};
+      try { j = await r.json(); } catch (e) { /* — */ }
+      if (r.status === 404) throw new Error('المهمة ما عادت موجودة بالسيرفر (أُعيد تشغيله؟) — أعد الرفع');
+      if (!r.ok || j.state === 'error') throw new Error(j.error || 'خطأ بالتحليل');
+      const sec = ((performance.now() - t0) / 1000).toFixed(0);
+      msg(j.state === 'queue' ? `⏳ بانتظار انتهاء تحليل آخر على السيرفر… (${sec} ث)`
+        : `⚙️ السيرفر يحلّل: <b>${E(j.stage || '')}</b> — خطوة ${j.steps || 0} · ${sec} ث`);
+    }
+  }
   async function post(full) {
+    const url = '/api/cad/read?job=1';
+    if (full && gzOk && RAWS.every(r => r.gz || r.ents)) {
+      try {
+        const n = nEnts(RAW);
+        msg(`تجهيز الرفع (${n.toLocaleString('en-US')} عنصر)…`);
+        const parts = await bodyParts({ key: KEY, opts: OPTS });
+        const bytes = parts.reduce((a, p) => a + p.byteLength, 0);
+        msg(`رفع ${(bytes / 1048576).toFixed(1)} ميغا مضغوطة وتحليل ${n.toLocaleString('en-US')} عنصر…`);
+        return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip' }, body: new Blob(parts) });
+      } catch (e) { console.warn('gzip parts failed', e); }
+    }
+    return postPlain(full, url);
+  }
+  async function postPlain(full, url) {
     const body = !full ? { key: KEY, opts: OPTS }
       : RAWS.length > 1 ? { key: KEY, opts: OPTS, files: RAWS.map(r => ({ name: r.name, ents: r.ents, layers: r.layers, insunits: r.insunits })) }
       : { key: KEY, ents: RAW.ents, layers: RAW.layers, insunits: RAW.insunits, opts: OPTS };
@@ -183,11 +261,11 @@ const CADPAGE = (() => {
         const mb = (data.length / 1048576).toFixed(1);
         msg(`ضغط ${mb} ميغا قبل الرفع…`);
         const z = await new Response(new Blob([data]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
-        msg(`رفع ${(z.byteLength / 1048576).toFixed(1)} ميغا (بدل ${mb}) وتحليل ${RAW.ents.length.toLocaleString('en-US')} عنصر…`);
+        msg(`رفع ${(z.byteLength / 1048576).toFixed(1)} ميغا (بدل ${mb}) وتحليل ${nEnts(RAW).toLocaleString('en-US')} عنصر…`);
         data = z; headers['Content-Encoding'] = 'gzip';
       } catch (e) { /* متصفح بلا ضغط — يُرفع كما هو */ }
     }
-    return fetch('/api/cad/read', { method: 'POST', headers, body: data });
+    return fetch(url || '/api/cad/read', { method: 'POST', headers, body: data });
   }
 
   const cur = () => RES && RES.buildings && RES.buildings[BI];

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """HTTP server for the civil engineering platform (stdlib only)."""
-import gzip, json, os, sys, threading, traceback
+import gc, gzip, json, os, random, sys, threading, time, traceback
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import engine as E
@@ -133,12 +133,41 @@ class H(BaseHTTPRequestHandler):
         try: self.wfile.write(body)
         except BrokenPipeError: pass
 
+    def _job_status(self, jid):
+        with _JOB_LOCK:
+            J = _JOBS.get(jid)
+            if J and J['state'] in ('done', 'error'):
+                _JOBS.pop(jid, None)
+        if not J:
+            return self._send(404, json.dumps(dict(error='job_not_found')))
+        if J['state'] == 'done':
+            body = J['result']
+            self.send_response(200)
+            gz = len(body) > 65536 and 'gzip' in (self.headers.get('Accept-Encoding') or '')
+            if gz: body = gzip.compress(body, 5)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('X-Job-State', 'done')
+            if gz: self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            try: self.wfile.write(body)
+            except BrokenPipeError: pass
+            return
+        info = dict(job=jid, state=J['state'], stage=J.get('stage') or '', steps=J.get('n', 0),
+                    elapsed=round(time.time() - J['t0'], 1), queue=J.get('queue', 0))
+        if J['state'] == 'error':
+            info['error'] = J.get('error')
+            return self._send(J.get('code', 400), json.dumps(info, ensure_ascii=False))
+        return self._send(200, json.dumps(info, ensure_ascii=False))
+
     def do_GET(self):
         path = self.path.split('?')[0]
         if path == '/api/health':
             return self._send(200, json.dumps(dict(ok=True, port=PORT, app="civil")))
         if path == '/api/meta':
             return self._send(200, json.dumps(meta(), ensure_ascii=False))
+        if path == '/api/cad/job':
+            return self._job_status(self.path.partition('id=')[2][:40])
         if path in ('/', '/index.html'): path = '/index.html'
         fn = os.path.normpath(os.path.join(STATIC, path.lstrip('/')))
         if not fn.startswith(STATIC) or not os.path.isfile(fn):
@@ -173,6 +202,9 @@ class H(BaseHTTPRequestHandler):
                 if payload is None:                    # إعادة تحليل بمفتاح انتهى من الذاكرة
                     return self._send(409, json.dumps(dict(error='cache_miss')))
                 payload['_owned'] = True               # تُحوَّل عناصره بمكانها (ذاكرة أقل)
+                if 'job=1' in self.path:               # مهمة خلفية: رد فوري + استعلام عن التقدّم
+                    raw = None
+                    return self._send(200, json.dumps(dict(job=_cad_job_start(payload))))
             if name == 'bbs/csv':
                 body = BBS.csv(payload if 'model' in payload else PJ.wizard(payload))
                 data = ('\ufeff' + body).encode('utf-8')
@@ -232,6 +264,56 @@ def _cad_cache(payload, gz_raw):
     full = json.loads(gzip.decompress(blob))
     full['opts'] = payload.get('opts')
     return full
+
+
+# مهام الأوتوكاد بالخلفية: الملفات الضخمة (مستشفى 10 ميغا، 330 ألف عنصر) تأخذ دقيقة على سيرفر
+# صغير، فالرد الفوري برقم مهمة يمنع انقطاع الاتصال الطويل (شبكة موبايل/بروكسي)، والصفحة تعرض
+# المرحلة الحالية. تحليل ضخم واحد بكل مرة حتى لا تتضاعف الذاكرة عند إعادة المحاولة.
+_JOBS = {}
+_JOB_LOCK = threading.Lock()
+_CAD_SEM = threading.Semaphore(1)
+
+
+def _cad_job_start(payload):
+    jid = '%x%04x' % (int(time.time() * 1000), random.getrandbits(16))
+    now = time.time()
+    with _JOB_LOCK:
+        for k in [k for k, v in _JOBS.items() if now - v['t0'] > 1800]:
+            _JOBS.pop(k, None)                         # مهمة قديمة لم يُستلم ردّها
+        waiting = sum(1 for v in _JOBS.values() if v['state'] in ('queue', 'run'))
+        _JOBS[jid] = dict(state='queue', stage='بالانتظار', n=0, t0=now, queue=waiting)
+    threading.Thread(target=_cad_job_run, args=(jid, payload), daemon=True).start()
+    return jid
+
+
+def _cad_job_run(jid, payload):
+    J = _JOBS[jid]
+
+    def cb(name):
+        J['stage'] = name
+        J['n'] += 1
+    with _CAD_SEM:
+        J['state'] = 'run'
+        J['stage'] = 'بدء التحليل'
+        CAD.PROGRESS.cb = cb
+        try:
+            out = CAD.read_set(payload, payload.get('opts'))
+            payload = None
+            J['stage'] = 'تجهيز النتيجة'
+            J['result'] = json.dumps(out, ensure_ascii=False, default=float).encode('utf-8')
+            out = None
+            J['state'] = 'done'
+        except MemoryError:
+            traceback.print_exc()
+            J.update(state='error', code=507,
+                     error='ذاكرة السيرفر ما كفّت لهذا الملف — زد ذاكرة السيرفر أو ارفع اللوحات على دفعات')
+        except Exception as ex:
+            traceback.print_exc()
+            J.update(state='error', code=400, error=str(ex))
+        finally:
+            CAD.PROGRESS.cb = None
+            payload = None
+            gc.collect()
 
 
 if __name__ == '__main__':

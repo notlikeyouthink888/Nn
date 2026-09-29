@@ -1,0 +1,17 @@
+[Unit]
+Description=Civil Engineering Platform (ACI 318-19 + Iraqi Code) on port 5819
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/civil5819
+Environment=PORT=5819
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/civil5819/app.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/civil5819.log
+StandardError=append:/var/log/civil5819.log
+
+[Install]
+WantedBy=multi-user.target

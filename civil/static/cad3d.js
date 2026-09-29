@@ -77,7 +77,8 @@ const CAD3D = (() => {
       (f.columns || []).forEach(c => {
         const b = c.b / 1000, h = c.h / 1000, H = f.h - t;
         const info = { kind: 'col', floor: f.name, mark: c.mark, size: c.b + '×' + c.h,
-                       at: (c.ax || '?') + '×' + (c.ay || '?'), rebar: c.rebar, outside: !!c.outside, how: c.how };
+                       at: (c.ax || '?') + '×' + (c.ay || '?'), rebar: c.rebar, outside: !!c.outside, how: c.how,
+                       fkey: f.key, fi, b: c.b, h: c.h, x: c.x, y: c.y, shape: c.shape, H: f.h, ts: f.slab.t };
         if (c.shape === 'circ') {
           const geo = keep(new THREE.CylinderGeometry(b / 2, b / 2, H, 24));
           const me = new THREE.Mesh(geo, mat('col'));
@@ -92,7 +93,8 @@ const CAD3D = (() => {
         const b = bm.b / 1000, h = bm.h / 1000;
         const mx = (bm.x1 + bm.x2) / 2, my = (bm.y1 + bm.y2) / 2;
         const info = { kind: 'beam', floor: f.name, mark: bm.mark, size: bm.b + '×' + bm.h,
-                       span: L, axis: bm.axis, rebar: bm.rebar, guess: bm.guess };
+                       span: L, axis: bm.axis, rebar: bm.rebar, guess: bm.guess,
+                       fkey: f.key, fi, b: bm.b, h: bm.h, o: bm.o, x1: bm.x1, y1: bm.y1, x2: bm.x2, y2: bm.y2, cant: !!bm.cant, ts: f.slab.t };
         const me = bm.o === 'h' ? box(L, h - t, b, P(mx, my, top - t - (h - t) / 2), mat('beam'), info, conc)
                                 : box(b, h - t, L, P(mx, my, top - t - (h - t) / 2), mat('beam'), info, conc);
         if (bm.guess) me.material = mat('beamG', { color: 0xb8894a });
@@ -111,7 +113,7 @@ const CAD3D = (() => {
         const w = r[2] - r[0], d = r[3] - r[1];
         box(w, tTop, d, P((r[0] + r[2]) / 2, (r[1] + r[3]) / 2, top - tTop / 2),
             mat('slab', { transparent: true, opacity: 0.93 }),
-            { kind: 'slab', floor: f.name, t: f.slab.t, mesh: f.slab.mesh, sys: SYS && SYS.name, ribs: RB }, conc);
+            { kind: 'slab', floor: f.name, t: f.slab.t, mesh: f.slab.mesh, sys: SYS && SYS.name, ribs: RB, fkey: f.key, fi, rect: r }, conc);
       });
       // الأعصاب (هوردي/معصبة/وافل): باتجاه البحر القصير لكل لوح (وباتجاهين إن ذُكر)، InstancedMesh واحد للطابق
       if (RB && (f.slab.rects || []).length) {
@@ -280,7 +282,7 @@ const CAD3D = (() => {
       const zt = (typeof ft.zg === 'number') ? ft.zg : ((typeof ft.z === 'number') ? ft.z : z0f);  // التأسيس من الأرض الطبيعية
       box(ft.B, hh, ft.B, P(ft.x, ft.y, zt - Df + hh / 2), mat('foot'),
           { kind: 'foot', mark: ft.col, size: ft.B.toFixed(2) + '×' + ft.B.toFixed(2) + ' م × ' + ft.h + ' مم',
-            PD: ft.PD, PL: ft.PL, Pu: ft.Pu, bars: ft.bars, ok: ft.ok }, found);
+            PD: ft.PD, PL: ft.PL, Pu: ft.Pu, bars: ft.bars, ok: ft.ok, B: ft.B, h: ft.h, db: ft.db, s: ft.s, x: ft.x, y: ft.y, designed: ft.designed }, found);
     });
     // أساسات شريطية (مرسومة بطبقة الأساس، أو مصمَّمة تحت الجدران الحاملة) + جدار الأساس حتى منسوب الطابق
     (B.strips || []).forEach(st => {
@@ -642,6 +644,14 @@ const CAD3D = (() => {
         } else reset();
       },
       hasViews: () => views.children.length > 0,
+      // اختيار عنصر برمجياً (بنفس مسار اللمسة): أول عنصر يحقق الشرط يُلوَّن ويُبلَّغ onPick
+      select(pred) {
+        const m = pickables.find(p => p.userData && pred(p.userData));
+        if (selMesh) { selMesh.material = selMat; selMesh = null; }
+        if (m) { selMesh = m; selMat = m.material; m.material = mat('sel', { color: COL.sel, emissive: 0x3a2f00 }); opts.onPick && opts.onPick(m.userData); }
+        draw();
+        return m ? m.userData : null;
+      },
       reset,
       stats() { return { floors: floorsG.length, pick: pickables.length, bars: nBars }; },
       canvas: () => rn.domElement,

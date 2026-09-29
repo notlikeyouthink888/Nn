@@ -350,3 +350,42 @@ details.fold[open]>summary{border-bottom:1px solid var(--line);margin-bottom:10p
 .pl-cats button{background:var(--panel);border:1px solid var(--line);color:var(--mut);font:inherit;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer}
 .pl-cats button small{color:var(--acc2);margin-right:3px}
 .pl-cats button.on{border-color:var(--acc);color:#fff;background:rgba(56,189,248,.15)}
+
+/* ====================== قسم الأوتوكاد: فحص الحديد · لوحة الملخص · موقع العنصر (cadaudit.js) ====================== */
+details.aud{border-top:1px solid var(--line);padding:6px 0}
+details.aud>summary{cursor:pointer;display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12.8px;list-style:none;padding:4px 2px}
+details.aud>summary::-webkit-details-marker{display:none}
+details.aud>summary::before{content:'◂';color:var(--mut);font-size:11px;transition:transform .15s}
+details.aud[open]>summary::before{transform:rotate(-90deg)}
+details.aud[open]{background:rgba(56,189,248,.04);border-radius:8px}
+.aud-t{font-weight:700;color:#fff}.aud-s{color:var(--acc2);font-size:12px}
+.aud-d{color:var(--mut);font-size:11.8px;unicode-bidi:plaintext;flex:1 1 220px}
+.aud-open{padding:3px 10px!important;font-size:11.5px!important;margin-inline-start:auto}
+.dash-2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;margin-top:10px}
+.dash-2>.card{margin:0}
+.dash-g{margin:10px 0}
+.dash-gl{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px}
+.dash-g.ok .dash-gl b{color:var(--ok)}.dash-g.warn .dash-gl b{color:var(--warn)}.dash-g.bad .dash-gl b{color:var(--bad)}
+.dash-bar{position:relative;height:10px;border-radius:6px;background:var(--bg2);border:1px solid var(--line)}
+.dash-band{position:absolute;top:0;bottom:0;background:rgba(52,211,153,.25);border-radius:6px}
+.dash-pin{position:absolute;top:-4px;width:4px;height:16px;margin-inline-start:-2px;border-radius:2px;background:#fff;box-shadow:0 0 0 2px rgba(0,0,0,.4)}
+.dash-gr{font-size:10.5px;color:var(--mut);margin-top:3px;text-align:left}
+.dash-fr{display:grid;grid-template-columns:90px 1fr auto;gap:8px;align-items:center;margin:8px 0}
+.dash-fn{font-size:12px;color:var(--mut)}
+.dash-fv{font-size:11px;color:var(--acc2);white-space:nowrap}
+.dash-stack{display:flex;height:11px;border-radius:5px;overflow:hidden;background:var(--bg2)}
+.dash-stack.st{height:7px;margin-top:3px;opacity:.9}
+.dash-stack i{display:block;height:100%}
+.dash-pc{height:8px;border-radius:4px;background:var(--bg2);overflow:hidden;min-width:60px}
+.dash-pc i{display:block;height:100%;background:linear-gradient(90deg,#0ea5e9,#22d3ee)}
+.kp-wrap{background:#0b1222;border:1px solid var(--line);border-radius:10px;padding:6px}
+.kp-svg{width:100%;height:auto;max-height:62vh;display:block}
+@media(max-width:560px){.dash-fr{grid-template-columns:70px 1fr}.dash-fv{grid-column:1/-1;text-align:left}}
+@media(max-width:560px){
+  .dos-steps thead{display:none}
+  .dos-steps tr{display:grid;grid-template-columns:24px 1fr;gap:3px 8px;padding:9px 0;border-bottom:1px solid var(--line)}
+  .dos-steps td{border:0!important;padding:0!important}
+  .dos-steps td:nth-child(n+3){grid-column:2}
+  .dos-steps td:nth-child(3){color:var(--mut);font-size:12px}
+  .dos-steps td:nth-child(5){text-align:right;font-size:11px}
+}

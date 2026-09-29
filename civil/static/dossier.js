@@ -474,6 +474,7 @@
     return u.kind === 'beam' ? ctxBeam(u) : u.kind === 'column' ? ctxCol(u) : u.kind === 'footing' ? ctxFoot(u) : u.kind === 'slab' ? ctxSlab(u) : null;
   };
   D.checks = c => c.kind === 'beam' ? beamChecks(c) : c.kind === 'column' ? colChecks(c) : c.kind === 'footing' ? footChecks(c) : slabChecks(c);
+  D.secSVG = secSVG;                  // يستعمله دليل عناصر قسم الأوتوكاد (cadaudit.js) لرسم المقطع بنفس الشكل
 
   D.open = function (u) {
     const c = D.context(u);

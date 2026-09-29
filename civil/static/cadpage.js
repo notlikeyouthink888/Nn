@@ -22,7 +22,7 @@ const CADPAGE = (() => {
                   ['second', 'الثاني'], ['third', 'الثالث'], ['fourth', 'الرابع'], ['fifth', 'الخامس'],
                   ['sixth', 'السادس'], ['seventh', 'السابع'], ['eighth', 'الثامن'], ['ninth', 'التاسع'],
                   ['tenth', 'العاشر'], ['typical', 'المتكرر'], ['roof', 'السطح']];
-  const TABS = [['file', '📂 الملف'], ['sheets', '🗺️ المخططات'], ['axes', '📏 المحاور'], ['tables', '📋 الجداول'], ['notes', '📝 الملاحظات'],
+  const TABS = [['file', '📂 الملف'], ['dash', '📊 لوحة الملخص'], ['sheets', '🗺️ المخططات'], ['axes', '📏 المحاور'], ['tables', '📋 الجداول'], ['audit', '✅ فحص الحديد'], ['notes', '📝 الملاحظات'],
                 ['floors', '🏢 الطوابق'], ['stairs', '🪜 الأدراج'], ['layers', '🧠 الطبقات والتعريفات'], ['3d', '🧊 المجسم 3D'],
                 ['send', '📤 إرسال للتحليل']];
 
@@ -93,6 +93,14 @@ const CADPAGE = (() => {
     if (ab && ad) ab.addEventListener('click', () => ad.click());
     if (ad) ad.addEventListener('change', () => ad.files && ad.files.length && load(ad.files, true));
     qa('#cad .ctabs button').forEach(b => b.addEventListener('click', () => tab(b.dataset.t)));
+    // دليل العنصر (cadaudit.js): زر 📘 بصفوف «فحص الحديد» وبعد الضغط على عنصر بالمجسم
+    const root = q('#cad');
+    if (root) root.addEventListener('click', e => {
+      if (!window.CADAUDIT || !RES) return;
+      const a = e.target.closest('[data-aud]');
+      if (a) { e.preventDefault(); e.stopPropagation(); CADAUDIT.openKey(a.dataset.aud, cur(), RES, OPTS); return; }
+      if (e.target.closest('[data-cdos]') && LASTPICK) CADAUDIT.openPick(LASTPICK, VIEWB || cur(), RES, OPTS);
+    });
     render();
     // مغادرة الصفحة = تحرير العارض (لا يبقى WebGL معلّقاً)
     window.addEventListener('hashchange', () => { if (location.hash !== '#cad') drop3d(); });
@@ -283,11 +291,13 @@ const CADPAGE = (() => {
     if (!P('file')) return;
     if (!RES) {
       P('file').innerHTML = `<div class="card"><h3>ماذا يفهم هذا القسم؟</h3>${dictHtml(true)}</div>`;
-      ['sheets', 'axes', 'tables', 'notes', 'floors', 'stairs', 'layers', '3d', 'send'].forEach(k =>
+      ['dash', 'sheets', 'axes', 'tables', 'audit', 'notes', 'floors', 'stairs', 'layers', '3d', 'send'].forEach(k =>
         P(k).innerHTML = '<div class="note">ارفع الملف أولاً.</div>');
       return;
     }
     P('file').innerHTML = fileTab();
+    P('dash').innerHTML = extraTab('dashHtml');
+    P('audit').innerHTML = extraTab('auditHtml');
     P('sheets').innerHTML = sheetsTab();
     P('axes').innerHTML = axesTab();
     P('tables').innerHTML = tablesTab();
@@ -302,6 +312,12 @@ const CADPAGE = (() => {
   }
 
   const kpi = (l, v, c) => `<div class="kpi ${c || ''}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  // تبويبا «لوحة الملخص» و«فحص الحديد» من cadaudit.js — أي خطأ فيهما يبقى داخلهما ولا يمس بقية الصفحة
+  function extraTab(fn) {
+    if (!window.CADAUDIT) return '<div class="note">وحدة فحص الحديد غير محمَّلة.</div>';
+    try { return bsel() + CADAUDIT[fn](RES, cur(), OPTS); }
+    catch (e) { console.error(e); return '<div class="note">⚠️ تعذّر بناء هذا التبويب لهذا الملف: ' + E(e.message || e) + '</div>'; }
+  }
 
   function bsel() {
     const bs = RES.buildings || [];
@@ -660,6 +676,7 @@ const CADPAGE = (() => {
   function show3d() {
     const B = SITE ? siteB() : cur(), host = q('#cad3d');
     if (!B || !host || VIEW || !window.CAD3D) return;
+    VIEWB = B;
     VIEW = CAD3D.mount(host, B, { onPick: pick });
     const st = { rebar: false, only: false, xray: false, views: false };
     qa('#cad .bar3d button').forEach(b => b.addEventListener('click', () => {
@@ -855,11 +872,15 @@ const CADPAGE = (() => {
       ${(st.notes || []).length ? `<div class="note" style="margin-top:4px">${st.notes.map(E).join('<br>')}</div>` : ''}</div>`;
   }
 
+  let LASTPICK = null, VIEWB = null;
   function pick(u) {
     const el = q('#cad_pick');
     if (!el) return;
     if (!u) { el.innerHTML = 'اضغط على أي عنصر لترى تفاصيله.'; return; }
     el.innerHTML = pickHtml(u);
+    LASTPICK = u;
+    if (window.CADAUDIT && CADAUDIT.supports(u))
+      el.innerHTML += '<button class="btn dos-open" data-cdos="1">📘 الدليل: كيف حُسب؟ + فحوص ACI + المختبر الحي بأرقام هذا العنصر</button>';
   }
   function pickHtml(u) {
     const rb = u.rebar;

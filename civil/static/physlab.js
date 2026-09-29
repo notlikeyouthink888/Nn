@@ -8,7 +8,15 @@
    لا يمسّ أي صفحة أخرى: صفحة مستقلة PAGES.phys تستدعيه فقط. */
 (function () {
   const PL = window.PHYSLAB = { labs: [], calc: {}, cur: null };
-  PL.register = lab => { PL.labs.push(lab); };
+  PL.register = lab => { if (!lab.cat) lab.cat = 'mech'; PL.labs.push(lab); };
+  // أقسام المختبرات — تُفلتر تبويبات المختبر (والصفحة الواحدة يمكن تقصرها على أقسام معيّنة)
+  PL.CATS = [['mech', '🏗️ ميكانيك الإنشاءات'], ['conc', '🧱 الخرسانة'], ['rebar', '🧵 حديد التسليح'], ['dyn', '🌊 الديناميك والزلازل'],
+             ['geo', '🪨 التربة والأساسات'], ['fluid', '💧 الماء والرياح'], ['build', '👷 التنفيذ والاستعمال']];
+  // key: مفتاح الحالة (كل صفحة/دليل حالته) · cats: أقسام · labs: مختبرات بعينها · vals: قيم ابتدائية لكل مختبر
+  // (دليل العنصر يزرع المختبر بأبعاد العنصر الحقيقية) · fresh: ابدأ من القيم لا من آخر حالة
+  let OPTS = { key: 'phys', cats: null };
+  const LIST = () => PL.labs.filter(l => (!OPTS.cats || OPTS.cats.includes(l.cat)) && (!OPTS.labs || OPTS.labs.includes(l.id)))
+    .sort((a, b) => OPTS.labs ? OPTS.labs.indexOf(a.id) - OPTS.labs.indexOf(b.id) : 0);
 
   /* ---------------- ألوان متّسقة مع ثيم المنصة ---------------- */
   const C = PL.C = {
@@ -206,10 +214,14 @@
   }
   const fmtV = (c, v) => c.fmt ? c.fmt(v) : nf(v, c.dec !== undefined ? c.dec : (c.step < 1 ? (c.step < 0.1 ? 2 : 1) : 0));
 
-  PL.html = function () {
-    const lv = level();
+  PL.html = function (opts) {
+    OPTS = Object.assign({ key: 'phys', cats: null }, opts || {});
+    if (OPTS.labs) PL.cur = null;
+    const lv = level(), L = LIST(), cats = PL.CATS.filter(c => L.some(l => l.cat === c[0]));
     return `<div class="pl-wrap">
-      <div class="pl-tabs" id="plTabs">${PL.labs.map(l => `<button data-lab="${l.id}" class="${l.id === (PL.cur || PL.labs[0].id) ? 'on' : ''}">
+      ${cats.length > 1 ? `<div class="pl-cats" id="plCats"><button data-cat="" class="on">الكل (${L.length})</button>${cats.map(c =>
+        `<button data-cat="${c[0]}">${c[1]} <small>${L.filter(l => l.cat === c[0]).length}</small></button>`).join('')}</div>` : ''}
+      <div class="pl-tabs" id="plTabs">${L.map(l => `<button data-lab="${l.id}" data-lcat="${l.cat}" class="${l.id === (PL.cur || L[0].id) ? 'on' : ''}">
         <span class="ic">${l.ic}</span><span><b>${l.name}</b><small>${l.sub}</small></span></button>`).join('')}</div>
       <div class="pl-intro" id="plIntro"></div>
       <div class="pl-body">
@@ -233,11 +245,16 @@
   };
 
   function mountLab(id) {
-    LAB = PL.labs.find(l => l.id === id) || PL.labs[0];
+    const L = LIST();
+    LAB = L.find(l => l.id === id) || L[0];
     PL.cur = LAB.id;
-    try { localStorage.setItem('pl_lab', LAB.id); } catch (e) { /* تخزين غير متاح */ }
+    try { localStorage.setItem('pl_lab_' + OPTS.key, LAB.id); } catch (e) { /* تخزين غير متاح */ }
     document.querySelectorAll('#plTabs button').forEach(b => b.classList.toggle('on', b.dataset.lab === LAB.id));
-    ST = LAB.state || (LAB.state = Object.assign({}, LAB.defaults, { _lay: {} }));
+    LAB._st = LAB._st || {};
+    if (OPTS.fresh && !OPTS._seeded) OPTS._seeded = {};
+    if (OPTS.fresh && !OPTS._seeded[LAB.id]) { delete LAB._st[OPTS.key]; OPTS._seeded[LAB.id] = 1; }
+    ST = LAB._st[OPTS.key] || (LAB._st[OPTS.key] = Object.assign({}, LAB.defaults, (OPTS.vals || {})[LAB.id] || {}, { _lay: {} }));
+    LAB.state = ST;
     const lv = level();
     LAB.layers.forEach(L => { if (!(L.k in ST._lay)) ST._lay[L.k] = L.on === true || (L.on === 'lvl' && lv >= (L.lvl || 2)); });
     document.getElementById('plIntro').innerHTML = `<div class="pl-learn"><span class="ic">${LAB.ic}</span><div>
@@ -330,14 +347,22 @@
     RAF = requestAnimationFrame(frame);
   }
 
+  PL.stop = function () { if (RAF) cancelAnimationFrame(RAF); RAF = null; if (CAN && CAN.ro) CAN.ro.disconnect(); };
   PL.init = function () {
-    if (!PL.labs.length) return;
-    let want = PL.cur;
-    try { want = want || localStorage.getItem('pl_lab'); } catch (e) { /* بلا تخزين */ }
+    const L = LIST();
+    if (!L.length) return;
+    let want = PL.cur && L.some(l => l.id === PL.cur) ? PL.cur : null;
+    if (OPTS.labs) want = OPTS.first || L[0].id;                     // مختبر مزروع: ابدأ بالأول دائماً
+    try { want = want || localStorage.getItem('pl_lab_' + OPTS.key) || (OPTS.key === 'phys' && localStorage.getItem('pl_lab')); } catch (e) { /* بلا تخزين */ }
     const root = document.querySelector('.pl-wrap');
     root.addEventListener('click', e => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.lab) { mountLab(b.dataset.lab); return; }
+      if (b.dataset.cat !== undefined) {
+        document.querySelectorAll('#plCats button').forEach(x => x.classList.toggle('on', x === b));
+        document.querySelectorAll('#plTabs button').forEach(x => { x.style.display = !b.dataset.cat || x.dataset.lcat === b.dataset.cat ? '' : 'none'; });
+        return;
+      }
       if (b.dataset.lay) {
         const k = b.dataset.lay;
         if (k === '*all' || k === '*none') LAB.layers.forEach(L => { ST._lay[L.k] = k === '*all'; });
@@ -364,7 +389,7 @@
       if (c && c.onChange) c.onChange(ST);
       syncCtl(); recompute();
     });
-    mountLab(want && PL.labs.some(l => l.id === want) ? want : PL.labs[0].id);
+    mountLab(want && L.some(l => l.id === want) ? want : L[0].id);
     if (!document.querySelector('#plETabs button.on')) document.querySelector('#plETabs button').classList.add('on');
     renderExplain();
     if (!RAF) { lastT = 0; RAF = requestAnimationFrame(frame); }
@@ -378,8 +403,9 @@
     ctx.fillRect(x, y, w, h); ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
     const pl = 34, pb = 20, pt = 18, pr = 8;
     const X0 = o.x0 !== undefined ? o.x0 : Math.min(...o.xs), X1 = o.x1 !== undefined ? o.x1 : Math.max(...o.xs);
-    let Y0 = o.y0 !== undefined ? o.y0 : Math.min(0, ...o.series.flatMap(s => s.ys));
-    let Y1 = o.y1 !== undefined ? o.y1 : Math.max(...o.series.flatMap(s => s.ys));
+    const fin = o.series.flatMap(s => s.ys).filter(v => isFinite(v));
+    let Y0 = o.y0 !== undefined ? o.y0 : Math.min(0, ...fin);
+    let Y1 = o.y1 !== undefined ? o.y1 : Math.max(...fin);
     if (Y1 - Y0 < 1e-12) Y1 = Y0 + 1;
     const X = v => x + pl + (v - X0) / ((X1 - X0) || 1) * (w - pl - pr);
     const Y = v => y + h - pb - (v - Y0) / (Y1 - Y0) * (h - pb - pt);
@@ -393,7 +419,8 @@
     o.series.forEach(s => {
       ctx.strokeStyle = s.color; ctx.lineWidth = s.w || 1.8; ctx.setLineDash(s.dash || []);
       ctx.beginPath();
-      o.xs.forEach((xv, i) => { const yv = s.ys[i]; if (!isFinite(yv)) return; i ? ctx.lineTo(X(xv), Y(yv)) : ctx.moveTo(X(xv), Y(yv)); });
+      let pen = false;
+      o.xs.forEach((xv, i) => { const yv = s.ys[i]; if (!isFinite(yv)) { pen = false; return; } pen ? ctx.lineTo(X(xv), Y(yv)) : ctx.moveTo(X(xv), Y(yv)); pen = true; });
       ctx.stroke(); ctx.setLineDash([]);
     });
     (o.marks || []).forEach(m => {

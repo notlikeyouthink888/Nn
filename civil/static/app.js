@@ -3749,6 +3749,13 @@ PAGES.phys = {
   html: () => (window.PHYSLAB ? PHYSLAB.html() : '<div class="card">وحدة المختبر غير محمَّلة (physlab.js).</div>'),
   init: () => { if (window.PHYSLAB) PHYSLAB.init(); }
 };
+PAGES.rebar = {
+  ic: '🧵', name: 'حديد التسليح', ttl: 'مركز حديد التسليح — ACI 318-19',
+  sub: 'طول التماسك · العكفات · الوصلات · ترتيب الأسياخ · التطويق · القطع — مختبرات تفاعلية بطبقات، والقواعد نفسها المستعملة بدليل كل عنصر بالمعالج',
+  desc: 'كل تفاصيل الحديد بالمختبر: ld و ldh والوصلات والعكفات والتطويق والقطع',
+  html: () => (window.PHYSLAB ? PHYSLAB.html({ key: 'rebar', cats: ['rebar'] }) : '<div class="card">وحدة المختبر غير محمَّلة.</div>'),
+  init: () => { if (window.PHYSLAB) PHYSLAB.init(); }
+};
 PAGES.map = {
   ic: '🗺️', name: 'خريطة المنصة', ttl: 'خريطة المنصة — طبقات العمل الهندسي',
   sub: 'من المدخلات إلى القراءة والتحليل والتصميم والمخرجات — اضغط أي قسم لتتبّع مساره',
@@ -3765,7 +3772,7 @@ PAGES.terms = {
 const ORDER = [
   ['المشروع', ['wizard', 'femproj', 'cad', 'room', 'bbs', 'detail66', 'projects']],
   ['التحليل الإنشائي', ['fem']],
-  ['الفهم والتعلّم', ['phys', 'map', 'terms']],
+  ['الفهم والتعلّم', ['phys', 'rebar', 'map', 'terms']],
   ['ما تحت الصفر', ['survey', 'earth', 'soil', 'fndpick']],
   ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],
   ['مرجع', ['ref', 'home']],

@@ -418,8 +418,54 @@
     return null;
   }
 
+  /* ============================ المختبر الحي على العنصر نفسه ============================ */
+  // نفس مختبرات الفيزياء، مزروعة بأبعاد العنصر وحمله وحديده الحقيقية من نتيجة المعالج
+  function labSeed(c) {
+    const W = WZg(), r1 = x => Math.round(x * 10) / 10;
+    if (c.kind === 'beam') {
+      const rb = c.rb, bot = rb.bottom, top = rb.top, trib = c.m.sec.trib;
+      const wu = 1.2 * (W.floor.D * trib + c.B.sw) + 1.6 * (W.floor.L * trib);
+      const sup = c.nsp === 1 ? 'ss' : (c.endL || c.endR) ? 'fp' : 'ff';
+      const n1 = Math.min(bot.n, bot.per_layer || bot.n), spc = n1 > 1 ? (c.b - 2 * c.cover - 2 * c.dt - bot.db) / (n1 - 1) : 100;
+      const fx = c.dg.flex || {};
+      return { labs: ['beam', 'section', 'rb_cut', 'rb_dev', 'rb_lap', 'rb_fit'],
+        note: `المختبرات مزروعة بأرقام هذا الجسر: بحر ${f2(c.L)} م · حمل مصعّد ${f1(wu)} kN/م · مقطع ${c.b}×${c.h} · ${bot.label} سفلي و${top.n}Ø${top.db} علوي. الإسناد ${sup === 'ss' ? 'بسيط' : sup === 'fp' ? 'بحر طرفي (مثبّت + دحروج)' : 'بحر داخلي (مثبّت الطرفين)'} تقريباً للجائز المستمر.`,
+        vals: {
+          beam: { sup, L: r1(c.L), w: Math.round(wu), P: 0, a: r1(c.L / 2), b: c.b, h: c.h, fc: c.fc },
+          section: { b: c.b, h: c.h, cov: Math.round(c.h - c.d), n: Math.min(10, bot.n), db: bot.db, np: 0, dbp: 12, fc: c.fc, fy: c.fy, st: 1 },
+          rb_cut: { sup: sup === 'ss' ? 'ss' : 'ff', L: r1(c.L), w: Math.min(120, Math.round(wu)), n: Math.min(8, bot.n), cut: 0, db: bot.db, h: c.h, fc: c.fc },
+          rb_dev: { db: top.db, fy: c.fy, fc: c.fc, cov: c.cover, sp: Math.round(Math.max(40, spc)), top: 'y', coat: 'none', tr: c.s <= 100 ? 't10b' : c.s <= 150 ? 't10a' : 'none', emb: Math.round(Math.min(2000, (c.det.top1 || c.ln / 3) * 1000)) },
+          rb_lap: { mode: 't', db: bot.db, fc: c.fc, lap: Math.round(Math.min(2000, (c.det.lap_bottom || 0.6) * 1000)), ratioAs: r1(Math.max(1, Math.min(3, (bot.As || 1) / Math.max(1, fx.As_req || bot.As)))), pct: 100, top: 'n', pos: 0.08 },
+          rb_fit: { b: c.b, n: Math.min(10, n1), db: bot.db, agg: 20, cov: c.cover, dt: c.dt }
+        } };
+    }
+    if (c.kind === 'column') {
+      const rb = c.rb, Po = (0.85 * c.fc * (c.b * c.h - rb.Ast) + c.fy * rb.Ast) / 1000;
+      return { labs: ['column', 'rb_conf', 'rb_lap', 'rb_dev'],
+        note: `المختبرات مزروعة بأرقام هذا العمود: ${c.b}×${c.h} مم · ${rb.label} · Pu ≈ ${f0(c.Pu)} kN بالطابق ${c.s} · طول حر ${f2(c.ln)} م · أطواق Ø${c.dt}@${rb.tie_s} وتطويق @${rb.tie_s_conf}.`,
+        vals: {
+          column: { bc: 'pp', L: r1(Math.max(2, c.ln)), b: Math.min(c.b, c.h), h: Math.max(c.b, c.h), fc: c.fc, rho: r1(Math.max(1, Math.min(4, rb.rho * 100))), P: Math.round(Math.min(8000, c.Pu)), frame: 'ns', m12: -1 },
+          rb_conf: { b: Math.max(300, Math.round(Math.min(c.b, c.h) / 25) * 25), nb: Math.max(2, Math.min(6, rb.nb || 3)), db: c.db, dt: c.dt, s: Math.max(50, rb.tie_s_conf), cross: (rb.crossties || 0) > 0 ? 'y' : 'n', fc: c.fc, cov: c.cover, P: Math.round(Math.min(100, c.Pu / Po * 100)) },
+          rb_lap: { mode: 'c', db: c.db, fc: c.fc, lap: Math.round(RB().lapComp({ db: c.db, fc: c.fc, fy: c.fy }).lap) },
+          rb_dev: { db: c.db, fy: c.fy, fc: c.fc, cov: 75, sp: 150, top: 'n', coat: 'none', tr: 'none', emb: Math.round((rb.dowels && rb.dowels.embed) || 300) }
+        } };
+    }
+    if (c.kind === 'footing') {
+      const g = W.grid, kind = (c.sz && c.sz.kind) || '', pick = /ركني/.test(kind) ? 'k' : /طرفي/.test(kind) ? 'e' : 'c';
+      const avail = (c.B * 1000 - Math.max(c.cx, c.cy)) / 2 - c.cover;
+      return { labs: ['path', 'rb_dev'], note: `مسار حمل هذا الأساس (${kind || 'داخلي'}) من السقوف حتى التربة، ونشر حديده من وجه العمود.`,
+        vals: { path: { Lx: r1(g.sx), Ly: r1(g.sy), q: r1(W.floor.D + W.floor.L), N: W.model.floors, qa: W.input.qa, pick },
+          rb_dev: { db: c.db, fy: c.fy, fc: c.fc, cov: 75, sp: c.s, top: 'n', coat: 'none', tr: 'none', emb: Math.round(Math.max(100, Math.min(2000, avail))) } } };
+    }
+    const g = W.grid, gm = c.s.geom || {};
+    return { labs: ['plate', 'path'], note: 'بلاطة بحر نموذجي من شبكة المشروع، بحمل الخدمة (ميت + حي).',
+      vals: { plate: { a: r1(Math.min(g.sx, g.sy)), b: r1(Math.max(g.sx, g.sy)), h: Math.max(100, Math.min(300, gm.kind === 'hordi' || gm.kind === 'waffle' ? c.h * 0.7 : c.h)), q: r1(W.floor.D + W.floor.L), fc: c.fc, show: 'w' },
+        path: { Lx: r1(g.sx), Ly: r1(g.sy), q: r1(W.floor.D + W.floor.L), N: W.model.floors, qa: W.input.qa, pick: 'c' } } };
+  }
+  let DOSN = 0;
+
   /* ============================ النافذة ============================ */
-  const TABS = [['sum', '🧾 الملخص'], ['calc', '🧮 كيف حُسب؟'], ['sec', '📐 المقطع'], ['elev', '📏 التفصيل الطولي'], ['chk', '✅ فحوص ACI'], ['bbs', '📊 جدول القطع'], ['site', '🛠️ التنفيذ']];
+  const TABS = [['sum', '🧾 الملخص'], ['lab', '🔬 المختبر الحي'], ['calc', '🧮 كيف حُسب؟'], ['sec', '📐 المقطع'], ['elev', '📏 التفصيل الطولي'], ['chk', '✅ فحوص ACI'], ['bbs', '📊 جدول القطع'], ['site', '🛠️ التنفيذ']];
   let CUR = null, LAY = {};
 
   D.supports = u => !!u && ['beam', 'column', 'footing', 'slab'].includes(u.kind) && !!WZg() && !!window.REBAR;
@@ -433,6 +479,7 @@
     const c = D.context(u);
     if (!c) { alert('ما قدرت أبني دليل هذا العنصر من نتيجة المعالج.'); return; }
     CUR = { u, c, checks: D.checks(c) };
+    if (window.PHYSLAB) PHYSLAB.labs.forEach(l => { if (l._st) Object.keys(l._st).forEach(k => { if (k.startsWith('dos')) delete l._st[k]; }); });
     LAY = {}; (ELAY[c.kind] || []).forEach(l => { LAY[l[0]] = !!l[3]; });
     let ov = document.getElementById('dosOv');
     if (!ov) { ov = document.createElement('div'); ov.id = 'dosOv'; ov.className = 'dos-ov'; document.body.appendChild(ov); }
@@ -455,7 +502,12 @@
     render('sum');
   };
   function escKey(e) { if (e.key === 'Escape') D.close(); }
-  D.close = function () { const ov = document.getElementById('dosOv'); if (ov) ov.style.display = 'none'; document.removeEventListener('keydown', escKey); };
+  D.close = function () {
+    const ov = document.getElementById('dosOv'); if (ov) ov.style.display = 'none';
+    const b = document.getElementById('dosB'); if (b) b.innerHTML = '';          // يوقف حلقة رسم المختبر المزروع
+    if (window.PHYSLAB && PHYSLAB.stop) PHYSLAB.stop();
+    document.removeEventListener('keydown', escKey);
+  };
 
   function render(tab) {
     const box = document.getElementById('dosB'); if (!box || !CUR) return;
@@ -468,6 +520,11 @@
         ${worst.length ? `<div class="note" style="margin-top:10px"><b>انتباه:</b><ul class="pl-ul">${worst.map(k => `<li>${esc(k.name)} — ${esc(k.why || k.lim)}</li>`).join('')}</ul></div>`
           : '<div class="dos-okbox">✓ كل فحوص التفصيل مطابقة لـ ACI 318-19.</div>'}
         <div class="hint">افتح «🧮 كيف حُسب؟» للاشتقاق خطوة بخطوة، و«📏 التفصيل الطولي» للرسم بطبقاته.</div></div></div>`;
+    } else if (tab === 'lab') {
+      if (!window.PHYSLAB) { box.innerHTML = '<div class="note">وحدة المختبر غير محمَّلة.</div>'; return; }
+      const sd = labSeed(c), key = 'dos' + (CUR.n || (CUR.n = ++DOSN));
+      box.innerHTML = `<div class="dos-labnote">🔬 ${esc(sd.note)} — غيّر أي قيمة وشوف التأثير لحظياً؛ أرقام المعالج نفسها ما تتغيّر.</div>` + PHYSLAB.html({ key, labs: sd.labs, vals: sd.vals });
+      PHYSLAB.init();
     } else if (tab === 'calc') {
       const req = calcReq(c);
       if (!req || req.err || !window.CALCDOC) { box.innerHTML = `<div class="note">${esc((req && req.err) || 'الاشتقاق غير متاح لهذا العنصر.')}</div>`; return; }

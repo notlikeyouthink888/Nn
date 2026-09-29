@@ -343,3 +343,10 @@ details.fold[open]>summary{border-bottom:1px solid var(--line);margin-bottom:10p
 .dos-site li{margin:8px 0}
 @media(max-width:760px){.dos-grid{grid-template-columns:1fr}.dos-ov{padding:0}.dos{border-radius:0;min-height:100vh}.dos-b{max-height:none}}
 .dos-m{unicode-bidi:isolate;display:inline-block}
+.dos-labnote{background:rgba(56,189,248,.08);border:1px solid rgba(56,189,248,.3);border-radius:10px;padding:9px 12px;font-size:12.3px;margin-bottom:12px}
+.dos .pl-body{grid-template-columns:minmax(0,1fr) 260px}
+@media(max-width:900px){.dos .pl-body{grid-template-columns:1fr}}
+.pl-cats{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.pl-cats button{background:var(--panel);border:1px solid var(--line);color:var(--mut);font:inherit;font-size:12px;padding:6px 12px;border-radius:20px;cursor:pointer}
+.pl-cats button small{color:var(--acc2);margin-right:3px}
+.pl-cats button.on{border-color:var(--acc);color:#fff;background:rgba(56,189,248,.15)}

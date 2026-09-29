@@ -3753,8 +3753,9 @@ PAGES.rebar = {
   ic: '🧵', name: 'حديد التسليح', ttl: 'مركز حديد التسليح — ACI 318-19',
   sub: 'طول التماسك · العكفات · الوصلات · ترتيب الأسياخ · التطويق · القطع — مختبرات تفاعلية بطبقات، والقواعد نفسها المستعملة بدليل كل عنصر بالمعالج',
   desc: 'كل تفاصيل الحديد بالمختبر: ld و ldh والوصلات والعكفات والتطويق والقطع',
-  html: () => (window.PHYSLAB ? PHYSLAB.html({ key: 'rebar', cats: ['rebar'] }) : '<div class="card">وحدة المختبر غير محمَّلة.</div>'),
-  init: () => { if (window.PHYSLAB) PHYSLAB.init(); }
+  html: () => (window.REBARPOSTER && window.REBAR ? REBARPOSTER.card() : '') +
+    (window.PHYSLAB ? PHYSLAB.html({ key: 'rebar', cats: ['rebar'] }) : '<div class="card">وحدة المختبر غير محمَّلة.</div>'),
+  init: () => { if (window.REBARPOSTER) REBARPOSTER.init(); if (window.PHYSLAB) PHYSLAB.init(); }
 };
 PAGES.map = {
   ic: '🗺️', name: 'خريطة المنصة', ttl: 'خريطة المنصة — طبقات العمل الهندسي',

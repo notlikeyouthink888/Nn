@@ -30,4 +30,9 @@ near(R.seisCol({ sys: 'smf', b: 400, h: 400, ln: 3000, dbL: 20, dt: 10, hx: 200 
 near(R.spiralRho(Math.PI * 200 ** 2, Math.PI * 160 ** 2, 28, 420), 0.45 * (400 ** 2 / 320 ** 2 - 1) * 28 / 420, 1e-12, 'ρs الحلزون');
 const st = R.stirrupCut(300, 600, 40, 10, 135);
 near(st.a, 210, 1e-9, 'بُعد الكانة على المحور');
+// ملصق الطباعة: كل رقم = قيمة الكتاب مقرّبة للأعلى لأقرب 10 مم
+const PS = require('./static/rebarposter.js'), rows = PS.rows(28, 420, 40);
+rows.forEach(x => { const ld = R.ld({ db: x.db, fc: 28, fy: 420, cover: 40 }).ld, lp = R.lapTension({ db: x.db, fc: 28, fy: 420, cover: 40 }).lap;
+  near(Math.max(0, x.ld - ld), 5, 1, 'ملصق ld Ø' + x.db + ' ضمن [ld ، ld+10)'); near(Math.max(0, x.lapB - lp), 5, 1, 'ملصق وصلة Ø' + x.db + ' ضمن [lap ، lap+10)'); });
+near(/NaN|undefined/.test(PS.html(30, 520)) ? 1 : 0, 0, 0, 'ملصق fy 520 بلا NaN');
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASS'); process.exit(fails ? 1 : 0);

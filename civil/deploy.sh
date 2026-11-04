@@ -17,9 +17,13 @@ command -v python3 >/dev/null || { apt-get update -y; apt-get install -y python3
 command -v curl    >/dev/null || { apt-get update -y; apt-get install -y curl; }
 
 echo "==> [2/5] تنزيل المشروع وتنصيبه في $APP"
+# data/ (المشاريع المحفوظة ومفتاح المساعد الذكي) تبقى عند التحديث
+rm -rf /tmp/civil5819_data; [ -d "$APP/data" ] && cp -a "$APP/data" /tmp/civil5819_data
 rm -rf /tmp/civilsrc "$APP"; mkdir -p /tmp/civilsrc "$APP"
 curl -fsSL "$SRC" | tar xz -C /tmp/civilsrc --strip-components=1
 cp -r /tmp/civilsrc/civil/. "$APP"/ && rm -rf /tmp/civilsrc
+if [ -d /tmp/civil5819_data ]; then cp -a /tmp/civil5819_data "$APP/data" && rm -rf /tmp/civil5819_data; fi
+[ -d "$APP/data" ] && { chmod 700 "$APP/data"; chmod 600 "$APP"/data/*.json 2>/dev/null || true; }
 
 # ذاكرة احتياطية للسيرفرات الصغيرة: تحليل مخطط مستشفى (330 ألف عنصر) يحتاج ~0.5 غيغا لحظة الذروة،
 # وسيرفر 512م–1غ بلا swap يقتل العملية بصمت فيبقى المتصفح ينتظر. نضيف 1 غيغا swap مرة واحدة فقط.

@@ -33,7 +33,8 @@ set "SRC=%TMPD%\Nn-%BR:/=-%"
 if not exist "%SRC%\civil\app.py" for /d %%D in ("%TMPD%\Nn-*") do set "SRC=%%D"
 if not exist "%SRC%\civil\app.py" goto :fail
 if not exist "%HOMED%" mkdir "%HOMED%"
-robocopy "%SRC%\civil" "%HOMED%\app" /MIR /NFL /NDL /NJH /NJS /NP >nul
+rem مجلد data (المشاريع المحفوظة ومفتاح المساعد الذكي) يبقى كما هو عند التحديث
+robocopy "%SRC%\civil" "%HOMED%\app" /MIR /XD data /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 goto :fail
 rmdir /s /q "%TMPD%"
 echo        تم: %HOMED%\app

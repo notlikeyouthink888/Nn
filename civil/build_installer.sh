@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 PAY=$(mktemp)
-tar czf "$PAY" --exclude="static/vendor/libredwg/wasm/*.wasm.gz" *.py static README.md
+tar czf "$PAY" --exclude="static/vendor/libredwg/wasm/*.wasm.gz" *.py *.md static
 {
 cat <<'HDR'
 #!/usr/bin/env bash
@@ -21,6 +21,8 @@ command -v python3 >/dev/null || { apt-get update -y && apt-get install -y pytho
 python3 -c 'import sys; assert sys.version_info>=(3,7)' || { echo "يتطلب Python 3.7+"; exit 1; }
 
 echo "==> [2/6] كتابة ملفات المشروع في $APP"
+# data/ (المشاريع المحفوظة ومفتاح المساعد الذكي) تبقى عند إعادة التنصيب
+rm -rf /tmp/civil5819_data; [ -d "$APP/data" ] && cp -a "$APP/data" /tmp/civil5819_data
 rm -rf "$APP"; mkdir -p "$APP"
 base64 -d > /tmp/civil5819.tgz <<'PAYLOAD_B64'
 HDR
@@ -29,6 +31,8 @@ cat <<'FTR'
 PAYLOAD_B64
 tar xzf /tmp/civil5819.tgz -C "$APP" && rm -f /tmp/civil5819.tgz
 chmod -R 755 "$APP"
+if [ -d /tmp/civil5819_data ]; then cp -a /tmp/civil5819_data "$APP/data" && rm -rf /tmp/civil5819_data; fi
+[ -d "$APP/data" ] && { chmod 700 "$APP/data"; chmod 600 "$APP"/data/*.json 2>/dev/null || true; }
 
 echo "==> [2b/6] جلب محرّك قراءة DWG (اختياري — 2.3 ميغا)"
 RAW=https://raw.githubusercontent.com/notlikeyouthink888/Nn/claude/civil-engineering-site-g9u9al/civil

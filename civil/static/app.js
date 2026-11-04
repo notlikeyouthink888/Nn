@@ -3757,6 +3757,13 @@ PAGES.rebar = {
     (window.PHYSLAB ? PHYSLAB.html({ key: 'rebar', cats: ['rebar'] }) : '<div class="card">وحدة المختبر غير محمَّلة.</div>'),
   init: () => { if (window.REBARPOSTER) REBARPOSTER.init(); if (window.PHYSLAB) PHYSLAB.init(); }
 };
+PAGES.ai = {
+  ic: '🤖', name: 'المساعد الذكي', ttl: 'المساعد الهندسي الذكي — مخصّص لمشروعك',
+  sub: 'نماذج OpenRouter بمفتاحك · يجاوب عن المنصة ومشروعك وACI 318-19 والكود العراقي فقط · الأرقام من حاسبات المنصة نفسها',
+  desc: 'اسأل عن مشروعك وأي بند بالكود — بأرقام دقيقة من محرّك المنصة',
+  html: () => (window.AIASK ? AIASK.pageHtml() : '<div class="card">وحدة المساعد غير محمَّلة.</div>'),
+  init: () => { if (window.AIASK) AIASK.pageInit(); }
+};
 PAGES.map = {
   ic: '🗺️', name: 'خريطة المنصة', ttl: 'خريطة المنصة — طبقات العمل الهندسي',
   sub: 'من المدخلات إلى القراءة والتحليل والتصميم والمخرجات — اضغط أي قسم لتتبّع مساره',
@@ -3773,7 +3780,7 @@ PAGES.terms = {
 const ORDER = [
   ['المشروع', ['wizard', 'femproj', 'cad', 'room', 'bbs', 'detail66', 'projects']],
   ['التحليل الإنشائي', ['fem']],
-  ['الفهم والتعلّم', ['phys', 'rebar', 'map', 'terms']],
+  ['الفهم والتعلّم', ['ai', 'phys', 'rebar', 'map', 'terms']],
   ['ما تحت الصفر', ['survey', 'earth', 'soil', 'fndpick']],
   ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],
   ['مرجع', ['ref', 'home']],

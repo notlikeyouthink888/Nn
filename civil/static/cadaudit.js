@@ -760,9 +760,10 @@
       <div class="dos-h"><div><span class="dos-ic">${ic}</span><b>${esc(ttl)}</b>
         <div class="dos-badges"><span class="tag t-ok">${nOk} مطابق</span>${nW ? `<span class="tag t-warn">${nW} توصية</span>` : ''}${nF ? `<span class="tag t-bad">${nF} مخالف</span>` : ''}
         <span class="dos-code">ACI 318-19</span><span class="dos-code">🧩 من لوحات الأوتوكاد</span></div></div>
-        <button class="dos-x" aria-label="إغلاق">✕</button></div>
+        <div class="dos-hb">${window.AIASK ? '<button class="dos-ai" data-ai="askel">🤖 اسأل المساعد</button>' : ''}<button class="dos-x" aria-label="إغلاق">✕</button></div></div>
       <div class="dos-tabs">${TABS.map((t, i) => `<button data-t="${t[0]}" class="${i ? '' : 'on'}">${t[1]}</button>`).join('')}</div>
       <div class="dos-b" id="cdosB"></div></div>`;
+    CUR.title = ttl;
     ov.style.display = 'flex';
     ov.onclick = e => {
       if (e.target === ov || e.target.closest('.dos-x')) { A.close(); return; }
@@ -779,6 +780,15 @@
     document.removeEventListener('keydown', escKey);
   };
   A.openPick = (u, B, RES, opts) => A.open(A.ctxFromPick(u, B, RES, opts), B, RES, opts);
+  // العنصر المفتوح الآن بدليل الأوتوكاد — للمساعد الذكي
+  A.current = function () {
+    const ov = document.getElementById('cdosOv');
+    if (!CUR || !ov || ov.style.display === 'none') return null;
+    return { source: 'قسم الأوتوكاد (من جداول اللوحات)', kind: CUR.c.kind, title: CUR.title, rows: sumRows(CUR.c),
+      materials: { fc: CUR.c.fc, fy: CUR.c.fy, note: (CUR.c.M || {}).fcSrc },
+      loads_note: CUR.c.geo && CUR.c.geo.wu ? 'الأحمال تقديرية: wu ≈ ' + f1(CUR.c.geo.wu) + ' kN/m (عرض رافد ' + f2(CUR.c.geo.trib) + ' م)' : undefined,
+      checks: CUR.checks.map(k => ({ check: k.name, val: k.val, lim: k.lim, st: k.state, clause: k.clause, why: (k.why || '').slice(0, 160) })) };
+  };
   A.openKey = (key, B, RES, opts) => A.open(A.ctxFromKey(key, B, RES, opts), B, RES, opts);
 
   function sumRows(c) {

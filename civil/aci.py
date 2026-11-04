@@ -242,9 +242,9 @@ def check_slab(slab, g, fc, fy, exposure='interior', col=None):
                     h, h_min, 'مم', mode='>=',
                     note='ℓn/33 لبلاطة ثنائية الاتجاه بجسور محيطية (fy=420) وبحدّ مطلق '
                          '125 مم · ℓn = %.0f مم صافي بعد طرح عمود %d مم' % (ln, int(cw))))
-    # 20.6.1.3.1 الغطاء
+    # 20.5.1.3.1 الغطاء
     cov = D.cover('slab', exposure, mesh['short']['db'])
-    out.append(_cmp('20.6.1.3.1', 'الغطاء الخرساني للسقف', slab['cover'], cov,
+    out.append(_cmp('20.5.1.3.1', 'الغطاء الخرساني للسقف', slab['cover'], cov,
                     'مم', mode='>=', note='20 مم داخلي لأقطار ≤ Ø36'))
     return out
 
@@ -257,7 +257,7 @@ def check_footing(alt, kind, fc, fy):
         out.append(_cmp('13.3.1.2', 'الحد الأدنى لسماكة الأساس المنفرد فوق الحديد',
                         t['h'] - 75.0 - 16.0, 150.0, 'مم', mode='>=',
                         note='عمق فعّال ≥ 150 مم فوق الحديد السفلي'))
-        out.append(_cmp('20.6.1.3.1', 'الغطاء على التربة', 75.0, 75.0, 'مم',
+        out.append(_cmp('20.5.1.3.1', 'الغطاء على التربة', 75.0, 75.0, 'مم',
                         mode='>=', note='مصبوب على التربة مباشرة'))
     if alt.get('punch'):
         p = alt['punch']

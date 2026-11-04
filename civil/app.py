@@ -19,6 +19,7 @@ import aci as ACI
 import beamtype as BT
 import mnl66 as MN
 import calcdoc as CD
+import ai as AI          # المساعد الذكي (OpenRouter) — مخصّص للمشروع وللكود
 try:
     import opensees_check as OSC          # تحقّق متبادل مع OpenSees (اختياري)
 except Exception:                          # noqa: BLE001
@@ -168,6 +169,11 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(meta(), ensure_ascii=False))
         if path == '/api/cad/job':
             return self._job_status(self.path.partition('id=')[2][:40])
+        if path.startswith('/api/ai/'):
+            try: return AI.handle_get(self, path[8:])
+            except Exception as e:
+                traceback.print_exc()
+                return self._send(500, json.dumps(dict(error=str(e)), ensure_ascii=False))
         if path in ('/', '/index.html'): path = '/index.html'
         fn = os.path.normpath(os.path.join(STATIC, path.lstrip('/')))
         if not fn.startswith(STATIC) or not os.path.isfile(fn):
@@ -190,6 +196,12 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split('?')[0]
         name = path[5:] if path.startswith('/api/') else ''
+        if path.startswith('/api/ai/'):
+            try: return AI.handle_post(self, path[8:])
+            except Exception as e:
+                traceback.print_exc()
+                try: return self._send(500, json.dumps(dict(error=str(e)), ensure_ascii=False))
+                except Exception: return
         if name not in ROUTES and name not in ('dxf', 'bbs/csv'):
             return self._send(404, json.dumps(dict(error='unknown endpoint: %s' % name)))
         try:

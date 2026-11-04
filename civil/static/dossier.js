@@ -490,7 +490,7 @@
       <div class="dos-h"><div><span class="dos-ic">${ic}</span><b>${esc(u.title)}</b>
         <div class="dos-badges"><span class="tag t-ok">${nOk} مطابق</span>${nW ? `<span class="tag t-warn">${nW} توصية</span>` : ''}${nF ? `<span class="tag t-bad">${nF} مخالف</span>` : ''}
         <span class="dos-code">ACI 318-19</span></div></div>
-        <button class="dos-x" aria-label="إغلاق">✕</button></div>
+        <div class="dos-hb">${window.AIASK ? '<button class="dos-ai" data-ai="askel">🤖 اسأل المساعد</button>' : ''}<button class="dos-x" aria-label="إغلاق">✕</button></div></div>
       <div class="dos-tabs">${TABS.map((t, i) => `<button data-t="${t[0]}" class="${i ? '' : 'on'}">${t[1]}</button>`).join('')}</div>
       <div class="dos-b" id="dosB"></div></div>`;
     ov.style.display = 'flex';
@@ -508,6 +508,15 @@
     const b = document.getElementById('dosB'); if (b) b.innerHTML = '';          // يوقف حلقة رسم المختبر المزروع
     if (window.PHYSLAB && PHYSLAB.stop) PHYSLAB.stop();
     document.removeEventListener('keydown', escKey);
+  };
+
+  // العنصر المفتوح الآن — يقرأه المساعد الذكي (ai.js) ليجاوب عنه بالضبط
+  D.current = function () {
+    const ov = document.getElementById('dosOv');
+    if (!CUR || !ov || ov.style.display === 'none') return null;
+    return { source: 'معالج المشروع', kind: CUR.c.kind, title: CUR.u.title, rows: (CUR.u.rows || []).slice(0, 24),
+      materials: { fc: CUR.c.fc, fy: CUR.c.fy },
+      checks: CUR.checks.map(k => ({ check: k.name, val: k.val, lim: k.lim, st: k.state, clause: k.clause, why: (k.why || '').slice(0, 160) })) };
   };
 
   function render(tab) {

@@ -537,6 +537,12 @@ s = 3D فيتغيّر مع القطر. فتخرج الأطوال من 6 م عل�
 PORT=8001 python3 app.py     # ثم افتح http://localhost:8001
 ```
 
+### على ويندوز (cmd)
+أمر واحد يثبّت ويحدّث ويشغّل، والدومين عبر Cloudflare Tunnel — التفاصيل بـ [`windows/README.md`](windows/README.md):
+```bat
+curl -fsSLo "%TEMP%\civil5819.bat" https://raw.githubusercontent.com/notlikeyouthink888/Nn/claude/civil-engineering-site-g9u9al/civil/windows/install_windows.bat && "%TEMP%\civil5819.bat"
+```
+
 ## التنصيب على سيرفر
 ```bash
 bash install.sh              # ينصّب في /opt/civil5819 وينشئ خدمة systemd على المنفذ 8001

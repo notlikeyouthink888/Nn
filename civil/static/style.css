@@ -438,6 +438,8 @@ details.aud[open]{background:rgba(56,189,248,.04);border-radius:8px}
 .ai-kb{font-size:11px;color:var(--mut);margin-top:4px}.ai-kb summary{cursor:pointer}.ai-kb ul{margin:3px 0;padding-inline-start:16px}
 .ai-acts{display:flex;align-items:center;gap:6px;margin-top:3px}.ai-acts button{background:none;border:0;cursor:pointer;color:var(--mut);font-size:12px}
 .ai-meta{font-size:10.5px;color:var(--mut)}
+.ai-loc{color:#a7f3d0;border:1px solid rgba(52,211,153,.4);border-radius:10px;padding:0 6px;margin-inline-end:5px;display:inline-block}
+.ai-lsec .ai-seg{margin-bottom:5px}.ai-lmods{max-height:210px;margin-top:5px}.ai-lsec code{background:var(--bg2);border-radius:5px;padding:0 4px}
 .ai-typing{display:flex;gap:4px;padding:4px 0}.ai-typing i{width:7px;height:7px;border-radius:50%;background:var(--acc2);opacity:.5;animation:aiblink 1s infinite}
 .ai-typing i:nth-child(2){animation-delay:.2s}.ai-typing i:nth-child(3){animation-delay:.4s}
 @keyframes aiblink{0%,100%{opacity:.25}50%{opacity:1}}

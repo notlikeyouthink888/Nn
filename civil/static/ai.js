@@ -13,7 +13,7 @@
   });
   const LS = st(window.localStorage), SS = st(window.sessionStorage);
   const S = { msgs: LS.get('ai.chat.v1', []), busy: false, ctrl: null, cfg: null, models: null, mfilter: { q: '', tools: true, free: false },
-              useCtx: LS.get('ai.ctx', true), root: null, settingsOpen: false };
+              useCtx: LS.get('ai.ctx', true), root: null, settingsOpen: false, local: null, localBusy: false };
   const page = () => (location.hash || '#wizard').slice(1);
   const f2 = x => (x == null || !isFinite(x)) ? null : Math.round(x * 100) / 100;
 
@@ -165,12 +165,12 @@
       <pre dir="ltr">${esc(JSON.stringify({ inputs: t.args, result: t.result }, null, 1)).slice(0, 6000)}</pre></details>`).join('');
     const status = (m.status || []).map(s => `<div class="ai-st">${esc(s)}</div>`).join('');
     const kb = (m.kb || []).length ? `<details class="ai-kb"><summary>📚 مراجع المنصة المستعملة (${m.kb.length})</summary><ul>${m.kb.map(x => `<li>${esc(x.src)} › ${esc(x.title)}</li>`).join('')}</ul></details>` : '';
-    const u = (m.meta && m.meta.usage) || {};
-    const meta = m.meta ? `<div class="ai-meta" dir="ltr">${esc(m.meta.model || '')}${u.total_tokens ? ' · ' + u.total_tokens + ' tok' : ''}${u.cost ? ' · $' + (+u.cost).toFixed(4) : ''}</div>` : '';
+    const u = (m.meta && m.meta.usage) || {}, loc = m.meta && m.meta.local;
+    const meta = m.meta ? `<div class="ai-meta" dir="ltr">${loc ? '<span class="ai-loc" dir="rtl">🖥️ محلي · مجاني</span>' : ''}${esc(m.meta.model || '')}${u.total_tokens ? ' · ' + u.total_tokens + ' tok' : ''}${loc && m.meta.tps ? ' · ' + m.meta.tps + ' tok/s' : ''}${loc && m.meta.secs ? ' · ' + m.meta.secs + 's' : ''}${!loc && u.cost ? ' · $' + (+u.cost).toFixed(4) : ''}</div>` : '';
     const err = m.err ? `<div class="ai-err">⚠️ ${esc(m.err)}${m.needKey ? ' <button class="btn gh" data-ai="settings">⚙️ الإعدادات</button>' : ''}</div>` : '';
     const typing = m.pending && !m.content && !m.err ? '<div class="ai-typing"><i></i><i></i><i></i></div>' : '';
     const body = m.content || typing ? `<div class="ai-b">${md(m.content)}${typing}</div>` : '';
-    return `<div class="ai-m a" data-k="${k}">${tools}${status}${body}${err}${kb}
+    return `<div class="ai-m a" data-k="${k}">${status}${tools}${body}${err}${kb}
       <div class="ai-acts">${m.content ? `<button data-ai="copy" data-k="${k}" title="نسخ">📋</button>` : ''}${meta}</div></div>`;
   }
   function renderMsgs(root, onlyLast) {
@@ -224,7 +224,7 @@
               else if (ev.t === 'status') m.status.push(ev.c);
               else if (ev.t === 'meta') m.kb = ev.kb || [];
               else if (ev.t === 'error') m.err = ev.c;
-              else if (ev.t === 'done') m.meta = { model: ev.model, usage: ev.usage };
+              else if (ev.t === 'done') m.meta = { model: ev.model, usage: ev.usage, local: !!ev.local, tps: ev.tps, secs: ev.secs };
             });
             liveUpdate();
           }
@@ -268,6 +268,43 @@
         ${list.slice(0, 80).map(m => modelRow(m, cur)).join('') || (M.length ? '<div class="ai-dim">ما في نتائج.</div>' : '')}</div>
       <div class="ai-row"><input type="text" data-ai-in="mcustom" placeholder="أو اكتب معرّف النموذج يدوياً مثل vendor/model" dir="ltr"><button class="btn gh" data-ai="pickc">اختيار</button></div>`;
   }
+  /* ---------- النموذج المحلي (Ollama) — احتياط بدون إنترنت ---------- */
+  const LMODE = { off: 'معطّل', fallback: 'احتياط', always: 'دائماً محلي' };
+  const LHELP = { off: 'ما يستعمل النموذج المحلي أبداً.',
+    fallback: 'إذا OpenRouter فشل (ماكو نت، الرصيد خلص، ضغط على النموذج) أو ماكو مفتاح، يجاوبك النموذج المحلي من حاسبتك تلقائياً.',
+    always: 'كل الأسئلة على النموذج المحلي (مجاني وبدون نت). إذا Ollama طافي يجاوب OpenRouter.' };
+  function localStatusHtml() {
+    const L = S.local;
+    if (!L) return '<div class="ai-dim">… جارٍ فحص Ollama</div>';
+    if (!L.ok) return `<div class="ai-res bad">✗ ${esc(L.error || 'ما وصلت لـ Ollama')}</div>`;
+    const rows = (L.models || []).filter(m => !m.embed);
+    return `<div class="ai-res ok">✓ Ollama ${esc(L.version || '')} شغّال على <b dir="ltr">${esc(L.url)}</b> · ${rows.length} نموذج محادثة</div>` +
+      (rows.length ? `<div class="ai-mlist ai-lmods">${rows.map(m => `<button class="ai-mod ${m.name === L.chosen ? 'on' : ''}" data-ai="lpick" data-id="${esc(m.name)}">
+        <b dir="ltr">${esc(m.name)}</b><span dir="ltr">${esc([m.params, m.quant, m.size_gb ? m.size_gb + ' GB' : ''].filter(Boolean).join(' · '))}</span>
+        <em>${m.tools ? '<i class="t">🔧 أدوات</i>' : '<i>المنصة تختار الحاسبة</i>'}${m.ctx ? '<i>' + Math.round(m.ctx / 1024) + 'k</i>' : ''}${m.name === L.chosen ? '<i class="f">المستعمل</i>' : ''}</em></button>`).join('')}</div>` : '') +
+      (L.warn ? `<div class="ai-warn">⚠️ ${esc(L.warn)}</div>` : '');
+  }
+  function localHtml(c) {
+    const mode = LMODE[c.local_mode] ? c.local_mode : 'fallback';
+    return `<div class="ai-sec ai-lsec"><h4>🖥️ النموذج المحلي (Ollama) — احتياط بدون إنترنت</h4>
+      <div class="ai-seg">${Object.keys(LMODE).map(k => `<button class="${mode === k ? 'on' : ''}" data-ai="lmode" data-v="${k}">${LMODE[k]}</button>`).join('')}</div>
+      <div class="ai-dim">${LHELP[mode]}</div>
+      <div class="ai-row"><input type="text" data-ai-in="lurl" dir="ltr" placeholder="${esc(c.local_default || 'http://127.0.0.1:11434')}" value="${esc(c.local_url || '')}">
+        <button class="btn gh" data-ai="lcheck">فحص وحفظ</button></div>
+      <div data-ai-local>${localStatusHtml()}</div><div class="ai-res" data-ai-out="lsave"></div>
+      <div class="ai-dim">الأرقام تبقى من حاسبات المنصة: النموذج اللي يدعم الأدوات 🔧 يستدعيها بنفسه، والباقي (مثل llama3) المنصة تختار الحاسبة وتحسب قبل الجواب.
+        للعربي أحسن نموذج يدعم الأدوات، مثل <code dir="ltr">ollama pull qwen2.5:7b</code></div></div>`;
+  }
+  function paintLocal(el) { const box = el && el.querySelector('[data-ai-local]'); if (box) box.innerHTML = localStatusHtml(); }
+  async function probeLocal(el, url) {
+    S.localBusy = true;
+    const r = await api('local', url ? { url } : {});
+    S.localBusy = false;
+    S.local = r.data && typeof r.data.ok === 'boolean' ? r.data : { ok: false, error: (r.data && r.data.error) || 'فشل الفحص' };
+    paintLocal(el || document.querySelector('.ai-set:not([hidden])'));
+    return r;
+  }
+
   function settingsHtml() {
     const c = S.cfg;
     if (!c) return '<div class="ai-dim">جارٍ التحميل…</div>';
@@ -275,6 +312,7 @@
     const who = c.is_admin ? (c.is_local ? '👑 صاحب المنصة — من نفس الحاسبة' : '👑 صاحب المنصة — بكلمة سر المشرف') : '👤 زائر';
     let h = `<div class="ai-stat"><span>${who}</span><span>🔑 ${c.has_key ? 'مفتاح المنصة مضاف' + (c.key_hint ? ' <b dir="ltr">' + esc(c.key_hint) + '</b>' : '') : 'ما مضاف مفتاح بعد'}</span>
       <span>🧠 النموذج: <b dir="ltr">${esc(c.model)}</b></span><span>📚 ${c.kb ? c.kb.chunks : 0} مقطع مرجعي · 🔧 ${c.tools} أداة حساب</span>
+      ${c.is_admin ? `<span>🖥️ النموذج المحلي: <b>${esc(LMODE[c.local_mode] || LMODE.fallback)}</b>${c.local_model ? ' · <b dir="ltr">' + esc(c.local_model) + '</b>' : ''}</span>` : ''}
       ${c.custom_base ? '<span class="ai-warn">🧪 الخادم موجّه لعنوان اختبار بدل OpenRouter</span>' : ''}</div>`;
     if (c.is_admin) {
       h += `<div class="ai-sec"><h4>🔑 مفتاح OpenRouter</h4>
@@ -283,6 +321,7 @@
         <div class="ai-dim">ما عندك مفتاح؟ سوّي حساب بـ <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a> وانسخ المفتاح هنا.
           يُحفظ بحاسبتك فقط (civil/data/ai.json) وما يرجع للمتصفح.</div><div class="ai-res" data-ai-out="key"></div></div>
         <div class="ai-sec"><h4>🧠 النموذج</h4><div data-ai-out="models">${modelsHtml()}</div></div>
+        ${localHtml(c)}
         <div class="ai-sec"><h4>💬 أسلوب الجواب</h4><div class="ai-seg">${[['iq', 'عراقي'], ['msa', 'فصحى'], ['en', 'English']].map(([k, n]) =>
           `<button class="${c.style === k ? 'on' : ''}" data-ai="style" data-v="${k}">${n}</button>`).join('')}</div></div>
         <div class="ai-sec"><h4>🌐 الزوار (عبر الدومين)</h4>
@@ -312,6 +351,7 @@
     const c = S.cfg || {};
     if ((c.is_admin || LS.get('ai.ownkey', '')) && (!S.models || reloadModels)) await loadModels(false);
     el.innerHTML = settingsHtml();
+    if (c.is_admin && !S.local && !S.localBusy) probeLocal(el);       // بدون انتظار: الإعدادات تطلع فوراً
   }
   const out = (el, sel, html, ok) => { const o = el && el.querySelector('[data-ai-out="' + sel + '"]'); if (o) { o.innerHTML = html; o.className = 'ai-res ' + (ok ? 'ok' : 'bad'); } };
   const keyResult = r => r.ok && r.data.ok ? '✓ المفتاح شغّال' + (r.data.credits ? ' · الرصيد المتبقي <b dir="ltr">$' + (+r.data.credits.left).toFixed(2) + '</b>' : '') +
@@ -353,6 +393,7 @@
       <button class="btn gh" data-ai="new">🗑️ محادثة جديدة</button></div>${chatHtml('page')}</div>
     <div class="card ai-pset"><h3>⚙️ الإعدادات</h3><div class="ai-set" data-where="page"></div>
       <div class="ai-sec"><h4>🔒 الخصوصية</h4><ul class="ai-ul"><li>سؤالك وملخص مشروعك (إذا مفعّل) ينرسل للنموذج اللي تختاره عبر OpenRouter. ملفات الـDWG نفسها ما تنرسل.</li>
+        <li>النموذج المحلي (Ollama) يشتغل على حاسبتك — جوابه ما يطلع برّه الحاسبة.</li>
         <li>المساعد مقصور على المنصة والتصميم الإنشائي، ويعتذر عن غيرها.</li><li>كل رقم يطلع من أداة 🔧 تقدر تفتحها وتشوف مدخلاتها ونتيجتها.</li></ul></div></div></div>`;
   A.pageInit = function () {
     S.root = document.querySelector('#view .ai-chat'); renderMsgs();
@@ -402,6 +443,15 @@
       return;
     }
     if (act === 'refresh') { out(el, 'key', '… جارٍ تحديث القائمة', true); await loadModels(true); el.querySelector('[data-ai-out="models"]').innerHTML = modelsHtml(); return; }
+    if (act === 'lmode') return saveCfg(el, { local_mode: b.dataset.v }, 'lsave', '✓ النموذج المحلي: ' + esc(LMODE[b.dataset.v] || ''));
+    if (act === 'lpick') { if (S.local) S.local.chosen = b.dataset.id; return saveCfg(el, { local_model: b.dataset.id }, 'lsave', '✓ النموذج المحلي: ' + esc(b.dataset.id)); }
+    if (act === 'lcheck') {
+      const u = (val(el, 'lurl') || '').trim().replace(/\/+$/, '');
+      const box = el.querySelector('[data-ai-local]'); if (box) box.innerHTML = '<div class="ai-dim">… جارٍ فحص Ollama</div>';
+      await probeLocal(el, u);
+      if (S.local.ok && (S.cfg.local_url || '') !== u) return saveCfg(el, { local_url: u }, 'lsave', '✓ انحفظ عنوان Ollama');
+      return;
+    }
     if (act === 'style') return saveCfg(el, { style: b.dataset.v }, 'key', '✓ انحفظ الأسلوب');
     if (act === 'savepub') return saveCfg(el, { allow_public: !!val(el, 'pub'), public_per_hour: +val(el, 'ph'), public_per_day: +val(el, 'pd') }, 'pw', '✓ انحفظت إعدادات الزوار');
     if (act === 'setpw') { const p = val(el, 'apw') || ''; if (p.length < 6) return out(el, 'pw', '✗ 6 أحرف على الأقل', false); return saveCfg(el, { admin_pass: p }, 'pw', '✓ انضبطت كلمة السر'); }

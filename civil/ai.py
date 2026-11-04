@@ -8,6 +8,8 @@
 · كل سؤال: بحث بمراجع المنصة (aikb) + سياق المشروع من المتصفح + أدوات الحساب (aitools)
   فالأرقام من محرّك المنصة نفسه، والجواب يتدفّق (SSE) للمتصفح كلمة بكلمة.
 · حماية من الطلبات العابرة للمواقع: نفس الأصل (Origin/Sec-Fetch-Site) و JSON فقط.
+· احتياط محلي (ailocal.py): إذا OpenRouter فشل قبل أي نص، أو ماكو مفتاح، يجاوب نموذج Ollama
+  المنزّل على الحاسبة (مثل llama3) بدون إنترنت — والأرقام تبقى من حاسبات المنصة.
 """
 import hashlib
 import hmac
@@ -23,6 +25,7 @@ import urllib.parse
 import urllib.request
 
 import aikb
+import ailocal
 import aitools
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +35,9 @@ KEY_RX = re.compile(r'^[A-Za-z0-9._\-]{20,220}$')
 MODEL_RX = re.compile(r'^[\w.\-/:@~]{2,120}$')
 DEFAULTS = dict(key='', model='openrouter/auto', allow_public=False, public_per_hour=20, public_per_day=200,
                 admin_hash='', admin_salt='', style='iq', max_tokens=1800, temperature=0.2, site_url='',
-                send_context=True, updated='')
+                send_context=True, updated='',
+                # النموذج المحلي (Ollama) — احتياط بدون إنترنت، انظر ailocal.py
+                local_mode='fallback', local_url='', local_model='', local_ctx=8192)
 STYLES = {'iq': 'جاوب باللهجة العراقية المفهومة والمهذبة (مثل: شلون، هسه، اكو، ماكو)، والمصطلحات والرموز الهندسية بالإنكليزي كما هي.',
           'msa': 'جاوب بالعربية الفصحى المبسّطة، والمصطلحات والرموز الهندسية بالإنكليزي كما هي.',
           'en': 'Answer in clear English. Keep Arabic only for names that appear in the platform.'}
@@ -89,7 +94,13 @@ def view(cfg, admin, local):
                 is_admin=bool(admin), is_local=bool(local), style=cfg.get('style'), max_tokens=cfg.get('max_tokens'),
                 temperature=cfg.get('temperature'), send_context=bool(cfg.get('send_context', True)),
                 custom_base=base() != DEFAULT_BASE, updated=cfg.get('updated'), tools=len(aitools.TOOLS),
-                kb=aikb.stats())
+                kb=aikb.stats(), local_mode=_lmode(cfg), local_model=cfg.get('local_model') or '',
+                local_url=(cfg.get('local_url') or '') if admin else '', local_default=ailocal.DEFAULT_URL,
+                local_ctx=cfg.get('local_ctx') if admin else None)
+
+
+def _lmode(cfg):
+    return cfg.get('local_mode') if cfg.get('local_mode') in ailocal.MODES else 'fallback'
 
 
 # ------------------------------------------------------------------ الهوية والصلاحيات
@@ -430,7 +441,20 @@ def _add_usage(tot, u):
             tot[k] = round(tot.get(k, 0) + v, 6)
 
 
-def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, max_rounds=6):
+def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, max_rounds=6, fallback=None):
+    """fallback(ev): إذا فشل OpenRouter قبل ما يطلع أي نص، يُستدعى بحدث الخطأ بدل إظهاره (الاحتياط المحلي)."""
+    said = dict(text=False)
+
+    def out(ev):
+        if ev.get('t') == 'delta':
+            said['text'] = True
+        emit(ev)
+
+    def fail(ev):
+        if fallback and not said['text']:
+            return fallback(ev)
+        emit(ev)
+
     last_user = next((m['content'] for m in reversed(msgs) if m['role'] == 'user'), '')
     prev_user = [m['content'] for m in msgs if m['role'] == 'user'][-2:-1]
     page = (ctx or {}).get('page') if isinstance(ctx, dict) else None
@@ -447,7 +471,7 @@ def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, ma
             body['tools'] = aitools.schema()
             body['tool_choice'] = 'auto'
         try:
-            r = _stream_once(body, key, referer, emit, deadline)
+            r = _stream_once(body, key, referer, out, deadline)
         except urllib.error.HTTPError as e:
             raw = e.read().decode('utf-8', 'replace')
             if use_tools and e.code in (400, 404, 422) and 'tool' in raw.lower():
@@ -455,19 +479,16 @@ def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, ma
                 emit(dict(t='status', c='النموذج المختار ما يدعم الأدوات — أكمل من مراجع المنصة بدون حساب مباشر.'))
                 convo[0] = dict(role='system', content=system_prompt(_ctx_text(ctx), kb, style, False))
                 continue
-            emit(dict(t='error', code=e.code, c=err_text(e.code, raw)[0]))
-            return
+            return fail(dict(t='error', code=e.code, c=err_text(e.code, raw)[0]))
         except (_Gone, BrokenPipeError, ConnectionResetError):
             raise
         except Exception as e:
-            emit(dict(t='error', c=_net_text(e)))
-            return
+            return fail(dict(t='error', c=_net_text(e)))
         _add_usage(usage, r['usage'])
         used_model = r['model'] or used_model
         if r['err']:
             code = r['err'].get('code') if isinstance(r['err'], dict) else None
-            emit(dict(t='error', code=code, c=err_text(code if isinstance(code, int) else 0, dict(error=r['err']))[0]))
-            return
+            return fail(dict(t='error', code=code, c=err_text(code if isinstance(code, int) else 0, dict(error=r['err']))[0]))
         if r['calls'] and use_tools:
             ids = [c['id'] or ('call_%d_%d' % (rnd, k)) for k, c in enumerate(r['calls'])]
             convo.append(dict(role='assistant', content=r['text'] or None, tool_calls=[
@@ -483,6 +504,8 @@ def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, ma
                 convo.append(dict(role='tool', tool_call_id=ids[k], content=json.dumps(res, ensure_ascii=False)[:12000]))
             continue
         if not r['text'].strip():
+            if fallback and not said['text']:
+                return fallback(dict(t='error', c='النموذج ما رجّع نص'))
             emit(dict(t='status', c='النموذج ما رجّع نص — جرّب تعيد السؤال أو بدّل النموذج.'))
         break
     emit(dict(t='done', model=used_model, usage=usage))
@@ -544,7 +567,21 @@ def handle_post(h, sub):
         return _json(h, 200, dict(results=aikb.search(str(body.get('q') or '')[:400], k=int(min(8, body.get('k') or 5)))))
     if sub == 'chat':
         return _chat(h, cfg, admin, body)
+    if sub == 'local':
+        return _local(h, cfg, admin, body)
     return _json(h, 404, dict(error='unknown'))
+
+
+def _local(h, cfg, admin, b):
+    """فحص النموذج المحلي (Ollama): الإصدار والنماذج المنزّلة وقدراتها — لصاحب المنصة فقط."""
+    if not admin:
+        return _json(h, 403, dict(ok=False, error='فحص النموذج المحلي لصاحب المنصة فقط.'))
+    url = str(b.get('url') or '').strip().rstrip('/')
+    if url and not ailocal.valid_url(url):
+        return _json(h, 400, dict(ok=False, error='العنوان لازم يكون على نفس الحاسبة أو الشبكة المحلية، مثل http://127.0.0.1:11434'))
+    if not _allow('local:' + client_ip(h), 40, 600):
+        return _json(h, 429, dict(ok=False, error='فحوص كثيرة — انتظر شوي.'))
+    return _json(h, 200, ailocal.status(cfg, url or None))
 
 
 def _config(h, cfg, admin, b):
@@ -579,6 +616,25 @@ def _config(h, cfg, admin, b):
     if 'site_url' in b:
         u = str(b.get('site_url') or '').strip()
         cfg['site_url'] = u if re.match(r'^https?://[\w.\-:]+/?$', u) else ''
+    if 'local_mode' in b:
+        if b.get('local_mode') not in ailocal.MODES:
+            return _json(h, 400, dict(error='وضع النموذج المحلي غير معروف'))
+        cfg['local_mode'] = b['local_mode']
+    if 'local_url' in b:
+        u = str(b.get('local_url') or '').strip().rstrip('/')
+        if u and not ailocal.valid_url(u):
+            return _json(h, 400, dict(error='عنوان Ollama لازم يكون على نفس الحاسبة أو الشبكة المحلية، مثل http://127.0.0.1:11434'))
+        cfg['local_url'] = u
+    if 'local_model' in b:
+        m = str(b.get('local_model') or '').strip()
+        if m and not MODEL_RX.match(m):
+            return _json(h, 400, dict(error='اسم النموذج المحلي غير صحيح'))
+        cfg['local_model'] = m
+    if 'local_ctx' in b:
+        try:
+            cfg['local_ctx'] = int(max(2048, min(32768, int(b['local_ctx']))))
+        except (TypeError, ValueError):
+            pass
     if b.get('clear_admin_pass'):
         if not is_local(h):
             return _json(h, 403, dict(error='إلغاء كلمة سر المشرف من نفس الحاسبة فقط.'))
@@ -600,12 +656,17 @@ def _chat(h, cfg, admin, b):
     if own and not KEY_RX.match(own):
         return _json(h, 400, dict(error='شكل مفتاحك الشخصي غير صحيح.'))
     ip = client_ip(h)
+    lm = _lmode(cfg)
+    can_local = lm != 'off' and (admin or bool(cfg.get('allow_public')))   # الاحتياط المحلي: لصاحب المنصة، وللزوار إذا سمح
+    nokey = 'ما مضاف مفتاح OpenRouter بعد — صاحب المنصة يضيفه من «🤖 المساعد الذكي» ← الإعدادات، أو ضيف مفتاحك الشخصي.'
     if own:
         key, who = own, 'own'
     elif cfg.get('key') and (admin or cfg.get('allow_public')):
         key, who = cfg['key'], ('owner' if admin else 'public')
+    elif can_local:
+        key, who = '', ('owner' if admin else 'public')
     elif not cfg.get('key'):
-        return _json(h, 403, dict(error='ما مضاف مفتاح OpenRouter بعد — صاحب المنصة يضيفه من «🤖 المساعد الذكي» ← الإعدادات، أو ضيف مفتاحك الشخصي.', need='key'))
+        return _json(h, 403, dict(error=nokey, need='key'))
     else:
         return _json(h, 403, dict(error='المساعد مقفول للزوار — ضيف مفتاحك الشخصي من الإعدادات، أو ادخل كلمة سر المشرف.', need='own'))
     if not _allow('ip:' + ip, 90, 3600):
@@ -620,6 +681,19 @@ def _chat(h, cfg, admin, b):
     model = model if MODEL_RX.match(model or '') else cfg.get('model') or DEFAULTS['model']
     ctx = b.get('context') if cfg.get('send_context', True) and isinstance(b.get('context'), dict) else None
     style = b.get('style') if b.get('style') in STYLES else cfg.get('style', 'iq')
+    local_first = can_local and not own and (lm == 'always' or not key)
+    picked, why = None, ''
+    if local_first:
+        try:
+            picked = ailocal.pick(cfg)
+        except ailocal.LocalError as e:
+            if not key:
+                return _json(h, 403, dict(error=nokey + ' (والاحتياط المحلي: ' + e.msg + ')', need='key'))
+            local_first = False                              # «دائماً محلي» بس Ollama طافي ← OpenRouter
+            why = '🖥️ النموذج المحلي ما اشتغل — جاوبتك عبر OpenRouter. (%s)' % e.msg
+        else:
+            why = ('ℹ️ ما مضاف مفتاح OpenRouter — يجاوبك النموذج المحلي «%s» من حاسبتك.' if not key and admin
+                   else '🖥️ يجاوبك النموذج المحلي «%s».') % ailocal._short(picked[1])
     if not _SEM.acquire(timeout=2):
         return _json(h, 503, dict(error='المساعد مشغول بأسئلة ثانية — جرّب بعد ثواني.'))
     try:
@@ -639,9 +713,18 @@ def _chat(h, cfg, admin, b):
             except (BrokenPipeError, ConnectionResetError, OSError):
                 raise _Gone()
 
+        def to_local(ev):                                    # OpenRouter فشل قبل أي نص ← النموذج المحلي
+            ailocal.run(cfg, msgs, ctx, style, emit, fail_ev=ev)
+
         try:
-            run_chat(cfg, key, model, msgs, ctx, style, cfg.get('site_url') or '', emit,
-                     tools_on=_tools_for(model) and b.get('tools', True) is not False)
+            if local_first:
+                ailocal.run(cfg, msgs, ctx, style, emit, why=why, picked=picked)
+            else:
+                if why:
+                    emit(dict(t='status', c=why))
+                run_chat(cfg, key, model, msgs, ctx, style, cfg.get('site_url') or '', emit,
+                         tools_on=_tools_for(model) and b.get('tools', True) is not False,
+                         fallback=to_local if can_local else None)
         except _Gone:
             pass
         except Exception as e:                               # آخر خط دفاع: رسالة عربية بدل انقطاع صامت

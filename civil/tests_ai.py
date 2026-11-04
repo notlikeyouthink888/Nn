@@ -5,8 +5,10 @@
 المحاكي أداة اختبار فقط — ما فيه ذكاء؛ يفحص المسار: الصلاحيات، حماية المفتاح، الحدود،
 البحث بالمراجع، تنفيذ أدوات المنصة، والتدفّق للمتصفح. لا يحتاج إنترنت ولا مفتاحاً حقيقياً.
 """
+import contextlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -95,10 +97,121 @@ class Upstream(BaseHTTPRequestHandler):
                           usage=dict(prompt_tokens=1200, completion_tokens=60, total_tokens=1260, cost=0.002))])
 
 
+LSEEN = []                                   # الطلبات اللي وصلت محاكي Ollama
+OLL = dict(loaded=set())
+
+
+class Ollama(BaseHTTPRequestHandler):
+    """محاكي لواجهة Ollama الأصلية (/api/tags و/api/show و/api/ps و/api/chat بتدفّق NDJSON) — أداة اختبار، ما بيه ذكاء.
+       llama3 بلا أدوات (يرفضها بـ 400 مثل Ollama الحقيقي)، qwen2.5 بأدوات ويطلع <think> مقسوماً."""
+    protocol_version = 'HTTP/1.1'
+    MODELS = [dict(name='llama3:latest', model='llama3:latest', size=4661224676, digest='365c0bd3c000', modified_at='2026-10-30T20:00:00Z',
+                   details=dict(family='llama', parameter_size='8.0B', quantization_level='Q4_0')),
+              dict(name='qwen2.5:7b', model='qwen2.5:7b', size=4683087332, digest='845dbda0ea48', modified_at='2026-03-01T10:00:00Z',
+                   details=dict(family='qwen2', parameter_size='7.6B', quantization_level='Q4_K_M')),
+              dict(name='nomic-embed-text:latest', model='nomic-embed-text:latest', size=274302450, digest='0a109f422b47',
+                   modified_at='2026-11-01T10:00:00Z', details=dict(family='nomic-bert', parameter_size='137M', quantization_level='F16'))]
+    CAPS = {'llama3:latest': ['completion'], 'qwen2.5:7b': ['completion', 'tools'], 'nomic-embed-text:latest': ['embedding']}
+    CTX = {'llama3:latest': 8192, 'qwen2.5:7b': 32768, 'nomic-embed-text:latest': 2048}
+
+    def log_message(self, *a):
+        pass
+
+    def _j(self, code, obj):
+        b = json.dumps(obj, ensure_ascii=False).encode('utf-8')
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
+    def _nd(self, model, chunks):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/x-ndjson')
+        self.send_header('Transfer-Encoding', 'chunked')
+        self.end_headers()
+        for c in chunks:
+            c = dict(dict(model=model, created_at='2026-11-04T20:00:00Z', done=False), **c)
+            b = (json.dumps(c, ensure_ascii=False) + '\n').encode('utf-8')
+            self.wfile.write(b'%x\r\n%s\r\n' % (len(b), b))
+            self.wfile.flush()
+        self.wfile.write(b'0\r\n\r\n')
+
+    def _full(self, n):
+        n = str(n or '')
+        names = [m['name'] for m in self.MODELS]
+        return n if n in names else (n + ':latest' if n + ':latest' in names else '')
+
+    def do_GET(self):
+        if self.path == '/api/version':
+            return self._j(200, dict(version='0.12.6'))
+        if self.path == '/api/tags':
+            return self._j(200, dict(models=self.MODELS))
+        if self.path == '/api/ps':
+            return self._j(200, dict(models=[dict(name=n, model=n) for n in OLL['loaded']]))
+        self._j(404, dict(error='404 page not found'))
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
+        if self.path == '/api/show':
+            n = self._full(body.get('model') or body.get('name'))
+            if not n:
+                return self._j(404, dict(error="model '%s' not found" % body.get('model')))
+            return self._j(200, dict(template='{{ .Prompt }}', capabilities=self.CAPS[n], details={},
+                                     model_info={'general.architecture': 'x', 'x.context_length': self.CTX[n]}))
+        if self.path != '/api/chat':
+            return self._j(404, dict(error='404 page not found'))
+        LSEEN.append(body)
+        n = self._full(body.get('model'))
+        if not n:
+            return self._j(404, dict(error='model "%s" not found, try pulling it first' % body.get('model')))
+        if body.get('tools') and 'tools' not in self.CAPS[n]:
+            return self._j(400, dict(error='registry.ollama.ai/library/%s does not support tools' % n))
+        OLL['loaded'].add(n)
+        msgs = body.get('messages') or []
+        users = [m['content'] for m in msgs if m.get('role') == 'user']
+        question = next((u for u in reversed(users) if not u.startswith('(Platform')), '')
+        if body.get('format'):                                   # خطوة التوجيه: JSON مقيّد بالمخطط
+            calls = [dict(name='development_length', args=dict(db=25, fc=28, top=True))] if 'طول' in question else []
+            return self._j(200, dict(model=n, message=dict(role='assistant', content=json.dumps(dict(calls=calls))), done=True,
+                                     done_reason='stop', prompt_eval_count=700, eval_count=30, eval_duration=1500000000))
+        tool_msgs = [m for m in msgs if m.get('role') == 'tool']
+        note = users[-1] if users and users[-1].startswith('(Platform note') else ''
+        if body.get('tools') and not tool_msgs and 'طول' in question:
+            return self._nd(n, [dict(message=dict(role='assistant', content='<thi')),
+                                dict(message=dict(role='assistant', content='nk>planning the call…</think>\n')),
+                                dict(message=dict(role='assistant', content='', tool_calls=[dict(function=dict(
+                                    name='development_length', arguments=dict(db=25, fc=28, top=True)))])),
+                                dict(message=dict(role='assistant', content=''), done=True, done_reason='stop',
+                                     prompt_eval_count=900, eval_count=20, eval_duration=1000000000)])
+        src = tool_msgs[-1]['content'] if tool_msgs else note
+        ld = re.search(r'"ld_mm":\s*([\d.]+)', src)
+        ldh = re.search(r'"ldh_mm":\s*([\d.]+)', src)
+        if ld:
+            txt = '[محاكي Ollama] حسب حاسبة المنصة: ld = %s مم و ldh = %s مم (ACI 318-19 §25.4.2.4).' % (ld.group(1), ldh.group(1) if ldh else '?')
+        else:
+            txt = '[محاكي Ollama] وصلني سؤالك: ' + question[:60]
+        if n == 'qwen2.5:7b':
+            txt = '<think>hidden</think>' + txt
+        parts = [txt[i:i + 9] for i in range(0, len(txt), 9)]
+        self._nd(n, [dict(message=dict(role='assistant', content=p)) for p in parts] +
+                 [dict(message=dict(role='assistant', content=''), done=True, done_reason='stop', prompt_eval_count=1500,
+                       eval_count=80, eval_duration=4000000000)])
+
+
 def _serve(handler):
     s = ThreadingHTTPServer(('127.0.0.1', 0), handler)
     threading.Thread(target=s.serve_forever, daemon=True).start()
     return s
+
+
+def _closed_url():
+    import socket
+    s = socket.socket()
+    s.bind(('127.0.0.1', 0))
+    port = s.getsockname()[1]
+    s.close()
+    return 'http://127.0.0.1:%d' % port
 
 
 class T(unittest.TestCase):
@@ -106,6 +219,10 @@ class T(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix='civil_ai_')
         cls.up = _serve(Upstream)
+        cls.oll = _serve(Ollama)
+        cls.oll_url = 'http://127.0.0.1:%d' % cls.oll.server_address[1]
+        cls.down_url = _closed_url()                 # افتراضياً Ollama «طافي» حتى لو شغّال بحاسبة المطوّر
+        os.environ['CIVIL_OLLAMA'] = cls.down_url
         os.environ['OPENROUTER_BASE'] = 'http://127.0.0.1:%d' % cls.up.server_address[1]
         os.environ['CIVIL_DATA'] = cls.tmp
         import app
@@ -116,7 +233,16 @@ class T(unittest.TestCase):
     def tearDownClass(cls):
         cls.srv.shutdown()
         cls.up.shutdown()
+        cls.oll.shutdown()
         shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    @contextlib.contextmanager
+    def ollama(self):
+        os.environ['CIVIL_OLLAMA'] = self.oll_url
+        try:
+            yield
+        finally:
+            os.environ['CIVIL_OLLAMA'] = self.down_url
 
     def req(self, path, body=None, headers=None, raw=False):
         h = {'Host': 'localhost'}
@@ -288,6 +414,154 @@ class T(unittest.TestCase):
         self.assertEqual(len(T.schema()), len(T.TOOLS))
         for t in T.schema():
             self.assertTrue(t['function']['name'] and t['function']['parameters']['type'] == 'object')
+
+    # ------------------------------------------------------------ النموذج المحلي (Ollama) — احتياط
+    CTX = dict(page=dict(id='rebar', name='حديد التسليح'), project=dict(input=dict(fc=28, fy=420)))
+
+    def test_11_local_config_and_status(self):
+        for bad in ('http://8.8.8.8:11434', 'file:///etc/passwd', 'http://127.0.0.1:11434/api/chat', 'http://u:p@127.0.0.1:11434',
+                    'ftp://127.0.0.1', 'http://example.com:11434', 'http://127.0.0.1:99999'):
+            self.assertEqual(self.req('/api/ai/config', dict(local_url=bad))[0], 400, bad)
+        self.assertEqual(self.req('/api/ai/config', dict(local_url='http://192.168.1.20:11434'))[0], 200)
+        self.assertEqual(self.req('/api/ai/config', dict(local_mode='weird'))[0], 400)
+        c, r = self.req('/api/ai/config', dict(local_url='', local_mode='fallback', local_model='', local_ctx=999999))
+        self.assertEqual(c, 200)
+        self.assertEqual(r['config']['local_ctx'], 32768)
+        self.assertEqual(self.req('/api/ai/local', {}, headers=self.REMOTE)[0], 403)
+        self.assertEqual(self.req('/api/ai/local', dict(url='http://8.8.8.8'))[0], 400)
+        c, st = self.req('/api/ai/local', {})
+        self.assertFalse(st['ok'])
+        self.assertIn('Ollama مو شغّال', st['error'])
+        with self.ollama():
+            c, st = self.req('/api/ai/local', {})
+        self.assertTrue(st['ok'], st)
+        self.assertEqual(st['version'], '0.12.6')
+        rows = {m['name']: m for m in st['models']}
+        self.assertFalse(rows['llama3:latest']['tools'])
+        self.assertTrue(rows['qwen2.5:7b']['tools'])
+        self.assertTrue(rows['nomic-embed-text:latest']['embed'])
+        self.assertEqual(rows['llama3:latest']['ctx'], 8192)
+        self.assertEqual(st['chosen'], 'llama3:latest', 'newest chat model, never the embedding model')
+        c, v = self.req('/api/ai/config', headers=self.REMOTE)
+        self.assertEqual(v['local_url'], '')
+        self.assertEqual(v['local_mode'], 'fallback')
+
+    def test_12_fallback_when_openrouter_fails(self):
+        import engine as E
+        self.req('/api/ai/config', dict(key='sk-or-v1-' + 'c' * 64, local_mode='fallback', local_model='llama3'))
+        del LSEEN[:]
+        with self.ollama():
+            c, ev = self.events(dict(messages=[dict(role='user', content='شكد طول التماسك لشيش 25 علوي؟')], context=self.CTX))
+        self.req('/api/ai/config', dict(key=GOOD))
+        self.assertEqual(c, 200, ev)
+        st = [e['c'] for e in ev if e['t'] == 'status']
+        self.assertTrue(any('حوّلت للنموذج المحلي' in s and 'المفتاح' in s for s in st), st)
+        self.assertFalse([e for e in ev if e['t'] == 'error'], ev)
+        tool = next(e for e in ev if e['t'] == 'tool')
+        self.assertEqual(tool['name'], 'development_length')
+        self.assertAlmostEqual(tool['result']['ld_mm'], round(E.dev_length(25, 28, 420, top=True)), delta=1)
+        text = ''.join(e['c'] for e in ev if e['t'] == 'delta')
+        self.assertIn('ld = %d مم' % round(tool['result']['ld_mm']), text, 'numbers reach the small model as integers')
+        self.assertTrue(any(s.startswith('⚠️ المفتاح غير صحيح أو ملغي — حوّلت') for s in st), st)
+        done = ev[-1]
+        self.assertEqual(done['t'], 'done')
+        self.assertTrue(done['local'])
+        self.assertEqual(done['model'], 'llama3:latest')
+        self.assertEqual(done['usage']['completion_tokens'], 110)
+        self.assertEqual(done['tps'], 20.0)
+        # llama3 ما يدعم الأدوات: ولا طلب فيه tools؛ خطوة توجيه وحدة بمخطط JSON، والجواب فيه نتائج المنصة
+        self.assertTrue(LSEEN and all('tools' not in b for b in LSEEN))
+        plans = [b for b in LSEEN if b.get('format')]
+        self.assertEqual(len(plans), 1)
+        self.assertIn('development_length', plans[0]['format']['properties']['calls']['items']['properties']['name']['enum'])
+        final = LSEEN[-1]
+        self.assertTrue(final['stream'])
+        self.assertEqual(final['options']['num_ctx'], 8192)
+        self.assertTrue(final['messages'][-1]['content'].startswith('(Platform note'))
+        self.assertIn('ACI 318-19', final['messages'][0]['content'])
+        self.assertIn('حديد التسليح', final['messages'][0]['content'])
+        self.assertNotIn('sk-or-', json.dumps(LSEEN))
+
+    def test_13_always_local_native_tools_and_think_stripped(self):
+        self.req('/api/ai/config', dict(key=GOOD, local_mode='always', local_model='qwen2.5:7b'))
+        del LSEEN[:]
+        n_up = len(SEEN)
+        with self.ollama():
+            c, ev = self.events(dict(messages=[dict(role='user', content='احسب طول التماسك لـ Ø25 علوي')], context=self.CTX))
+        self.req('/api/ai/config', dict(local_mode='fallback', local_model=''))
+        self.assertEqual(c, 200, ev)
+        self.assertEqual(len(SEEN), n_up, 'always-local must not call OpenRouter')
+        text = ''.join(e['c'] for e in ev if e['t'] == 'delta')
+        self.assertNotIn('think', text)
+        self.assertNotIn('planning', text)
+        self.assertIn('ld = ', text)
+        self.assertTrue(text.startswith('[محاكي Ollama]'), text[:40])
+        self.assertTrue(LSEEN[0].get('tools'), 'qwen2.5 gets native tools')
+        tmsg = [m for m in LSEEN[-1]['messages'] if m.get('role') == 'tool']
+        self.assertEqual(tmsg[0]['tool_name'], 'development_length')
+        self.assertTrue(ev[-1]['local'])
+
+    def test_14_no_key_uses_local_or_explains(self):
+        self.req('/api/ai/config', dict(key='', local_mode='fallback', local_model=''))
+        q = dict(messages=[dict(role='user', content='اشرح لي الكانات')])
+        with self.ollama():
+            c, ev = self.events(q)
+        self.assertEqual(c, 200, ev)
+        self.assertTrue(any('ما مضاف مفتاح OpenRouter' in e.get('c', '') for e in ev if e['t'] == 'status'))
+        self.assertTrue(ev[-1]['local'])
+        self.assertEqual(ev[-1]['model'], 'llama3:latest')
+        self.assertFalse([b for b in LSEEN[-1:] if b.get('format')], 'no digits/calc words → no router step')
+        c, r = self.events(q)                                  # Ollama طافي ← نفس رسالة «ماكو مفتاح» مع ملاحظة
+        self.assertEqual(c, 403)
+        self.assertEqual(r['need'], 'key')
+        self.assertIn('Ollama', r['error'])
+        self.req('/api/ai/config', dict(local_mode='off'))
+        c, r = self.events(q)
+        self.assertEqual(c, 403)
+        self.assertNotIn('Ollama', r['error'])
+        self.req('/api/ai/config', dict(key=GOOD, local_mode='fallback'))
+
+    def test_15_ollama_down_keeps_openrouter_error(self):
+        self.req('/api/ai/config', dict(key='sk-or-v1-' + 'c' * 64, local_mode='fallback'))
+        c, ev = self.events(dict(messages=[dict(role='user', content='اشرح الكانات')]))
+        self.req('/api/ai/config', dict(key=GOOD))
+        err = next(e for e in ev if e['t'] == 'error')
+        self.assertEqual(err['code'], 401)
+        self.assertIn('المفتاح', err['c'])
+        self.assertIn('الاحتياط المحلي', err['c'])
+
+    def test_16_visitors_and_local(self):
+        self.req('/api/ai/config', dict(key='', allow_public=False, local_mode='fallback'))
+        q = dict(messages=[dict(role='user', content='مرحبا')])
+        remote = dict(self.REMOTE, **{'CF-Connecting-IP': '198.51.100.77'})
+        with self.ollama():
+            c, r = self.events(q, headers=remote)
+            self.assertEqual(c, 403, 'locked platform: visitors never reach the local model')
+            self.req('/api/ai/config', dict(allow_public=True, public_per_hour=5, public_per_day=50))
+            c, ev = self.events(q, headers=remote)
+        self.req('/api/ai/config', dict(key=GOOD, allow_public=False))
+        self.assertEqual(c, 200, ev)
+        self.assertTrue(ev[-1]['local'])
+        self.assertFalse(any('ما مضاف مفتاح' in e.get('c', '') for e in ev), 'visitors are not told about the owner key')
+
+    def test_17_missing_model_and_helpers(self):
+        import ailocal as L
+        self.req('/api/ai/config', dict(key='', local_mode='fallback', local_model='mistral'))
+        with self.ollama():
+            c, ev = self.events(dict(messages=[dict(role='user', content='مرحبا')]))
+        self.req('/api/ai/config', dict(key=GOOD, local_model=''))
+        self.assertTrue(any('«mistral» مو موجود' in e.get('c', '') for e in ev if e['t'] == 'status'), ev)
+        self.assertEqual(ev[-1]['model'], 'llama3:latest')
+        f = L.Think()
+        got = ''.join(f.feed(p) for p in ['أهلاً <th', 'ink>سر', 'ي</thi', 'nk> بيك <', 'b>']) + f.flush()
+        self.assertEqual(got, 'أهلاً  بيك <b>')
+        self.assertTrue(L.valid_url('http://localhost:11434') and L.valid_url('http://[::1]:11434') and L.valid_url('http://10.0.0.5:11434/'))
+        self.assertFalse(L.valid_url('http://1.1.1.1:11434') or L.valid_url('http://ollama.example.com'))
+        self.assertTrue(L.needs_calc('شكد الغطاء؟') and L.needs_calc('Ø25') and not L.needs_calc('اشرح الكانات'))
+        h = L.history([dict(role='user', content='س' * 5000), dict(role='assistant', content='ج' * 5000), dict(role='user', content='آخر')])
+        self.assertEqual(h[-1]['content'], 'آخر')
+        self.assertEqual(h[0]['role'], 'user')
+        self.assertLessEqual(sum(len(m['content']) for m in h), 3600 + 1500)
 
 
 if __name__ == '__main__':

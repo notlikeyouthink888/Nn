@@ -1,11 +1,14 @@
 # تشغيل المنصة على حاسبة ويندوز (10 أو 11)
 
-## أول مرة — أمر واحد بالـ cmd
-افتح **موجّه الأوامر (cmd)** والصق:
+## أول مرة — أمر واحد
+افتح **موجّه الأوامر (cmd)** أو **PowerShell** والصق (يشتغل بالاثنين):
 
 ```bat
-curl -fsSLo "%TEMP%\civil5819.bat" https://raw.githubusercontent.com/notlikeyouthink888/Nn/claude/civil-engineering-site-g9u9al/civil/windows/install_windows.bat && "%TEMP%\civil5819.bat"
+cmd /c "cd /d %TEMP% && curl --ssl-revoke-best-effort -fsSLo civil5819.bat https://raw.githubusercontent.com/notlikeyouthink888/Nn/claude/civil-engineering-site-g9u9al/civil/windows/install_windows.bat && civil5819.bat"
 ```
+
+- `--ssl-revoke-best-effort` يمنع خطأ `CRYPT_E_REVOCATION_OFFLINE` اللي يطلع ببعض الشبكات. على ويندوز 10 قديم ما يعرف هذا الخيار، احذفه من الأمر.
+- إذا الخط وقف تماماً أثناء التحميل، السكربت يعيد المحاولة بروحه بدل ما يبقى معلّق.
 
 الأمر:
 - ينزّل آخر نسخة إلى `%USERPROFILE%\civil5819\app`.
@@ -30,6 +33,8 @@ curl -fsSLo "%TEMP%\civil5819.bat" https://raw.githubusercontent.com/notlikeyout
 الخيار `1` يعطي رابطاً مؤقتاً فورياً (`trycloudflare.com`) بلا حساب، للتجربة.
 
 > الحاسبة لازم تبقى شغّالة ومتصلة حتى يفتح الموقع من برّه.
+
+أول تشغيل ينزّل أداة النفق `cloudflared` (حوالي 53 ميغا، مرة وحدة). إذا انقطع الخط يكمل من مكان ما وقف، وإذا سدّيت النافذة يكمل بالمرة الجاية.
 
 ## المساعد الذكي بدون نت (Ollama)
 إذا Ollama منصّب بالحاسبة وعندك نموذج (مثل `ollama run llama3`)، المساعد يستعمله **احتياطاً** تلقائياً: إذا OpenRouter فشل (ماكو نت، الرصيد خلص، ضغط) أو ماكو مفتاح، يجاوبك النموذج المحلي.

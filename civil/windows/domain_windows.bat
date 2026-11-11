@@ -16,12 +16,29 @@ set "NAME=civil5819"
 set "BIN=%USERPROFILE%\civil5819\bin"
 set "CF=%BIN%\cloudflared.exe"
 set "CFD=%USERPROFILE%\.cloudflared"
+set "CF_URL=https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
 if not exist "%BIN%" mkdir "%BIN%"
-if exist "%CF%" goto :cfok
-echo  تحميل cloudflared (أداة النفق الرسمية من Cloudflare) ...
-curl -fL --retry 3 -o "%CF%" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+call :cftest
+if not errorlevel 1 goto :cfok
+rem ملف موجود بس ما يشتغل = تحميل قديم انقطع بالنص ← نكمله بدل ما نبدي من الصفر
+if exist "%CF%" if not exist "%CF%.part" move /y "%CF%" "%CF%.part" >nul
+if exist "%CF%" del /q "%CF%" >nul 2>&1
+call :curlflags
+echo  تحميل cloudflared (أداة النفق الرسمية من Cloudflare — حوالي 53 ميغا، مرة وحدة) ...
+echo  إذا انقطع الخط يكمل من مكان ما وقف، وإذا سدّيت النافذة يكمل بالمرة الجاية.
+set /a CF_ROUND=0
+:cfget
+set /a CF_ROUND+=1
+call :fetch "%CF_URL%" "%CF%.part" 8
 if errorlevel 1 goto :nonet
+move /y "%CF%.part" "%CF%" >nul
+call :cftest
+if not errorlevel 1 goto :cfok
+rem اكتمل بس ما يشتغل (نسخة تغيّرت بالنص) ← مرة ثانية من الصفر
+del /q "%CF%" >nul 2>&1
+if %CF_ROUND% lss 2 goto :cfget
+goto :nonet
 :cfok
 
 rem السيرفر لازم يشتغل أولاً — إذا مو شغّال نفتحه بنافذة ثانية
@@ -112,7 +129,7 @@ echo      وسيرفرات الأسماء Nameservers عند شركة الدوم
 echo      بعدها احذف الملف %CFD%\cert.pem وأعد هذا الأمر واختار الدومين الصحيح.
 goto :fail
 :nonet
-echo  [x] فشل التحميل — تأكد من الإنترنت.
+echo  [x] ما كمل تحميل cloudflared — تأكد من الإنترنت وشغّل هذا الاختصار مرة ثانية (يكمل من مكان ما وقف).
 goto :fail
 :nopy
 echo  [x] بايثون غير موجود — شغّل install_windows.bat أولاً.
@@ -121,6 +138,54 @@ goto :fail
 echo.
 pause
 exit /b 1
+
+:cftest
+rem cloudflared سليم إذا جاوب على --version؛ الملف الناقص أو التالف يفشل
+if not exist "%CF%" exit /b 1
+"%CF%" --version >nul 2>&1
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:curlflags
+rem ويندوز يتأكد من إلغاء الشهادة بسيرفر خارجي. إذا الشبكة ما توصله يفشل curl بخطأ CRYPT_E_REVOCATION_OFFLINE،
+rem فنخليه يتجاوز هذا الفحص فقط لما سيرفره ما يرد (الشهادة نفسها تبقى تُفحص).
+set "CURLREV="
+curl --ssl-revoke-best-effort -V >nul 2>&1
+if not errorlevel 1 set "CURLREV=--ssl-revoke-best-effort"
+if defined CURLREV exit /b 0
+curl --ssl-no-revoke -V >nul 2>&1
+if not errorlevel 1 set "CURLREV=--ssl-no-revoke"
+exit /b 0
+
+:fetch
+rem %1 الرابط · %2 الملف · %3 كم محاولة متتالية بلا أي تقدّم قبل الاستسلام
+rem يكمل الملف المقطوع (-C -)، ويعيد إذا السرعة نزلت تحت 500 بايت/ثانية لمدة دقيقة.
+set "F_URL=%~1"
+set "F_OUT=%~2"
+set /a F_MAX=%~3
+set /a F_TRY=0
+set /a F_BAD=0
+:fetch_loop
+set /a F_TRY+=1
+if %F_TRY% gtr %F_MAX% exit /b 1
+set "F_S0=0"
+if exist "%F_OUT%" for %%Z in ("%F_OUT%") do set "F_S0=%%~zZ"
+if %F_TRY% gtr 1 echo  ... الخط انقطع — أكمل من مكان ما وقف
+curl %CURLREV% -fL -C - --connect-timeout 30 -y 60 -Y 500 -o "%F_OUT%" "%F_URL%"
+set "F_RC=%errorlevel%"
+if "%F_RC%"=="0" exit /b 0
+rem 33 السيرفر ما يدعم الإكمال · 22 رد خطأ (416 ملف مكتمل أو تغيّر، 404 غير موجود) ← من الصفر، ولحد 3 مرات
+if "%F_RC%"=="33" set /a F_BAD+=1
+if "%F_RC%"=="22" set /a F_BAD+=1
+if "%F_RC%"=="33" del /q "%F_OUT%" >nul 2>&1
+if "%F_RC%"=="22" del /q "%F_OUT%" >nul 2>&1
+if %F_BAD% geq 3 exit /b 1
+set "F_S1=0"
+if exist "%F_OUT%" for %%Z in ("%F_OUT%") do set "F_S1=%%~zZ"
+rem نزل شي جديد بهذي المحاولة ← العدّاد يرجع صفر (المهم ما نبقى ندور بلا تقدّم)
+if %F_S1% gtr %F_S0% set /a F_TRY=0
+ping -n 4 127.0.0.1 >nul
+goto :fetch_loop
 
 :findpy
 rem يدوّر على بايثون 3.9+ : py ثم python ثم مجلدات التنصيب — ويعتمد على جواب بايثون نفسه (True)

@@ -23,7 +23,8 @@ where tar >nul 2>&1 || goto :nocurl
 if exist "%TMPD%" rmdir /s /q "%TMPD%"
 mkdir "%TMPD%"
 echo  [1/4] تحميل آخر نسخة من GitHub ...
-curl -fL --retry 3 -o "%TMPD%\src.zip" "https://github.com/%REPO%/archive/refs/heads/%BR%.zip"
+call :curlflags
+curl %CURLREV% -fL --retry 5 --retry-delay 3 --connect-timeout 30 -y 90 -Y 1 -o "%TMPD%\src.zip" "https://github.com/%REPO%/archive/refs/heads/%BR%.zip"
 if errorlevel 1 goto :nonet
 
 echo  [2/4] فك الضغط ونسخ الملفات ...
@@ -76,6 +77,17 @@ echo.
 echo  [x] ما كمل التثبيت.
 pause
 exit /b 1
+
+:curlflags
+rem ويندوز يتأكد من إلغاء الشهادة بسيرفر خارجي. إذا الشبكة ما توصله يفشل curl بخطأ CRYPT_E_REVOCATION_OFFLINE،
+rem فنخليه يتجاوز هذا الفحص فقط لما سيرفره ما يرد (الشهادة نفسها تبقى تُفحص).
+set "CURLREV="
+curl --ssl-revoke-best-effort -V >nul 2>&1
+if not errorlevel 1 set "CURLREV=--ssl-revoke-best-effort"
+if defined CURLREV exit /b 0
+curl --ssl-no-revoke -V >nul 2>&1
+if not errorlevel 1 set "CURLREV=--ssl-no-revoke"
+exit /b 0
 
 :findpy
 rem يدوّر على بايثون 3.9+ : py ثم python ثم مجلدات التنصيب — ويعتمد على جواب بايثون نفسه (True)

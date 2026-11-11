@@ -46,9 +46,10 @@ class T(unittest.TestCase):
         names = z.namelist()
         self.assertIsNone(z.testzip())
         self.assertTrue(all(n.startswith('civil/') for n in names))
-        for must in ('civil/app.py', 'civil/ai.py', 'civil/ailocal.py', 'civil/static/index.html', 'civil/static/vendor/libredwg/wasm/libredwg-web.js',
+        for must in ('civil/app.py', 'civil/ai.py', 'civil/static/index.html', 'civil/static/vendor/libredwg/wasm/libredwg-web.js',
                      'civil/windows/start_windows.bat', 'civil/windows/domain_windows.bat', 'civil/windows/install_windows.bat', 'civil/windows/util.py'):
             self.assertIn(must, names)
+        self.assertNotIn('civil/ailocal.py', names)
         for n in names:
             low = n.lower()
             self.assertFalse(low.endswith(('.dwg', '.dxf', '.sh', '.gz', '.zip', '.pyc')), n)

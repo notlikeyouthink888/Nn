@@ -1,18 +1,19 @@
-"""المساعد الذكي — نماذج OpenRouter داخل المنصة، مخصّص للمشروع وللكود.
+"""المساعد الذكي — نماذج عبر مزوّدين متوافقين مع OpenAI (OpenRouter، DeepSeek، Groq، Gemini، أو أي مزوّد آخر).
 
-· المفتاح يُحفظ على الخادم (حاسبتك) بـ data/ai.json ولا يرجع للمتصفح أبداً (يظهر مخفياً).
-· إدارة الإعدادات لصاحب الحاسبة فقط: من المتصفح على نفس الحاسبة (localhost بلا رؤوس
-  وسيط)، أو من مكان ثاني بكلمة سر المشرف (تُخزَّن مُجزّأة PBKDF2، لا نصاً).
-· الزوار عبر الدومين ما يستعملون مفتاحك إلا إذا سمحت، وبحد ساعي ويومي؛ أو بمفتاحهم الشخصي
-  (يجي برأس الطلب لكل سؤال ولا يُحفظ ولا يُسجَّل).
+· المفاتيح يضيفها صاحب المنصة فقط، وتُحفظ على حاسبته بـ data/ai.json ولا ترجع للمتصفح أبداً (تظهر مخفية).
+  الزائر ما يشوف مفاتيح ولا إعدادات: يسأل مباشرة.
+· أكثر من مزوّد بالترتيب: إذا الأول فشل قبل ما يطلع أي نص (ماكو رصيد، ضغط، مفتاح ملغي) ينتقل للي بعده.
+· إدارة الإعدادات لصاحب الحاسبة فقط: من المتصفح على نفس الحاسبة (localhost بلا رؤوس وسيط)،
+  أو من مكان ثاني بكلمة سر المشرف (تُخزَّن مُجزّأة PBKDF2، لا نصاً).
+· الاستخدام يُسجَّل لكل زائر (جهازه وعنوانه، عدد أسئلته اليوم والكلي، الرموز) بـ data/ai_usage.json — بلا نص الأسئلة.
+  صاحب المنصة يشوف من يستخدم أكثر، ويوقف أي زائر (جهازه وعنوانه)، ويحدد حداً يومياً لكل زائر وحداً كلياً.
 · كل سؤال: بحث بمراجع المنصة (aikb) + سياق المشروع من المتصفح + أدوات الحساب (aitools)
   فالأرقام من محرّك المنصة نفسه، والجواب يتدفّق (SSE) للمتصفح كلمة بكلمة.
 · حماية من الطلبات العابرة للمواقع: نفس الأصل (Origin/Sec-Fetch-Site) و JSON فقط.
-· احتياط محلي (ailocal.py): إذا OpenRouter فشل قبل أي نص، أو ماكو مفتاح، يجاوب نموذج Ollama
-  المنزّل على الحاسبة (مثل llama3) بدون إنترنت — والأرقام تبقى من حاسبات المنصة.
 """
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -25,19 +26,31 @@ import urllib.parse
 import urllib.request
 
 import aikb
-import ailocal
 import aitools
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_BASE = 'https://openrouter.ai/api/v1'
 APP_TITLE = 'Civil Engineering Platform 5819'
-KEY_RX = re.compile(r'^[A-Za-z0-9._\-]{20,220}$')
+KEY_RX = re.compile(r'^[A-Za-z0-9._\-]{16,300}$')
 MODEL_RX = re.compile(r'^[\w.\-/:@~]{2,120}$')
-DEFAULTS = dict(key='', model='openrouter/auto', allow_public=False, public_per_hour=20, public_per_day=200,
+VID_RX = re.compile(r'^[A-Za-z0-9]{12,24}$')                 # معرّف المتصفح (عشوائي، يولّده المتصفح)
+ROW_RX = re.compile(r'^(v:[A-Za-z0-9]{12,24}|[0-9A-Fa-f:.]{3,64})$')
+MAX_PROVIDERS = 6
+# المزوّدون المعروفون — كلهم بواجهة OpenAI نفسها (/chat/completions و /models). أسماء النماذج الافتراضية
+# تتغيّر مع الوقت؛ صاحب المنصة يختار من قائمة المزوّد أو يكتب المعرّف.
+PRESETS = {
+    'openrouter': dict(name='OpenRouter', base='https://openrouter.ai/api/v1', model='openrouter/auto', keys='https://openrouter.ai/keys',
+                       note='نماذج كثيرة بمفتاح واحد، وبيها مجانية تنتهي بـ :free'),
+    'deepseek': dict(name='DeepSeek', base='https://api.deepseek.com', model='deepseek-chat', keys='https://platform.deepseek.com/api_keys',
+                     note='رخيص ويدعم الأدوات'),
+    'groq': dict(name='Groq', base='https://api.groq.com/openai/v1', model='llama-3.3-70b-versatile', keys='https://console.groq.com/keys',
+                 note='سريع، وبيه حصة مجانية يومية'),
+    'gemini': dict(name='Google Gemini', base='https://generativelanguage.googleapis.com/v1beta/openai', model='gemini-2.5-flash',
+                   keys='https://aistudio.google.com/apikey', note='بيه حصة مجانية يومية'),
+    'custom': dict(name='مزوّد آخر', base='', model='', keys='', note='أي خدمة متوافقة مع OpenAI: اكتب رابطها https واسم النموذج'),
+}
+DEFAULTS = dict(providers=[], allow_public=True, public_per_hour=20, public_per_day=300, user_per_day=40, blocked=[],
                 admin_hash='', admin_salt='', style='iq', max_tokens=1800, temperature=0.2, site_url='',
-                send_context=True, updated='',
-                # النموذج المحلي (Ollama) — احتياط بدون إنترنت، انظر ailocal.py
-                local_mode='fallback', local_url='', local_model='', local_ctx=8192)
+                send_context=True, updated='')
 STYLES = {'iq': 'جاوب باللهجة العراقية المفهومة والمهذبة (مثل: شلون، هسه، اكو، ماكو)، والمصطلحات والرموز الهندسية بالإنكليزي كما هي.',
           'msa': 'جاوب بالعربية الفصحى المبسّطة، والمصطلحات والرموز الهندسية بالإنكليزي كما هي.',
           'en': 'Answer in clear English. Keep Arabic only for names that appear in the platform.'}
@@ -47,8 +60,34 @@ def data_dir():
     return os.environ.get('CIVIL_DATA') or os.path.join(HERE, 'data')
 
 
-def base():
-    return (os.environ.get('OPENROUTER_BASE') or DEFAULT_BASE).rstrip('/')
+def prov_base(p):
+    if p.get('kind') == 'openrouter':
+        return (os.environ.get('OPENROUTER_BASE') or PRESETS['openrouter']['base']).rstrip('/')
+    if p.get('kind') in PRESETS and p['kind'] != 'custom':
+        return PRESETS[p['kind']]['base']
+    return str(p.get('base') or '').rstrip('/')
+
+
+def valid_base(u):
+    """رابط مزوّد مخصّص: https فقط ومضيف عام (لا localhost ولا عناوين داخلية) — حتى ما يصير الخادم وسيطاً للشبكة المحلية."""
+    try:
+        p = urllib.parse.urlparse(str(u or ''))
+        p.port
+    except ValueError:
+        return False
+    test = os.environ.get('CIVIL_AI_ALLOW_HTTP') == '1'            # للاختبارات فقط
+    if p.scheme != 'https' and not (test and p.scheme == 'http'):
+        return False
+    if not p.hostname or p.username or p.password or p.query or p.fragment or not re.match(r'^[\w./\-]*$', p.path or ''):
+        return False
+    h = p.hostname.lower()
+    if test:
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+        return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast)
+    except ValueError:
+        return '.' in h and h != 'localhost' and not h.endswith(('.local', '.internal', '.lan'))
 
 
 # ------------------------------------------------------------------ الإعدادات
@@ -59,13 +98,31 @@ def _cfg_file():
     return os.path.join(data_dir(), 'ai.json')
 
 
+def _clean_prov(p):
+    kind = p.get('kind') if p.get('kind') in PRESETS else 'custom'
+    pre = PRESETS[kind]
+    return dict(id=str(p.get('id') or kind)[:24], kind=kind, name=str(p.get('name') or pre['name'])[:40],
+                base=str(p.get('base') or '') if kind == 'custom' else '', key=str(p.get('key') or ''),
+                model=str(p.get('model') or pre['model']), on=bool(p.get('on', True)))
+
+
 def load():
     cfg = dict(DEFAULTS)
+    raw = {}
     try:
         with open(_cfg_file(), encoding='utf-8') as f:
-            cfg.update(json.load(f))
+            raw = json.load(f)
     except (OSError, ValueError):
         pass
+    if isinstance(raw, dict):
+        cfg.update({k: v for k, v in raw.items() if k in DEFAULTS})
+    provs = [_clean_prov(p) for p in cfg.get('providers') or [] if isinstance(p, dict)][:MAX_PROVIDERS]
+    if not provs and isinstance(raw, dict) and raw.get('key'):          # إعداد قديم: مفتاح OpenRouter واحد
+        provs = [_clean_prov(dict(id='openrouter', kind='openrouter', key=raw['key'], model=raw.get('model') or 'openrouter/auto'))]
+    if isinstance(raw, dict) and raw and 'providers' not in raw:        # ملف من النسخة القديمة: الزوار صاروا يسألون مباشرة
+        cfg['allow_public'] = True
+    cfg['providers'] = provs
+    cfg['blocked'] = [x for x in cfg.get('blocked') or [] if isinstance(x, str) and ROW_RX.match(x)][:1000]
     return cfg
 
 
@@ -87,20 +144,23 @@ def hint(key):
     return (key[:6] + '…' + key[-4:]) if key and len(key) > 12 else ('••••' if key else '')
 
 
+def chain(cfg):
+    """المزوّدون الجاهزون بالترتيب: مفعّل + عنده مفتاح + رابط صالح."""
+    return [p for p in cfg['providers'] if p.get('on') and p.get('key') and prov_base(p)]
+
+
 def view(cfg, admin, local):
-    return dict(has_key=bool(cfg.get('key')), key_hint=hint(cfg.get('key')) if admin else '', model=cfg.get('model'),
-                allow_public=bool(cfg.get('allow_public')), public_per_hour=cfg.get('public_per_hour'),
-                public_per_day=cfg.get('public_per_day'), has_admin_pass=bool(cfg.get('admin_hash')),
-                is_admin=bool(admin), is_local=bool(local), style=cfg.get('style'), max_tokens=cfg.get('max_tokens'),
-                temperature=cfg.get('temperature'), send_context=bool(cfg.get('send_context', True)),
-                custom_base=base() != DEFAULT_BASE, updated=cfg.get('updated'), tools=len(aitools.TOOLS),
-                kb=aikb.stats(), local_mode=_lmode(cfg), local_model=cfg.get('local_model') or '',
-                local_url=(cfg.get('local_url') or '') if admin else '', local_default=ailocal.DEFAULT_URL,
-                local_ctx=cfg.get('local_ctx') if admin else None)
-
-
-def _lmode(cfg):
-    return cfg.get('local_mode') if cfg.get('local_mode') in ailocal.MODES else 'fallback'
+    v = dict(is_admin=bool(admin), is_local=bool(local), ready=bool(chain(cfg)), allow_public=bool(cfg.get('allow_public')),
+             has_admin_pass=bool(cfg.get('admin_hash')), style=cfg.get('style'), tools=len(aitools.TOOLS), kb=aikb.stats())
+    if admin:                                                    # تفاصيل المزوّدين والحدود لصاحب المنصة فقط
+        v.update(providers=[dict(id=p['id'], kind=p['kind'], name=p['name'], base=prov_base(p), model=p['model'], on=p['on'],
+                                 has_key=bool(p['key']), key_hint=hint(p['key'])) for p in cfg['providers']],
+                 presets=[dict(kind=k, name=x['name'], model=x['model'], keys=x['keys'], note=x['note']) for k, x in PRESETS.items()],
+                 public_per_hour=cfg.get('public_per_hour'), public_per_day=cfg.get('public_per_day'), user_per_day=cfg.get('user_per_day'),
+                 max_tokens=cfg.get('max_tokens'), temperature=cfg.get('temperature'),
+                 send_context=bool(cfg.get('send_context', True)), updated=cfg.get('updated'),
+                 custom_base=bool(os.environ.get('OPENROUTER_BASE')))
+    return v
 
 
 # ------------------------------------------------------------------ الهوية والصلاحيات
@@ -127,6 +187,13 @@ def client_ip(h):
         if v.strip():
             return v.strip()[:64]
     return ip
+
+
+def visitor(h):
+    """(مفتاح السجل، العنوان): الجهاز إذا المتصفح أرسل معرّفه، وإلا عنوانه."""
+    ip = client_ip(h)
+    vid = (h.headers.get('X-Visitor') or '').strip()
+    return ('v:' + vid if VID_RX.match(vid) else ip), ip
 
 
 def _pw_hash(pw, salt):
@@ -170,7 +237,7 @@ def same_origin(h):
     return True
 
 
-# ------------------------------------------------------------------ حدود الاستعمال
+# ------------------------------------------------------------------ حدود الاستعمال (بالذاكرة)
 _HITS = {}
 _HITS_LOCK = threading.Lock()
 
@@ -192,12 +259,146 @@ def _allow(bucket, limit, window):
 _SEM = threading.BoundedSemaphore(4)
 
 
-# ------------------------------------------------------------------ الاتصال بـ OpenRouter
+# ------------------------------------------------------------------ سجل الاستخدام (على القرص)
+_USE_LOCK = threading.Lock()
+_USE = dict(path='', users=None)
+
+
+def _use_file():
+    return os.path.join(data_dir(), 'ai_usage.json')
+
+
+def _use_users():
+    fn = _use_file()
+    if _USE['users'] is None or _USE['path'] != fn:
+        try:
+            with open(fn, encoding='utf-8') as f:
+                d = json.load(f)
+            users = d.get('users') if isinstance(d, dict) and isinstance(d.get('users'), dict) else {}
+            users = {k: v for k, v in users.items() if isinstance(v, dict) and ROW_RX.match(str(k))}
+        except (OSError, ValueError):
+            users = {}
+        _USE.update(path=fn, users=users)
+    return _USE['users']
+
+
+def _use_save():
+    users = _USE['users'] or {}
+    cut = time.strftime('%Y-%m-%d', time.localtime(time.time() - 45 * 86400))
+    for u in users.values():                                      # أيام أقدم من 45 يوماً تنحذف
+        u['days'] = {d: n for d, n in (u.get('days') or {}).items() if d >= cut}
+    if len(users) > 600:                                          # أقدم الزوار نشاطاً يطلعون
+        for ip in sorted(users, key=lambda k: users[k].get('last', 0))[:len(users) - 500]:
+            users.pop(ip, None)
+    try:
+        os.makedirs(data_dir(), exist_ok=True)
+        tmp = _use_file() + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(dict(users=users), f, ensure_ascii=False)
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, _use_file())
+    except OSError:
+        pass
+
+
+def _today():
+    return time.strftime('%Y-%m-%d')
+
+
+def use_today(key):
+    with _USE_LOCK:
+        return int(((_use_users().get(key) or {}).get('days') or {}).get(_today(), 0))
+
+
+def use_hit(key, ip, who, ua=''):
+    """يسجّل سؤالاً لهذا الزائر (بلا نص السؤال)."""
+    with _USE_LOCK:
+        u = _use_users().setdefault(key, dict(first=time.time(), n=0, days={}, tok=0, cost=0.0, ips=[]))
+        u['n'] = int(u.get('n', 0)) + 1
+        u.setdefault('days', {})[_today()] = int(u['days'].get(_today(), 0)) + 1
+        u.update(last=time.time(), who=who, ua=str(ua)[:160], ip=ip)
+        if ip not in u.get('ips', []):
+            u['ips'] = (u.get('ips', []) + [ip])[-6:]
+        _use_save()
+
+
+def use_done(key, usage):
+    with _USE_LOCK:
+        u = _use_users().get(key)
+        if not u or not isinstance(usage, dict):
+            return
+        u['tok'] = int(u.get('tok', 0) + (_num(usage.get('total_tokens')) or 0))
+        u['cost'] = round(float(u.get('cost', 0)) + (_num(usage.get('cost')) or 0), 6)
+        _use_save()
+
+
+def _device(ua):
+    ua = ua or ''
+    for k, n in (('iPhone', 'آيفون'), ('iPad', 'آيباد'), ('Android', 'أندرويد'), ('Windows', 'ويندوز'), ('Mac OS', 'ماك'), ('Linux', 'لينكس')):
+        if k in ua:
+            br = next((b for b in ('Edg', 'OPR', 'Firefox', 'Chrome', 'Safari') if b in ua), '')
+            return n + ((' · ' + {'Edg': 'Edge', 'OPR': 'Opera'}.get(br, br)) if br else '')
+    return 'غير معروف'
+
+
+def _tag(key):
+    """اسم قصير ثابت للزائر، مثل «زائر ‎#4F2A» — حتى صاحب المنصة يميّزه بين الأيام."""
+    return hashlib.sha256(key.encode('utf-8')).hexdigest()[:4].upper()
+
+
+def is_blocked(cfg, key, ip):
+    b = cfg.get('blocked') or []
+    return key in b or ip in b
+
+
+def use_view(cfg):
+    today = _today()
+    week = time.strftime('%Y-%m-%d', time.localtime(time.time() - 6 * 86400))
+    blocked = set(cfg.get('blocked') or [])
+    with _USE_LOCK:
+        users = json.loads(json.dumps(_use_users()))
+    rows = []
+    for key, u in users.items():
+        days = u.get('days') or {}
+        rows.append(dict(key=key, tag=_tag(key), who=u.get('who', 'public'), ip=u.get('ip') or (key if not key.startswith('v:') else ''),
+                         today=int(days.get(today, 0)), week=sum(n for d, n in days.items() if d >= week), total=int(u.get('n', 0)),
+                         tokens=int(u.get('tok', 0)), cost=round(float(u.get('cost', 0)), 4), last=u.get('last'), first=u.get('first'),
+                         device=_device(u.get('ua')), blocked=key in blocked or (u.get('ip') in blocked)))
+    seen = set(users) | {u.get('ip') for u in users.values()}
+    for key in blocked - seen:                                   # موقوف وما عنده سجل (انمسح السجل)
+        rows.append(dict(key=key, tag=_tag(key), who='public', ip='' if key.startswith('v:') else key, today=0, week=0, total=0, tokens=0,
+                         cost=0, last=None, first=None, device='', blocked=True))
+    rows.sort(key=lambda r: (-r['today'], -r['week'], -r['total'], -(r['last'] or 0)))
+    pub = [r for r in rows if r['who'] != 'owner']
+    return dict(users=rows[:300], today_public=sum(r['today'] for r in pub), today_all=sum(r['today'] for r in rows),
+                visitors_today=sum(1 for r in pub if r['today']), visitors=len(pub), total=sum(r['total'] for r in rows),
+                blocked=sum(1 for r in rows if r['blocked']), tokens=sum(r['tokens'] for r in rows), cost=round(sum(r['cost'] for r in rows), 4),
+                limits=dict(user_per_day=cfg.get('user_per_day'), public_per_day=cfg.get('public_per_day'), public_per_hour=cfg.get('public_per_hour')))
+
+
+def use_block(cfg, key, on):
+    """يوقف زائراً: جهازه وعنوانه الحالي (حتى ما يرجع من متصفح ثاني). التشغيل يرجّع الاثنين."""
+    with _USE_LOCK:
+        u = dict(_use_users().get(key) or {})
+    ips = [x for x in ([u.get('ip')] + list(u.get('ips') or [])) if x and x not in _LOOP]
+    gone = {key} | set(ips)
+    b = [x for x in cfg.get('blocked') or [] if x not in gone]
+    if on:
+        b.append(key)
+        if u.get('ip') and u['ip'] not in _LOOP and u['ip'] != key:
+            b.append(u['ip'])
+    cfg['blocked'] = b[-1000:]
+
+
+# ------------------------------------------------------------------ الاتصال بالمزوّد
 def _ctx():
     return ssl.create_default_context()
 
 
-def _req(path, key=None, body=None, timeout=30, referer=''):
+def _req(base, path, key=None, body=None, timeout=30, referer=''):
     headers = {'Accept': 'application/json', 'X-Title': APP_TITLE, 'HTTP-Referer': referer or 'http://localhost:5819'}
     data = None
     if body is not None:
@@ -205,16 +406,16 @@ def _req(path, key=None, body=None, timeout=30, referer=''):
         data = json.dumps(body, ensure_ascii=False).encode('utf-8')
     if key:
         headers['Authorization'] = 'Bearer ' + key
-    req = urllib.request.Request(base() + path, data=data, headers=headers, method='POST' if data is not None else 'GET')
+    req = urllib.request.Request(base + path, data=data, headers=headers, method='POST' if data is not None else 'GET')
     return urllib.request.urlopen(req, timeout=timeout, context=_ctx())
 
 
-def _get_json(path, key=None, timeout=25):
-    with _req(path, key, timeout=timeout) as r:
+def _get_json(base, path, key=None, timeout=25):
+    with _req(base, path, key, timeout=timeout) as r:
         return json.loads(r.read().decode('utf-8'))
 
 
-def err_text(code, raw=''):
+def err_text(code, raw='', name='المزوّد'):
     msg = ''
     try:
         j = json.loads(raw) if isinstance(raw, str) and raw else (raw or {})
@@ -222,29 +423,29 @@ def err_text(code, raw=''):
         msg = (e.get('message') if isinstance(e, dict) else str(e or '')) or ''
     except (ValueError, AttributeError):
         msg = str(raw)[:200]
-    m = {401: 'المفتاح غير صحيح أو ملغي — راجعه بالإعدادات.',
-         402: 'الرصيد بحساب OpenRouter ما يكفي — اشحن الرصيد أو اختار نموذجاً مجانياً (ينتهي بـ :free).',
-         403: 'OpenRouter رفض الطلب' + ((' — ' + msg) if msg else '.'),
-         404: 'النموذج المختار غير متوفر — اختار نموذجاً آخر من الإعدادات.',
+    m = {401: 'المفتاح غير صحيح أو ملغي (%s) — راجعه بالإعدادات.' % name,
+         402: 'الرصيد بحساب %s ما يكفي — اشحن الرصيد أو اختار نموذجاً مجانياً.' % name,
+         403: '%s رفض الطلب' % name + ((' — ' + msg) if msg else '.'),
+         404: 'النموذج المختار غير متوفر عند %s — اختار نموذجاً آخر من الإعدادات.' % name,
          408: 'انتهت مهلة النموذج — جرّب مرة ثانية أو نموذجاً أسرع.',
-         429: 'تجاوزت حد الطلبات لهذا النموذج — انتظر دقيقة أو بدّل النموذج.'}.get(code)
+         429: 'تجاوزت حد الطلبات عند %s — انتظر دقيقة أو بدّل النموذج.' % name}.get(code)
     if not m:
         if code and code >= 500:
-            m = 'مزوّد النموذج متعطّل حالياً (%s) — جرّب بعد شوي أو بدّل النموذج.' % code
+            m = '%s متعطّل حالياً (%s) — جرّب بعد شوي.' % (name, code)
         else:
-            m = 'خطأ من OpenRouter%s%s' % ((' (%s)' % code) if code else '', (': ' + msg) if msg else '')
+            m = 'خطأ من %s%s%s' % (name, (' (%s)' % code) if code else '', (': ' + msg) if msg else '')
     return m, msg
 
 
-def _net_text(e):
+def _net_text(e, name='المزوّد'):
     s = str(getattr(e, 'reason', e))
     if isinstance(getattr(e, 'reason', None), ssl.SSLError) or 'CERTIFICATE' in s.upper():
-        return 'مشكلة بشهادة الأمان (SSL) بالاتصال بـ OpenRouter — حدّث ويندوز/بايثون أو تأكد من ساعة الحاسبة.'
-    return 'ما قدرت أوصل لـ OpenRouter — تأكد من الإنترنت بالحاسبة اللي تشغّل المنصة. (%s)' % s[:120]
+        return 'مشكلة بشهادة الأمان (SSL) بالاتصال بـ %s — حدّث ويندوز/بايثون أو تأكد من ساعة الحاسبة.' % name
+    return 'ما قدرت أوصل لـ %s — تأكد من الإنترنت بالحاسبة اللي تشغّل المنصة. (%s)' % (name, s[:120])
 
 
-# ------------------------------------------------------------------ قائمة النماذج
-_MC = dict(t=0.0, rows=None, err='')
+# ------------------------------------------------------------------ قوائم النماذج
+_MC = {}                                             # معرّف المزوّد ← dict(t, rows)
 
 
 def _num(v):
@@ -257,72 +458,70 @@ def _num(v):
 def _trim(m):
     pr = m.get('pricing') or {}
     pin, pout = _num(pr.get('prompt')), _num(pr.get('completion'))
-    sp = m.get('supported_parameters') or []
+    sp = m.get('supported_parameters')
     mid = str(m.get('id') or '')
     return dict(id=mid, name=str(m.get('name') or mid)[:90], ctx=m.get('context_length'),
                 pin=None if pin is None else round(pin * 1e6, 4), pout=None if pout is None else round(pout * 1e6, 4),
-                tools='tools' in sp, free=mid.endswith(':free') or (pin == 0 and pout == 0),
+                tools=('tools' in sp) if isinstance(sp, list) else None, free=mid.endswith(':free') or (pin == 0 and pout == 0),
                 created=m.get('created'), vendor=mid.split('/')[0] if '/' in mid else '')
 
 
-def models(force=False):
-    fn = os.path.join(data_dir(), 'ai_models.json')
-    if not force and _MC['rows'] is not None and time.time() - _MC['t'] < 6 * 3600:
-        return dict(ok=True, models=_MC['rows'], fetched=_MC['t'], cached=True)
+def models(p, force=False):
+    """قائمة نماذج المزوّد (تُخزَّن ساعة). OpenRouter قائمته عامة وبيها الأسعار؛ الباقي يحتاج المفتاح."""
+    c = _MC.get(p['id'])
+    ttl = 6 * 3600 if p['kind'] == 'openrouter' else 3600
+    if not force and c and time.time() - c['t'] < ttl:
+        return dict(ok=True, models=c['rows'], fetched=c['t'], cached=True)
     try:
-        raw = _get_json('/models', timeout=25)
-        rows = [_trim(m) for m in raw.get('data') or [] if m.get('id')]
-        _MC.update(t=time.time(), rows=rows, err='')
-        try:
-            os.makedirs(data_dir(), exist_ok=True)
-            with open(fn, 'w', encoding='utf-8') as f:
-                json.dump(dict(t=_MC['t'], rows=rows), f, ensure_ascii=False)
-        except OSError:
-            pass
-        return dict(ok=True, models=rows, fetched=_MC['t'], cached=False)
-    except Exception as e:                                       # بلا إنترنت: آخر قائمة محفوظة
-        err = err_text(e.code, e.read().decode('utf-8', 'replace'))[0] if isinstance(e, urllib.error.HTTPError) else _net_text(e)
-        try:
-            with open(fn, encoding='utf-8') as f:
-                d = json.load(f)
-            return dict(ok=True, models=d.get('rows') or [], fetched=d.get('t'), cached=True, error=err)
-        except (OSError, ValueError):
-            return dict(ok=False, models=[], error=err)
+        raw = _get_json(prov_base(p), '/models', None if p['kind'] == 'openrouter' else p.get('key'), timeout=25)
+        rows = [_trim(m) for m in (raw.get('data') if isinstance(raw, dict) else raw) or [] if isinstance(m, dict) and m.get('id')][:600]
+        for r in rows:
+            r['id'] = r['id'][7:] if p['kind'] == 'gemini' and r['id'].startswith('models/') else r['id']
+        _MC[p['id']] = dict(t=time.time(), rows=rows)
+        return dict(ok=True, models=rows, fetched=time.time(), cached=False)
+    except Exception as e:                                       # بلا إنترنت: آخر قائمة بالذاكرة
+        err = err_text(e.code, e.read().decode('utf-8', 'replace'), p['name'])[0] if isinstance(e, urllib.error.HTTPError) else _net_text(e, p['name'])
+        return dict(ok=bool(c), models=c['rows'] if c else [], error=err, cached=True)
 
 
-def _tools_for(model):
-    if model == 'openrouter/auto' or not _MC['rows']:
-        return True                                              # نجرّب، وإذا رُفضت الأدوات نكمّل بدونها
-    for m in _MC['rows']:
-        if m['id'] == model:
+def _tools_for(p):
+    c = _MC.get(p['id'])
+    for m in (c['rows'] if c else []):
+        if m['id'] == p['model'] and m.get('tools') is not None:
             return m['tools']
-    return True
+    return True                                                  # نجرّب، وإذا رُفضت الأدوات نكمّل بدونها
 
 
 # ------------------------------------------------------------------ فحص المفتاح والرصيد
-def key_info(key):
+def key_info(p):
     out = dict(ok=False)
+    base, key, name = prov_base(p), p.get('key'), p.get('name') or 'المزوّد'
     try:
-        try:
-            d = _get_json('/key', key)
-        except urllib.error.HTTPError as e:
-            if e.code != 404:
-                raise
-            d = _get_json('/auth/key', key)
-        d = d.get('data') or {}
-        out.update(ok=True, label=d.get('label'), usage=d.get('usage'), limit=d.get('limit'),
-                   limit_remaining=d.get('limit_remaining'), free_tier=d.get('is_free_tier'))
-        try:
-            c = (_get_json('/credits', key).get('data') or {})
-            tc, tu = _num(c.get('total_credits')), _num(c.get('total_usage'))
-            if tc is not None and tu is not None:
-                out['credits'] = dict(total=tc, used=tu, left=round(tc - tu, 4))
-        except Exception:
-            pass
+        if p['kind'] == 'openrouter':
+            try:
+                d = _get_json(base, '/key', key)
+            except urllib.error.HTTPError as e:
+                if e.code != 404:
+                    raise
+                d = _get_json(base, '/auth/key', key)
+            d = d.get('data') or {}
+            out.update(ok=True, label=d.get('label'), usage=d.get('usage'), limit=d.get('limit'),
+                       limit_remaining=d.get('limit_remaining'), free_tier=d.get('is_free_tier'))
+            try:
+                c = (_get_json(base, '/credits', key).get('data') or {})
+                tc, tu = _num(c.get('total_credits')), _num(c.get('total_usage'))
+                if tc is not None and tu is not None:
+                    out['credits'] = dict(total=tc, used=tu, left=round(tc - tu, 4))
+            except Exception:
+                pass
+        else:                                                    # باقي المزوّدين: قائمة النماذج تحتاج مفتاحاً صحيحاً
+            raw = _get_json(base, '/models', key)
+            n = len((raw.get('data') if isinstance(raw, dict) else raw) or [])
+            out.update(ok=True, models=n)
     except urllib.error.HTTPError as e:
-        out['error'] = err_text(e.code, e.read().decode('utf-8', 'replace'))[0]
+        out['error'] = err_text(e.code, e.read().decode('utf-8', 'replace'), name)[0]
     except Exception as e:
-        out['error'] = _net_text(e)
+        out['error'] = _net_text(e, name)
     return out
 
 
@@ -380,10 +579,10 @@ class _Gone(Exception):
     pass
 
 
-def _stream_once(body, key, referer, emit, deadline):
+def _stream_once(base, body, key, referer, emit, deadline):
     """طلب واحد بالتدفّق: يمرّر نص الجواب أولاً بأول، ويجمع استدعاءات الأدوات."""
-    resp = _req('/chat/completions', key, body, timeout=max(20, min(120, deadline - time.time())), referer=referer)
-    calls, text, usage, model, finish, err = {}, [], None, None, None, None
+    resp = _req(base, '/chat/completions', key, body, timeout=max(20, min(120, deadline - time.time())), referer=referer)
+    calls, text, think, usage, model, finish, err = {}, [], [], None, None, None, None
     known = set(aitools.names())
     try:
         for raw in resp:
@@ -404,18 +603,22 @@ def _stream_once(body, key, referer, emit, deadline):
                 err = j['error'] if isinstance(j['error'], dict) else dict(message=str(j['error']))
                 break
             model = j.get('model') or model
-            if j.get('usage'):
-                usage = j['usage']
+            if j.get('usage') or (j.get('x_groq') or {}).get('usage'):
+                usage = j.get('usage') or j['x_groq']['usage']
             for ch in j.get('choices') or []:
                 d = ch.get('delta') or ch.get('message') or {}
                 c = d.get('content')
                 if isinstance(c, str) and c:
                     text.append(c)
                     emit(dict(t='delta', c=c))
+                if isinstance(d.get('reasoning_content'), str):
+                    think.append(d['reasoning_content'])
                 for tc in d.get('tool_calls') or []:
                     cur = calls.setdefault(tc.get('index', len(calls)), dict(id='', name='', args=''))
                     if tc.get('id'):
                         cur['id'] = tc['id']
+                    if tc.get('extra_content'):                   # توقيع يرجع للمزوّد كما هو (Gemini)
+                        cur['extra'] = tc['extra_content']
                     f = tc.get('function') or {}
                     nm = f.get('name')
                     if nm:
@@ -429,7 +632,8 @@ def _stream_once(body, key, referer, emit, deadline):
             resp.close()
         except Exception:
             pass
-    return dict(text=''.join(text), calls=[calls[k] for k in sorted(calls)], usage=usage, model=model, finish=finish, err=err)
+    return dict(text=''.join(text), think=''.join(think), calls=[calls[k] for k in sorted(calls)], usage=usage, model=model,
+                finish=finish, err=err)
 
 
 def _add_usage(tot, u):
@@ -441,9 +645,10 @@ def _add_usage(tot, u):
             tot[k] = round(tot.get(k, 0) + v, 6)
 
 
-def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, max_rounds=6, fallback=None):
-    """fallback(ev): إذا فشل OpenRouter قبل ما يطلع أي نص، يُستدعى بحدث الخطأ بدل إظهاره (الاحتياط المحلي)."""
+def run_chat(cfg, prov, msgs, ctx, style, referer, emit, tools_on=True, max_rounds=6, fallback=None):
+    """يجاوب عبر مزوّد واحد. fallback(ev): إذا فشل قبل ما يطلع أي نص يُستدعى بحدث الخطأ بدل إظهاره (المزوّد التالي)."""
     said = dict(text=False)
+    base, key, model, name = prov_base(prov), prov['key'], prov['model'], prov['name']
 
     def out(ev):
         if ev.get('t') == 'delta':
@@ -460,18 +665,23 @@ def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, ma
     page = (ctx or {}).get('page') if isinstance(ctx, dict) else None
     q = last_user + ' ' + ' '.join(prev_user)[:300] + ' ' + (str(page.get('name', '')) if isinstance(page, dict) else '')
     kb = aikb.search(q, k=5, budget=6500)
-    emit(dict(t='meta', model=model, tools=tools_on, kb=[dict(src=k['src'], title=k['title']) for k in kb]))
+    emit(dict(t='meta', model=model, provider=name, tools=tools_on, kb=[dict(src=k['src'], title=k['title']) for k in kb]))
     convo = [dict(role='system', content=system_prompt(_ctx_text(ctx), kb, style, tools_on))] + msgs
     usage, used_model, deadline = {}, model, time.time() + 240
+    uopt = 'or' if prov['kind'] == 'openrouter' else 'std'       # طريقة طلب أرقام الاستهلاك مع التدفّق
     for rnd in range(max_rounds):
         use_tools = tools_on and rnd < max_rounds - 1
         body = dict(model=model, messages=convo, stream=True, temperature=float(cfg.get('temperature', 0.2)),
-                    max_tokens=int(cfg.get('max_tokens', 1800)), usage=dict(include=True))
+                    max_tokens=int(cfg.get('max_tokens', 1800)))
+        if uopt == 'or':
+            body['usage'] = dict(include=True)                   # OpenRouter يرجّع الكلفة بهذا الحقل
+        elif uopt == 'std':
+            body['stream_options'] = dict(include_usage=True)    # صيغة OpenAI القياسية
         if use_tools:
             body['tools'] = aitools.schema()
             body['tool_choice'] = 'auto'
         try:
-            r = _stream_once(body, key, referer, out, deadline)
+            r = _stream_once(base, body, key, referer, out, deadline)
         except urllib.error.HTTPError as e:
             raw = e.read().decode('utf-8', 'replace')
             if use_tools and e.code in (400, 404, 422) and 'tool' in raw.lower():
@@ -479,21 +689,28 @@ def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, ma
                 emit(dict(t='status', c='النموذج المختار ما يدعم الأدوات — أكمل من مراجع المنصة بدون حساب مباشر.'))
                 convo[0] = dict(role='system', content=system_prompt(_ctx_text(ctx), kb, style, False))
                 continue
-            return fail(dict(t='error', code=e.code, c=err_text(e.code, raw)[0]))
+            if e.code in (400, 422) and uopt == 'std' and 'stream_options' in raw:
+                uopt = None                                      # مزوّد ما يعرف stream_options ← بدونها
+                continue
+            return fail(dict(t='error', code=e.code, c=err_text(e.code, raw, name)[0]))
         except (_Gone, BrokenPipeError, ConnectionResetError):
             raise
         except Exception as e:
-            return fail(dict(t='error', c=_net_text(e)))
+            return fail(dict(t='error', c=_net_text(e, name)))
         _add_usage(usage, r['usage'])
         used_model = r['model'] or used_model
         if r['err']:
             code = r['err'].get('code') if isinstance(r['err'], dict) else None
-            return fail(dict(t='error', code=code, c=err_text(code if isinstance(code, int) else 0, dict(error=r['err']))[0]))
+            return fail(dict(t='error', code=code, c=err_text(code if isinstance(code, int) else 0, dict(error=r['err']), name)[0]))
         if r['calls'] and use_tools:
             ids = [c['id'] or ('call_%d_%d' % (rnd, k)) for k, c in enumerate(r['calls'])]
-            convo.append(dict(role='assistant', content=r['text'] or None, tool_calls=[
-                dict(id=ids[k], type='function', function=dict(name=c['name'], arguments=c['args'] or '{}'))
-                for k, c in enumerate(r['calls'])]))
+            am = dict(role='assistant', content=r['text'] or None, tool_calls=[
+                dict(dict(id=ids[k], type='function', function=dict(name=c['name'], arguments=c['args'] or '{}')),
+                     **(dict(extra_content=c['extra']) if c.get('extra') else {}))
+                for k, c in enumerate(r['calls'])])
+            if r['think'] and prov['kind'] == 'deepseek':        # نماذج التفكير عند DeepSeek تريد تفكيرها يرجع بجولة الأدوات
+                am['reasoning_content'] = r['think']
+            convo.append(am)
             for k, c in enumerate(r['calls']):
                 try:
                     args = json.loads(c['args'] or '{}')
@@ -508,7 +725,7 @@ def run_chat(cfg, key, model, msgs, ctx, style, referer, emit, tools_on=True, ma
                 return fallback(dict(t='error', c='النموذج ما رجّع نص'))
             emit(dict(t='status', c='النموذج ما رجّع نص — جرّب تعيد السؤال أو بدّل النموذج.'))
         break
-    emit(dict(t='done', model=used_model, usage=usage))
+    emit(dict(t='done', model=used_model, provider=name, usage=usage))
 
 
 # ------------------------------------------------------------------ نقاط الوصول
@@ -524,16 +741,36 @@ def _body(h, limit=600000):
     return json.loads(raw or b'{}')
 
 
+_OWNER = 'لصاحب المنصة فقط: افتحها من نفس الحاسبة (localhost) أو أدخل كلمة سر المشرف.'
+
+
+def _prov(cfg, pid):
+    return next((p for p in cfg['providers'] if p['id'] == pid), None)
+
+
 def handle_get(h, sub):
     cfg = load()
+    admin = admin_ok(h, cfg)
     if sub == 'config':
-        return _json(h, 200, view(cfg, admin_ok(h, cfg), is_local(h)))
-    if sub == 'models':
-        return _json(h, 200, models(force='refresh=1' in h.path and admin_ok(h, cfg)))
+        v = view(cfg, admin, is_local(h))
+        if not admin:                                            # حالة الزائر نفسه: موقوف؟ شكد باقيله اليوم؟
+            key, ip = visitor(h)
+            v['me'] = dict(blocked=is_blocked(cfg, key, ip), left=max(0, int(cfg.get('user_per_day', 40)) - use_today(key)))
+        return _json(h, 200, v)
     if sub == 'kb':
         return _json(h, 200, aikb.stats())
     if sub == 'tools':
         return _json(h, 200, dict(tools=[dict(name=t[0], desc=t[1]) for t in aitools.TOOLS]))
+    if sub in ('models', 'usage'):
+        if not admin:
+            return _json(h, 403, dict(error=_OWNER))
+        if sub == 'usage':
+            return _json(h, 200, use_view(cfg))
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
+        p = _prov(cfg, (q.get('p') or [''])[0])
+        if not p:
+            return _json(h, 404, dict(ok=False, models=[], error='المزوّد غير موجود'))
+        return _json(h, 200, models(p, force='refresh' in q))
     return _json(h, 404, dict(error='unknown'))
 
 
@@ -550,54 +787,89 @@ def handle_post(h, sub):
         return _json(h, 400, dict(error='صيغة غير صحيحة'))
     cfg = load()
     admin = admin_ok(h, cfg)
-    if sub == 'config':
-        return _config(h, cfg, admin, body)
-    if sub == 'test':
-        own = (h.headers.get('X-OpenRouter-Key') or '').strip()
-        key = (body.get('key') or '').strip() if admin else ''
-        key = key or own or (cfg.get('key') if admin else '')
-        if not key:
-            return _json(h, 400, dict(ok=False, error='ما في مفتاح للفحص.'))
-        if not KEY_RX.match(key):
-            return _json(h, 400, dict(ok=False, error='شكل المفتاح غير صحيح — مفاتيح OpenRouter تبدأ بـ sk-or-'))
-        if not _allow('test:' + client_ip(h), 20, 600):
-            return _json(h, 429, dict(ok=False, error='فحوص كثيرة — انتظر شوي.'))
-        return _json(h, 200, key_info(key))
-    if sub == 'search':
-        return _json(h, 200, dict(results=aikb.search(str(body.get('q') or '')[:400], k=int(min(8, body.get('k') or 5)))))
     if sub == 'chat':
         return _chat(h, cfg, admin, body)
-    if sub == 'local':
-        return _local(h, cfg, admin, body)
+    if sub == 'search':
+        return _json(h, 200, dict(results=aikb.search(str(body.get('q') or '')[:400], k=int(min(8, body.get('k') or 5)))))
+    if sub in ('config', 'test', 'usage') and not admin:
+        return _json(h, 403, dict(error='تعديل الإعدادات ' + _OWNER))
+    if sub == 'config':
+        return _config(h, cfg, body)
+    if sub == 'test':
+        p = _prov(cfg, str(body.get('id') or ''))
+        if not p or not p.get('key'):
+            return _json(h, 400, dict(ok=False, error='ما في مفتاح للفحص.'))
+        if not _allow('test:' + client_ip(h), 30, 600):
+            return _json(h, 429, dict(ok=False, error='فحوص كثيرة — انتظر شوي.'))
+        return _json(h, 200, key_info(p))
+    if sub == 'usage':
+        return _usage(h, cfg, body)
     return _json(h, 404, dict(error='unknown'))
 
 
-def _local(h, cfg, admin, b):
-    """فحص النموذج المحلي (Ollama): الإصدار والنماذج المنزّلة وقدراتها — لصاحب المنصة فقط."""
-    if not admin:
-        return _json(h, 403, dict(ok=False, error='فحص النموذج المحلي لصاحب المنصة فقط.'))
-    url = str(b.get('url') or '').strip().rstrip('/')
-    if url and not ailocal.valid_url(url):
-        return _json(h, 400, dict(ok=False, error='العنوان لازم يكون على نفس الحاسبة أو الشبكة المحلية، مثل http://127.0.0.1:11434'))
-    if not _allow('local:' + client_ip(h), 40, 600):
-        return _json(h, 429, dict(ok=False, error='فحوص كثيرة — انتظر شوي.'))
-    return _json(h, 200, ailocal.status(cfg, url or None))
+def _usage(h, cfg, b):
+    """إيقاف/تشغيل زائر، أو تصفير السجل."""
+    if 'block' in b:
+        key = str(b.get('key') or '').strip()
+        if not ROW_RX.match(key):
+            return _json(h, 400, dict(error='زائر غير معروف'))
+        use_block(cfg, key, bool(b['block']))
+        save(cfg)
+    elif b.get('clear'):
+        with _USE_LOCK:
+            _use_users().clear()
+            _use_save()
+    return _json(h, 200, dict(ok=True, usage=use_view(cfg)))
 
 
-def _config(h, cfg, admin, b):
-    if not admin:
-        return _json(h, 403, dict(error='تعديل الإعدادات لصاحب المنصة فقط: افتحها من نفس الحاسبة (localhost) أو أدخل كلمة سر المشرف.'))
-    if 'key' in b:
-        k = str(b.get('key') or '').strip()
-        if k and not KEY_RX.match(k):
-            return _json(h, 400, dict(error='شكل المفتاح غير صحيح — مفاتيح OpenRouter تبدأ بـ sk-or-'))
-        cfg['key'] = k
-    if 'model' in b:
-        m = str(b.get('model') or '').strip()
-        if not MODEL_RX.match(m):
-            return _json(h, 400, dict(error='معرّف النموذج غير صحيح'))
-        cfg['model'] = m
-    for k, lo, hi in (('public_per_hour', 0, 1000), ('public_per_day', 0, 20000), ('max_tokens', 256, 8000)):
+def _config(h, cfg, b):
+    def bad(msg):
+        return _json(h, 400, dict(error=msg))
+
+    if isinstance(b.get('provider_add'), dict):
+        a = b['provider_add']
+        kind = a.get('kind') if a.get('kind') in PRESETS else None
+        if not kind:
+            return bad('نوع المزوّد غير معروف')
+        if len(cfg['providers']) >= MAX_PROVIDERS:
+            return bad('الحد الأقصى %d مزوّدين — احذف واحداً أولاً.' % MAX_PROVIDERS)
+        key = str(a.get('key') or '').strip()
+        if not KEY_RX.match(key):
+            return bad('شكل المفتاح غير صحيح — انسخه كاملاً من صفحة المزوّد.')
+        base = str(a.get('base') or '').strip().rstrip('/')
+        if kind == 'custom' and not valid_base(base):
+            return bad('رابط المزوّد لازم يبدأ بـ https:// ويكون لخدمة عامة، مثل https://api.example.com/v1')
+        model = str(a.get('model') or PRESETS[kind]['model']).strip()
+        if not MODEL_RX.match(model):
+            return bad('اكتب اسم النموذج (معرّفه عند المزوّد).')
+        pid, n = kind, 2
+        while _prov(cfg, pid):
+            pid, n = '%s%d' % (kind, n), n + 1
+        name = str(a.get('name') or '').strip()[:40] or (PRESETS[kind]['name'] + ('' if pid == kind else ' %d' % (n - 1)))
+        cfg['providers'].append(_clean_prov(dict(id=pid, kind=kind, name=name, base=base, key=key, model=model, on=True)))
+    if isinstance(b.get('provider_set'), dict):
+        a = b['provider_set']
+        p = _prov(cfg, str(a.get('id') or ''))
+        if not p:
+            return bad('المزوّد غير موجود')
+        if 'key' in a:
+            key = str(a.get('key') or '').strip()
+            if not KEY_RX.match(key):
+                return bad('شكل المفتاح غير صحيح — انسخه كاملاً من صفحة المزوّد.')
+            p['key'] = key
+        if 'model' in a:
+            m = str(a.get('model') or '').strip()
+            if not MODEL_RX.match(m):
+                return bad('معرّف النموذج غير صحيح')
+            p['model'] = m
+        if 'on' in a:
+            p['on'] = bool(a['on'])
+        if a.get('first'):                                        # هذا يصير الأساسي
+            cfg['providers'] = [p] + [x for x in cfg['providers'] if x is not p]
+    if b.get('provider_del'):
+        cfg['providers'] = [p for p in cfg['providers'] if p['id'] != str(b['provider_del'])]
+        _MC.pop(str(b['provider_del']), None)
+    for k, lo, hi in (('public_per_hour', 0, 1000), ('public_per_day', 0, 50000), ('user_per_day', 0, 5000), ('max_tokens', 256, 8000)):
         if k in b:
             try:
                 cfg[k] = int(max(lo, min(hi, int(b[k]))))
@@ -616,25 +888,6 @@ def _config(h, cfg, admin, b):
     if 'site_url' in b:
         u = str(b.get('site_url') or '').strip()
         cfg['site_url'] = u if re.match(r'^https?://[\w.\-:]+/?$', u) else ''
-    if 'local_mode' in b:
-        if b.get('local_mode') not in ailocal.MODES:
-            return _json(h, 400, dict(error='وضع النموذج المحلي غير معروف'))
-        cfg['local_mode'] = b['local_mode']
-    if 'local_url' in b:
-        u = str(b.get('local_url') or '').strip().rstrip('/')
-        if u and not ailocal.valid_url(u):
-            return _json(h, 400, dict(error='عنوان Ollama لازم يكون على نفس الحاسبة أو الشبكة المحلية، مثل http://127.0.0.1:11434'))
-        cfg['local_url'] = u
-    if 'local_model' in b:
-        m = str(b.get('local_model') or '').strip()
-        if m and not MODEL_RX.match(m):
-            return _json(h, 400, dict(error='اسم النموذج المحلي غير صحيح'))
-        cfg['local_model'] = m
-    if 'local_ctx' in b:
-        try:
-            cfg['local_ctx'] = int(max(2048, min(32768, int(b['local_ctx']))))
-        except (TypeError, ValueError):
-            pass
     if b.get('clear_admin_pass'):
         if not is_local(h):
             return _json(h, 403, dict(error='إلغاء كلمة سر المشرف من نفس الحاسبة فقط.'))
@@ -642,7 +895,7 @@ def _config(h, cfg, admin, b):
     elif b.get('admin_pass'):
         pw = str(b['admin_pass'])
         if len(pw) < 6:
-            return _json(h, 400, dict(error='كلمة السر لازم 6 أحرف على الأقل.'))
+            return bad('كلمة السر لازم 6 أحرف على الأقل.')
         cfg['admin_salt'] = secrets.token_hex(16)
         cfg['admin_hash'] = _pw_hash(pw, cfg['admin_salt'])
         _PW_OK.clear()
@@ -652,51 +905,37 @@ def _config(h, cfg, admin, b):
 
 
 def _chat(h, cfg, admin, b):
-    own = (h.headers.get('X-OpenRouter-Key') or '').strip()
-    if own and not KEY_RX.match(own):
-        return _json(h, 400, dict(error='شكل مفتاحك الشخصي غير صحيح.'))
-    ip = client_ip(h)
-    lm = _lmode(cfg)
-    can_local = lm != 'off' and (admin or bool(cfg.get('allow_public')))   # الاحتياط المحلي: لصاحب المنصة، وللزوار إذا سمح
-    nokey = 'ما مضاف مفتاح OpenRouter بعد — صاحب المنصة يضيفه من «🤖 المساعد الذكي» ← الإعدادات، أو ضيف مفتاحك الشخصي.'
-    if own:
-        key, who = own, 'own'
-    elif cfg.get('key') and (admin or cfg.get('allow_public')):
-        key, who = cfg['key'], ('owner' if admin else 'public')
-    elif can_local:
-        key, who = '', ('owner' if admin else 'public')
-    elif not cfg.get('key'):
-        return _json(h, 403, dict(error=nokey, need='key'))
-    else:
-        return _json(h, 403, dict(error='المساعد مقفول للزوار — ضيف مفتاحك الشخصي من الإعدادات، أو ادخل كلمة سر المشرف.', need='own'))
+    key, ip = visitor(h)
+    who = 'owner' if admin else 'public'
+    provs = chain(cfg)
+    if not provs:
+        if admin:
+            return _json(h, 403, dict(error='ما مضاف أي مفتاح بعد — ضيف مفتاحاً من «🤖 المساعد الذكي» ← الإعدادات.', need='key'))
+        return _json(h, 403, dict(error='المساعد غير مفعّل بعد — صاحب المنصة ما ضاف مفتاحاً.', need='off'))
+    if not admin:
+        if not cfg.get('allow_public'):
+            return _json(h, 403, dict(error='المساعد موقوف للزوار حالياً.', need='off'))
+        if is_blocked(cfg, key, ip):
+            return _json(h, 403, dict(error='صاحب المنصة أوقف المساعد لهذا الجهاز.', need='blocked'))
     if not _allow('ip:' + ip, 90, 3600):
         return _json(h, 429, dict(error='أسئلة كثيرة من نفس العنوان — انتظر شوي.'))
-    if who == 'public' and not (_allow('pub:' + ip, int(cfg.get('public_per_hour', 20)), 3600) and
-                                _allow('pub:all', int(cfg.get('public_per_day', 200)), 86400)):
-        return _json(h, 429, dict(error='وصلت حد الأسئلة المسموح للزوار — جرّب لاحقاً أو ضيف مفتاحك الشخصي.'))
+    if who == 'public':
+        per_day = int(cfg.get('user_per_day', 40))
+        if use_today(key) >= per_day or not _allow('ipday:' + ip, 3 * per_day, 86400):
+            return _json(h, 429, dict(error='وصلت حدّك اليومي من الأسئلة (%d) — ارجع باچر.' % per_day, need='limit'))
+        if not _allow('pub:' + ip, int(cfg.get('public_per_hour', 20)), 3600):
+            return _json(h, 429, dict(error='أسئلة كثيرة بوقت قصير — ارتاح شوي وارجع بعد ساعة.', need='limit'))
+        if not _allow('pub:all', int(cfg.get('public_per_day', 300)), 86400):
+            return _json(h, 429, dict(error='المساعد وصل حد الأسئلة الكلي لليوم — جرّب باچر.', need='limit'))
     msgs = _clean_msgs(b.get('messages'))
     if not msgs or msgs[-1]['role'] != 'user':
         return _json(h, 400, dict(error='اكتب سؤالك.'))
-    model = str(b.get('model') or '').strip() if (admin or who == 'own') else ''
-    model = model if MODEL_RX.match(model or '') else cfg.get('model') or DEFAULTS['model']
     ctx = b.get('context') if cfg.get('send_context', True) and isinstance(b.get('context'), dict) else None
-    style = b.get('style') if b.get('style') in STYLES else cfg.get('style', 'iq')
-    local_first = can_local and not own and (lm == 'always' or not key)
-    picked, why = None, ''
-    if local_first:
-        try:
-            picked = ailocal.pick(cfg)
-        except ailocal.LocalError as e:
-            if not key:
-                return _json(h, 403, dict(error=nokey + ' (والاحتياط المحلي: ' + e.msg + ')', need='key'))
-            local_first = False                              # «دائماً محلي» بس Ollama طافي ← OpenRouter
-            why = '🖥️ النموذج المحلي ما اشتغل — جاوبتك عبر OpenRouter. (%s)' % e.msg
-        else:
-            why = ('ℹ️ ما مضاف مفتاح OpenRouter — يجاوبك النموذج المحلي «%s» من حاسبتك.' if not key and admin
-                   else '🖥️ يجاوبك النموذج المحلي «%s».') % ailocal._short(picked[1])
+    style = cfg.get('style', 'iq')
     if not _SEM.acquire(timeout=2):
         return _json(h, 503, dict(error='المساعد مشغول بأسئلة ثانية — جرّب بعد ثواني.'))
     try:
+        use_hit(key, ip, who, h.headers.get('User-Agent') or '')
         h.send_response(200)
         h.send_header('Content-Type', 'text/event-stream; charset=utf-8')
         h.send_header('Cache-Control', 'no-cache, no-transform')
@@ -707,24 +946,29 @@ def _chat(h, cfg, admin, b):
         h.close_connection = True
 
         def emit(ev):
+            if ev.get('t') == 'done':
+                use_done(key, ev.get('usage'))
+            if not admin:                                        # الزائر ما يشوف المزوّد ولا النموذج ولا الكلفة ولا تفاصيل أعطاله
+                ev = {k: v for k, v in ev.items() if k not in ('provider', 'model', 'usage', 'code')}
+                if ev.get('t') == 'error':
+                    ev['c'] = 'المساعد ما يكدر يجاوب هسه — جرّب بعد شوي.'
             try:
                 h.wfile.write(('data: ' + json.dumps(ev, ensure_ascii=False, default=str) + '\n\n').encode('utf-8'))
                 h.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
                 raise _Gone()
 
-        def to_local(ev):                                    # OpenRouter فشل قبل أي نص ← النموذج المحلي
-            ailocal.run(cfg, msgs, ctx, style, emit, fail_ev=ev)
+        def attempt(i, prev=None):
+            if i >= len(provs):                                  # كل المزوّدين فشلوا ← آخر خطأ
+                return emit(prev or dict(t='error', c='ما اشتغل أي مزوّد.'))
+            if prev and admin:
+                emit(dict(t='status', c='⚠️ %s — أجرّب «%s».' % ((prev.get('c') or '').split(' — ')[0].rstrip('.'), provs[i]['name'])))
+            run_chat(cfg, provs[i], msgs, ctx, style, cfg.get('site_url') or '', emit,
+                     tools_on=_tools_for(provs[i]) and b.get('tools', True) is not False,
+                     fallback=lambda ev: attempt(i + 1, ev))
 
         try:
-            if local_first:
-                ailocal.run(cfg, msgs, ctx, style, emit, why=why, picked=picked)
-            else:
-                if why:
-                    emit(dict(t='status', c=why))
-                run_chat(cfg, key, model, msgs, ctx, style, cfg.get('site_url') or '', emit,
-                         tools_on=_tools_for(model) and b.get('tools', True) is not False,
-                         fallback=to_local if can_local else None)
+            attempt(0)
         except _Gone:
             pass
         except Exception as e:                               # آخر خط دفاع: رسالة عربية بدل انقطاع صامت

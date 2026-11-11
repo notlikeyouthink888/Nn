@@ -1,8 +1,9 @@
-/* 🤖 المساعد الذكي — نماذج OpenRouter داخل المنصة، مخصّص للمشروع ولـ ACI 318-19 والكود العراقي.
+/* 🤖 المساعد الذكي — نماذج عبر مزوّدين (OpenRouter، DeepSeek، Groq، Gemini…) داخل المنصة، مخصّص للمشروع ولـ ACI 318-19 والكود العراقي.
    · زر عائم بكل الصفحات يفتح لوحة محادثة، وصفحة كاملة «🤖 المساعد الذكي» فيها الإعدادات.
    · كل سؤال يرسل (إذا مفعّل) ملخصاً مضغوطاً لمشروعك: نتائج المعالج، قسم الأوتوكاد، والعنصر المفتوح بالدليل.
    · الأرقام يحسبها المساعد بأدوات المنصة نفسها (تظهر كبطاقات 🔧 بمدخلاتها ونتيجتها).
-   · مفتاح صاحب المنصة يبقى على الخادم؛ المفتاح الشخصي للزائر وكلمة سر المشرف تبقى بهذا المتصفح فقط. */
+   · المفاتيح يضيفها صاحب المنصة فقط وتبقى على الخادم. الزائر يسأل مباشرة بلا أي إعداد.
+   · صاحب المنصة يشوف من يستخدم المساعد أكثر، ويوقف أي زائر أو يحدد له حداً يومياً. */
 (function () {
   const A = window.AIASK = {};
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -12,15 +13,27 @@
     del(k) { try { store.removeItem(k); } catch (e) { /* */ } }
   });
   const LS = st(window.localStorage), SS = st(window.sessionStorage);
-  const S = { msgs: LS.get('ai.chat.v1', []), busy: false, ctrl: null, cfg: null, models: null, mfilter: { q: '', tools: true, free: false },
-              useCtx: LS.get('ai.ctx', true), root: null, settingsOpen: false, local: null, localBusy: false };
+  const S = { msgs: LS.get('ai.chat.v1', []), busy: false, ctrl: null, cfg: null, models: {}, mfilter: { q: '', tools: false, free: false },
+              useCtx: LS.get('ai.ctx', true), root: null, settingsOpen: false, usage: null, mopen: '', kopen: '', addKind: 'openrouter' };
   const page = () => (location.hash || '#wizard').slice(1);
   const f2 = x => (x == null || !isFinite(x)) ? null : Math.round(x * 100) / 100;
 
+  /* معرّف عشوائي لهذا المتصفح — حتى صاحب المنصة يميّز الأجهزة بسجل الاستخدام (ما بيه أي معلومة عنك). */
+  function vid() {
+    let v = LS.get('ai.vid', '');
+    if (!/^[A-Za-z0-9]{16}$/.test(v)) {
+      const a = new Uint8Array(16), abc = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+      (window.crypto || window.msCrypto).getRandomValues(a);
+      v = Array.from(a, x => abc[x % abc.length]).join('');
+      LS.set('ai.vid', v);
+      if (LS.get('ai.vid', '') !== v) return '';                    // التخزين مقفول ← الخادم يعتمد العنوان
+    }
+    return v;
+  }
   function hdrs() {
-    const h = {}, pw = SS.get('ai.admin', '') || LS.get('ai.admin.keep', ''), k = LS.get('ai.ownkey', '');
+    const h = {}, pw = SS.get('ai.admin', '') || LS.get('ai.admin.keep', ''), v = vid();
     if (pw) h['X-Admin-Pass'] = encodeURIComponent(pw);
-    if (k) h['X-OpenRouter-Key'] = k;
+    if (v) h['X-Visitor'] = v;
     return h;
   }
   async function api(path, body) {
@@ -154,7 +167,7 @@
     return `<div class="ai-chat" data-where="${where}">
       <div class="ai-ctx"><label class="ai-ctx-on"><input type="checkbox" data-ai="ctx" ${S.useCtx ? 'checked' : ''}> 📎 أرسل بيانات المشروع</label><div class="ai-chips"></div></div>
       <div class="ai-msgs" aria-live="polite"></div>
-      <div class="ai-sugs"></div>
+      <div class="ai-sugs"></div><div class="ai-gate" hidden></div>
       <div class="ai-comp"><textarea rows="1" placeholder="اسأل عن مشروعك أو عن ACI 318-19 والكود العراقي…" aria-label="سؤالك"></textarea>
         <button class="ai-send" data-ai="send" title="إرسال">➤</button><button class="ai-stop" data-ai="stop" title="إيقاف">■</button></div>
       <div class="ai-foot">الأرقام من حاسبات المنصة (🔧) · راجع القرار النهائي مع مهندس مخوّل</div></div>`;
@@ -165,8 +178,8 @@
       <pre dir="ltr">${esc(JSON.stringify({ inputs: t.args, result: t.result }, null, 1)).slice(0, 6000)}</pre></details>`).join('');
     const status = (m.status || []).map(s => `<div class="ai-st">${esc(s)}</div>`).join('');
     const kb = (m.kb || []).length ? `<details class="ai-kb"><summary>📚 مراجع المنصة المستعملة (${m.kb.length})</summary><ul>${m.kb.map(x => `<li>${esc(x.src)} › ${esc(x.title)}</li>`).join('')}</ul></details>` : '';
-    const u = (m.meta && m.meta.usage) || {}, loc = m.meta && m.meta.local;
-    const meta = m.meta ? `<div class="ai-meta" dir="ltr">${loc ? '<span class="ai-loc" dir="rtl">🖥️ محلي · مجاني</span>' : ''}${esc(m.meta.model || '')}${u.total_tokens ? ' · ' + u.total_tokens + ' tok' : ''}${loc && m.meta.tps ? ' · ' + m.meta.tps + ' tok/s' : ''}${loc && m.meta.secs ? ' · ' + m.meta.secs + 's' : ''}${!loc && u.cost ? ' · $' + (+u.cost).toFixed(4) : ''}</div>` : '';
+    const u = (m.meta && m.meta.usage) || {};                      // للزائر: الخادم ما يرسل المزوّد ولا النموذج ولا الكلفة
+    const meta = m.meta && m.meta.model ? `<div class="ai-meta" dir="ltr">${m.meta.provider ? '<span dir="auto">' + esc(m.meta.provider) + '</span> · ' : ''}${esc(m.meta.model)}${u.total_tokens ? ' · ' + u.total_tokens + ' tok' : ''}${u.cost ? ' · $' + (+u.cost).toFixed(4) : ''}</div>` : '';
     const err = m.err ? `<div class="ai-err">⚠️ ${esc(m.err)}${m.needKey ? ' <button class="btn gh" data-ai="settings">⚙️ الإعدادات</button>' : ''}</div>` : '';
     const typing = m.pending && !m.content && !m.err ? '<div class="ai-typing"><i></i><i></i><i></i></div>' : '';
     const body = m.content || typing ? `<div class="ai-b">${md(m.content)}${typing}</div>` : '';
@@ -185,8 +198,24 @@
     box.scrollTop = box.scrollHeight;
     const c = context();
     root.querySelector('.ai-chips').innerHTML = S.useCtx ? chips(c) : '<span class="ai-chip off">بدون بيانات المشروع</span>';
-    root.querySelector('.ai-sugs').innerHTML = S.busy ? '' : suggestions(c).map(q => `<button class="ai-sug" data-ai="sug" data-q="${esc(q)}">${esc(q)}</button>`).join('');
+    const g = gate(), gb = root.querySelector('.ai-gate'), ta = root.querySelector('textarea');
+    root.querySelector('.ai-sugs').innerHTML = S.busy || g ? '' : suggestions(c).map(q => `<button class="ai-sug" data-ai="sug" data-q="${esc(q)}">${esc(q)}</button>`).join('');
+    gb.hidden = !g; gb.innerHTML = g ? g.html : '';
+    ta.disabled = !!(g && g.lock); root.querySelector('.ai-send').disabled = ta.disabled;
+    ta.placeholder = g && g.lock ? 'المساعد غير متاح هسه' : 'اسأل عن مشروعك أو عن ACI 318-19 والكود العراقي…';
     root.classList.toggle('busy', S.busy);
+  }
+  /* ليش ما يكدر يسأل هسه؟ (ماكو مفتاح / موقوف / وصل حده) — null إذا كلشي تمام */
+  function gate() {
+    const c = S.cfg; if (!c) return null;
+    if (c.is_admin) return c.ready ? null : { lock: false, html: '🔑 ما مضاف أي مفتاح بعد. <button class="btn gh" data-ai="settings">⚙️ ضيف مفتاحاً</button>' };
+    if (!c.ready) return { lock: true, html: '⏳ المساعد غير مفعّل بعد.' };
+    if (!c.allow_public) return { lock: true, html: '⏸️ المساعد موقوف للزوار حالياً.' };
+    const me = c.me || {};
+    if (me.blocked) return { lock: true, html: '⛔ صاحب المنصة أوقف المساعد لهذا الجهاز.' };
+    if (me.left === 0) return { lock: true, html: '🌙 وصلت حدّك اليومي من الأسئلة — ارجع باچر.' };
+    if (me.left != null && me.left <= 5) return { lock: false, html: 'باقيلك <b>' + me.left + '</b> ' + (me.left === 1 ? 'سؤال' : 'أسئلة') + ' اليوم.' };
+    return null;
   }
   let raf = 0;
   function liveUpdate() { if (raf) return; raf = requestAnimationFrame(() => { raf = 0; renderMsgs(null, true); }); }
@@ -201,13 +230,13 @@
     S.msgs.push(m); S.busy = true; renderMsgs();
     const hist = S.msgs.slice(0, -1).filter(x => !x.err && x.content).slice(-12).map(x => ({ role: x.role, content: x.content }));
     const body = { messages: hist, context: S.useCtx ? context() : null };
-    const own = LS.get('ai.model', ''); if (own) body.model = own;
+    let recheck = false;
     S.ctrl = new AbortController();
     try {
       const r = await fetch('/api/ai/chat', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, hdrs()), body: JSON.stringify(body), signal: S.ctrl.signal });
       if (!r.ok) {
         let d = {}; try { d = await r.json(); } catch (e) { /* */ }
-        m.err = d.error || ('خطأ ' + r.status); m.needKey = !!d.need;
+        m.err = d.error || ('خطأ ' + r.status); m.needKey = d.need === 'key'; recheck = true;
       } else {
         const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
         for (;;) {
@@ -224,7 +253,7 @@
               else if (ev.t === 'status') m.status.push(ev.c);
               else if (ev.t === 'meta') m.kb = ev.kb || [];
               else if (ev.t === 'error') m.err = ev.c;
-              else if (ev.t === 'done') m.meta = { model: ev.model, usage: ev.usage, local: !!ev.local, tps: ev.tps, secs: ev.secs };
+              else if (ev.t === 'done') m.meta = { model: ev.model, provider: ev.provider, usage: ev.usage };
             });
             liveUpdate();
           }
@@ -235,127 +264,150 @@
     }
     m.pending = false; S.busy = false; S.ctrl = null;
     saveChat(); renderMsgs();
+    if (recheck || (S.cfg && !S.cfg.is_admin)) loadCfg().then(() => renderMsgs());      // الباقي من حد اليوم / حالة الإيقاف
   }
   function saveChat() { LS.set('ai.chat.v1', S.msgs.filter(x => !x.pending).slice(-30).map(x => Object.assign({}, x, { content: (x.content || '').slice(0, 20000) }))); }
 
-  /* ============================ الإعدادات ============================ */
-  async function loadCfg() { const r = await api('config'); S.cfg = r.ok ? r.data : null; return S.cfg; }
-  async function loadModels(force) { const r = await api('models' + (force ? '?refresh=1' : '')); S.models = r.data || { models: [] }; return S.models; }
+  /* ============================ الإعدادات (لصاحب المنصة فقط) ============================ */
+  async function loadCfg() { const r = await api('config'); S.cfg = r.ok ? r.data : null; paintOwner(); return S.cfg; }
+  async function loadModels(pid, force) { const r = await api('models?p=' + encodeURIComponent(pid) + (force ? '&refresh=1' : '')); S.models[pid] = r.data || { models: [] }; return S.models[pid]; }
+  async function loadUsage() { const r = await api('usage'); S.usage = r.ok ? r.data : null; return S.usage; }
   const price = v => v == null ? '—' : v === 0 ? 'مجاني' : '$' + (v < 1 ? v.toFixed(2) : v.toFixed(1));
-  const PREF = ['anthropic', 'openai', 'google', 'deepseek', 'qwen', 'x-ai', 'mistralai', 'meta-llama', 'moonshotai', 'z-ai'];
+  const PREF = ['anthropic', 'openai', 'google', 'deepseek', 'x-ai', 'mistralai', 'meta-llama', 'moonshotai', 'z-ai'];
+  const prov = id => ((S.cfg && S.cfg.providers) || []).find(p => p.id === id);
+  const preset = k => ((S.cfg && S.cfg.presets) || []).find(p => p.kind === k) || {};
   function recommended(list) {
     return list.filter(m => m.tools && !m.free && PREF.includes(m.vendor))
       .sort((a, b) => (PREF.indexOf(a.vendor) - PREF.indexOf(b.vendor)) || ((b.created || 0) - (a.created || 0)))
       .filter((m, i, arr) => arr.findIndex(x => x.vendor === m.vendor) === i).slice(0, 6);
   }
-  function modelRow(m, cur) {
-    return `<button class="ai-mod ${m.id === cur ? 'on' : ''}" data-ai="pick" data-id="${esc(m.id)}"><b dir="auto">${esc(m.name)}</b>
-      <span dir="ltr">${esc(m.id)}</span><em>${m.tools ? '<i class="t">🔧 أدوات</i>' : ''}${m.free ? '<i class="f">مجاني</i>' : ''}
+  function modelRow(m, cur, pid) {
+    return `<button class="ai-mod ${m.id === cur ? 'on' : ''}" data-ai="pick" data-p="${esc(pid)}" data-id="${esc(m.id)}"><b dir="auto">${esc(m.name)}</b>
+      ${m.name !== m.id ? `<span dir="ltr">${esc(m.id)}</span>` : ''}<em>${m.tools ? '<i class="t">🔧 أدوات</i>' : ''}${m.free ? '<i class="f">مجاني</i>' : ''}
       ${m.ctx ? '<i>' + Math.round(m.ctx / 1000) + 'k</i>' : ''}${!m.free && m.pin != null ? '<i dir="ltr">' + price(m.pin) + ' / ' + price(m.pout) + ' per 1M</i>' : ''}</em></button>`;
   }
-  function modelsHtml() {
-    const c = S.cfg || {}, M = (S.models && S.models.models) || [], own = !c.is_admin && LS.get('ai.ownkey', ''), cur = own ? (LS.get('ai.model', '') || c.model) : c.model;
-    const f = S.mfilter, q = f.q.trim().toLowerCase();
-    const list = M.filter(m => (!f.tools || m.tools) && (!f.free || m.free) && (!q || (m.id + ' ' + m.name).toLowerCase().includes(q)));
-    const rec = recommended(M);
-    return `<div class="ai-mhead"><input type="search" data-ai-in="mq" placeholder="ابحث عن نموذج (claude, gpt, gemini, deepseek…)" value="${esc(f.q)}">
-        <label><input type="checkbox" data-ai-in="mtools" ${f.tools ? 'checked' : ''}> يدعم الأدوات</label>
-        <label><input type="checkbox" data-ai-in="mfree" ${f.free ? 'checked' : ''}> مجاني</label>
-        ${c.is_admin ? '<button class="btn gh" data-ai="refresh">🔄</button>' : ''}</div>
-      ${S.models && S.models.error ? `<div class="ai-warn">⚠️ ${esc(S.models.error)}${M.length ? ' — هذي آخر قائمة محفوظة.' : ''}</div>` : ''}
-      <div class="ai-mlist">${modelRow({ id: 'openrouter/auto', name: '⚡ تلقائي — OpenRouter يختار الأنسب', tools: true }, cur)}
-        ${!q && rec.length ? '<div class="ai-mgrp">مقترحة (تدعم الأدوات)</div>' + rec.map(m => modelRow(m, cur)).join('') + '<div class="ai-mgrp">الكل</div>' : ''}
-        ${list.slice(0, 80).map(m => modelRow(m, cur)).join('') || (M.length ? '<div class="ai-dim">ما في نتائج.</div>' : '')}</div>
-      <div class="ai-row"><input type="text" data-ai-in="mcustom" placeholder="أو اكتب معرّف النموذج يدوياً مثل vendor/model" dir="ltr"><button class="btn gh" data-ai="pickc">اختيار</button></div>`;
+  function modelsHtml(p) {
+    const D = S.models[p.id], M = (D && D.models) || [], f = S.mfilter, q = f.q.trim().toLowerCase(), or = p.kind === 'openrouter';
+    if (!D) return '<div class="ai-dim">… جارٍ جلب قائمة النماذج</div>';
+    const list = M.filter(m => (!f.tools || m.tools !== false) && (!f.free || m.free) && (!q || (m.id + ' ' + m.name).toLowerCase().includes(q)));
+    const rec = or ? recommended(M) : [];
+    return `<div class="ai-mhead"><input type="search" data-ai-in="mq" placeholder="ابحث عن نموذج…" value="${esc(f.q)}">
+        ${or ? `<label><input type="checkbox" data-ai-in="mtools" ${f.tools ? 'checked' : ''}> يدعم الأدوات</label>
+        <label><input type="checkbox" data-ai-in="mfree" ${f.free ? 'checked' : ''}> مجاني</label>` : ''}
+        <button class="btn gh" data-ai="refresh" data-id="${esc(p.id)}" title="تحديث القائمة">🔄</button></div>
+      ${D.error ? `<div class="ai-warn">⚠️ ${esc(D.error)}${M.length ? ' — هذي آخر قائمة محفوظة.' : ''}</div>` : ''}
+      <div class="ai-mlist">${or ? modelRow({ id: 'openrouter/auto', name: '⚡ تلقائي — OpenRouter يختار الأنسب', tools: true }, p.model, p.id) : ''}
+        ${!q && !f.free && rec.length ? '<div class="ai-mgrp">مقترحة (تدعم الأدوات)</div>' + rec.map(m => modelRow(m, p.model, p.id)).join('') + '<div class="ai-mgrp">الكل</div>' : ''}
+        ${list.slice(0, 80).map(m => modelRow(m, p.model, p.id)).join('') || (M.length ? '<div class="ai-dim">ما في نتائج.</div>' : '')}</div>
+      <div class="ai-row"><input type="text" data-ai-in="mcustom" placeholder="أو اكتب معرّف النموذج يدوياً" dir="ltr"><button class="btn gh" data-ai="pickc" data-id="${esc(p.id)}">اختيار</button></div>`;
   }
-  /* ---------- النموذج المحلي (Ollama) — احتياط بدون إنترنت ---------- */
-  const LMODE = { off: 'معطّل', fallback: 'احتياط', always: 'دائماً محلي' };
-  const LHELP = { off: 'ما يستعمل النموذج المحلي أبداً.',
-    fallback: 'إذا OpenRouter فشل (ماكو نت، الرصيد خلص، ضغط على النموذج) أو ماكو مفتاح، يجاوبك النموذج المحلي من حاسبتك تلقائياً.',
-    always: 'كل الأسئلة على النموذج المحلي (مجاني وبدون نت). إذا Ollama طافي يجاوب OpenRouter.' };
-  function localStatusHtml() {
-    const L = S.local;
-    if (!L) return '<div class="ai-dim">… جارٍ فحص Ollama</div>';
-    if (!L.ok) return `<div class="ai-res bad">✗ ${esc(L.error || 'ما وصلت لـ Ollama')}</div>`;
-    const rows = (L.models || []).filter(m => !m.embed);
-    return `<div class="ai-res ok">✓ Ollama ${esc(L.version || '')} شغّال على <b dir="ltr">${esc(L.url)}</b> · ${rows.length} نموذج محادثة</div>` +
-      (rows.length ? `<div class="ai-mlist ai-lmods">${rows.map(m => `<button class="ai-mod ${m.name === L.chosen ? 'on' : ''}" data-ai="lpick" data-id="${esc(m.name)}">
-        <b dir="ltr">${esc(m.name)}</b><span dir="ltr">${esc([m.params, m.quant, m.size_gb ? m.size_gb + ' GB' : ''].filter(Boolean).join(' · '))}</span>
-        <em>${m.tools ? '<i class="t">🔧 أدوات</i>' : '<i>المنصة تختار الحاسبة</i>'}${m.ctx ? '<i>' + Math.round(m.ctx / 1024) + 'k</i>' : ''}${m.name === L.chosen ? '<i class="f">المستعمل</i>' : ''}</em></button>`).join('')}</div>` : '') +
-      (L.warn ? `<div class="ai-warn">⚠️ ${esc(L.warn)}</div>` : '');
+  function provHtml(p, i, n) {
+    const rank = !p.on ? '<i class="off">موقوف</i>' : i === 0 ? '<i class="first">الأساسي</i>' : '<i>احتياط ' + i + '</i>';
+    return `<div class="ai-prov ${p.on ? '' : 'off'}" data-prov="${esc(p.id)}">
+      <div class="ai-prov-h"><b dir="auto">${esc(p.name)}</b>${rank}
+        <label class="ai-sw"><input type="checkbox" data-ai="pon" data-id="${esc(p.id)}" ${p.on ? 'checked' : ''}> شغّال</label></div>
+      <div class="ai-prov-m">🧠 <b dir="ltr">${esc(p.model)}</b><span>🔑 <b dir="ltr">${esc(p.key_hint || '—')}</b></span>${p.kind === 'custom' ? `<span dir="ltr">${esc(p.base)}</span>` : ''}</div>
+      <div class="ai-prov-b"><button class="btn gh" data-ai="ptest" data-id="${esc(p.id)}">✓ فحص</button>
+        <button class="btn gh ${S.mopen === p.id ? 'on' : ''}" data-ai="pmodel" data-id="${esc(p.id)}">🧠 النموذج</button>
+        <button class="btn gh ${S.kopen === p.id ? 'on' : ''}" data-ai="pkey" data-id="${esc(p.id)}">🔑 تغيير المفتاح</button>
+        ${i > 0 && n > 1 ? `<button class="btn gh" data-ai="pfirst" data-id="${esc(p.id)}">⬆ خلّيه الأساسي</button>` : ''}
+        <button class="btn gh" data-ai="pdel" data-id="${esc(p.id)}" title="حذف">🗑️</button></div>
+      ${S.kopen === p.id ? `<div class="ai-row"><input type="password" data-ai-in="pkey" placeholder="المفتاح الجديد" autocomplete="off" dir="ltr"><button class="btn" data-ai="pkeysave" data-id="${esc(p.id)}">حفظ</button></div>` : ''}
+      <div class="ai-res" data-ai-out="p-${esc(p.id)}"></div>
+      ${S.mopen === p.id ? `<div class="ai-pmods" data-ai-out="models">${modelsHtml(p)}</div>` : ''}</div>`;
   }
-  function localHtml(c) {
-    const mode = LMODE[c.local_mode] ? c.local_mode : 'fallback';
-    return `<div class="ai-sec ai-lsec"><h4>🖥️ النموذج المحلي (Ollama) — احتياط بدون إنترنت</h4>
-      <div class="ai-seg">${Object.keys(LMODE).map(k => `<button class="${mode === k ? 'on' : ''}" data-ai="lmode" data-v="${k}">${LMODE[k]}</button>`).join('')}</div>
-      <div class="ai-dim">${LHELP[mode]}</div>
-      <div class="ai-row"><input type="text" data-ai-in="lurl" dir="ltr" placeholder="${esc(c.local_default || 'http://127.0.0.1:11434')}" value="${esc(c.local_url || '')}">
-        <button class="btn gh" data-ai="lcheck">فحص وحفظ</button></div>
-      <div data-ai-local>${localStatusHtml()}</div><div class="ai-res" data-ai-out="lsave"></div>
-      <div class="ai-dim">الأرقام تبقى من حاسبات المنصة: النموذج اللي يدعم الأدوات 🔧 يستدعيها بنفسه، والباقي (مثل llama3) المنصة تختار الحاسبة وتحسب قبل الجواب.
-        للعربي أحسن نموذج يدعم الأدوات، مثل <code dir="ltr">ollama pull qwen2.5:7b</code></div></div>`;
+  function addHtml(c) {
+    const k = S.addKind, pr = preset(k), full = (c.providers || []).length >= 6;
+    if (full) return '<div class="ai-dim">وصلت الحد (6 مفاتيح). احذف واحداً حتى تضيف غيره.</div>';
+    return `<div class="ai-add"><h5>➕ إضافة مفتاح</h5>
+      <div class="ai-seg ai-kinds">${(c.presets || []).map(x => `<button class="${x.kind === k ? 'on' : ''}" data-ai="akind" data-v="${esc(x.kind)}">${esc(x.name)}</button>`).join('')}</div>
+      <div class="ai-dim">${esc(pr.note || '')}${pr.keys ? ` · <a href="${esc(pr.keys)}" target="_blank" rel="noopener noreferrer">جيب المفتاح من هنا ↗</a>` : ''}</div>
+      ${k === 'custom' ? `<div class="ai-row"><input type="text" data-ai-in="nname" placeholder="اسم للمزوّد (مثل: Together)" maxlength="40">
+        <input type="text" data-ai-in="nbase" placeholder="https://api.example.com/v1" dir="ltr"></div>
+        <div class="ai-row"><input type="text" data-ai-in="nmodel" placeholder="اسم النموذج عند المزوّد" dir="ltr"></div>` : ''}
+      <div class="ai-row"><input type="password" data-ai-in="nkey" placeholder="الصق المفتاح هنا" autocomplete="off" dir="ltr"><button class="btn" data-ai="padd">إضافة</button></div>
+      <div class="ai-res" data-ai-out="add"></div></div>`;
   }
-  function paintLocal(el) { const box = el && el.querySelector('[data-ai-local]'); if (box) box.innerHTML = localStatusHtml(); }
-  async function probeLocal(el, url) {
-    S.localBusy = true;
-    const r = await api('local', url ? { url } : {});
-    S.localBusy = false;
-    S.local = r.data && typeof r.data.ok === 'boolean' ? r.data : { ok: false, error: (r.data && r.data.error) || 'فشل الفحص' };
-    paintLocal(el || document.querySelector('.ai-set:not([hidden])'));
-    return r;
+  const ago = t => { if (!t) return '—'; const d = Date.now() / 1000 - t; return d < 90 ? 'هسه' : d < 3600 ? 'قبل ' + Math.round(d / 60) + ' د' : d < 86400 ? 'قبل ' + Math.round(d / 3600) + ' س' : d < 172800 ? 'أمس' : 'قبل ' + Math.round(d / 86400) + ' يوم'; };
+  function usageHtml(c) {
+    const U = S.usage;
+    if (!U) return '<div class="ai-dim">… جارٍ تحميل السجل</div>';
+    const rows = U.users || [], top = Math.max(1, ...rows.map(r => r.today)), lim = c.user_per_day;
+    const kpi = (v, t, cls) => `<div class="ai-kpi ${cls || ''}"><b>${v}</b><span>${t}</span></div>`;
+    return `<div class="ai-kpis">${kpi(U.today_public, 'أسئلة الزوار اليوم')}${kpi(U.visitors_today, 'زوار سألوا اليوم')}${kpi(U.total, 'كل الأسئلة')}
+        ${kpi(U.blocked, 'موقوفين', U.blocked ? 'bad' : '')}${U.cost ? kpi('$' + (+U.cost).toFixed(2), 'الكلفة المسجّلة') : kpi(U.tokens > 9999 ? Math.round(U.tokens / 1000) + 'k' : U.tokens, 'رموز (tokens)')}</div>
+      ${rows.length ? `<div class="ai-utw"><table class="ai-ut"><thead><tr><th>الزائر</th><th>اليوم</th><th>7 أيام</th><th>الكلي</th><th></th></tr></thead><tbody>
+        ${rows.map(r => `<tr class="${r.blocked ? 'blk' : ''} ${r.who === 'owner' ? 'me' : ''}">
+          <td><b>${r.who === 'owner' ? '👑 إنت' : 'زائر <span dir="ltr">#' + esc(r.tag) + '</span>'}</b>${r.blocked ? ' <i class="ai-bl">موقوف</i>' : ''}
+            <small>${esc(r.device || '')}${r.ip ? ' · <span dir="ltr">' + esc(r.ip) + '</span>' : ''}</small><small>آخر سؤال: ${ago(r.last)}</small></td>
+          <td><b class="${r.who !== 'owner' && lim && r.today >= lim ? 'hit' : ''}">${r.today}</b><span class="ai-bar"><i style="width:${Math.round(100 * r.today / top)}%"></i></span></td>
+          <td>${r.week}</td><td>${r.total}</td>
+          <td>${r.who === 'owner' ? '' : `<button class="btn gh ${r.blocked ? 'go' : 'stop'}" data-ai="ublock" data-key="${esc(r.key)}" data-on="${r.blocked ? 0 : 1}">${r.blocked ? '✅ تشغيل' : '⛔ إيقاف'}</button>`}</td></tr>`).join('')}
+        </tbody></table></div>` : '<div class="ai-dim">ما أحد سأل المساعد بعد. أول ما يسأل زائر يطلع هنا.</div>'}
+      <div class="ai-row"><button class="btn gh" data-ai="uref">🔄 تحديث</button>${rows.length ? '<button class="btn gh" data-ai="uclear">🧹 تصفير السجل</button>' : ''}</div>
+      <div class="ai-dim">مرتّب من الأكثر استعمالاً اليوم. «إيقاف» يوقف المساعد لجهاز الزائر وعنوان الإنترنت مالته (حتى ما يرجع من متصفح ثاني) — وإذا أكثر من شخص على نفس الشبكة يتوقفون سوية، و«تشغيل» يرجّعهم.
+        السجل يحفظ الأعداد فقط، مو نص الأسئلة.</div>`;
   }
-
   function settingsHtml() {
     const c = S.cfg;
     if (!c) return '<div class="ai-dim">جارٍ التحميل…</div>';
-    const own = LS.get('ai.ownkey', ''), pwSet = SS.get('ai.admin', '') || LS.get('ai.admin.keep', '');
-    const who = c.is_admin ? (c.is_local ? '👑 صاحب المنصة — من نفس الحاسبة' : '👑 صاحب المنصة — بكلمة سر المشرف') : '👤 زائر';
-    let h = `<div class="ai-stat"><span>${who}</span><span>🔑 ${c.has_key ? 'مفتاح المنصة مضاف' + (c.key_hint ? ' <b dir="ltr">' + esc(c.key_hint) + '</b>' : '') : 'ما مضاف مفتاح بعد'}</span>
-      <span>🧠 النموذج: <b dir="ltr">${esc(c.model)}</b></span><span>📚 ${c.kb ? c.kb.chunks : 0} مقطع مرجعي · 🔧 ${c.tools} أداة حساب</span>
-      ${c.is_admin ? `<span>🖥️ النموذج المحلي: <b>${esc(LMODE[c.local_mode] || LMODE.fallback)}</b>${c.local_model ? ' · <b dir="ltr">' + esc(c.local_model) + '</b>' : ''}</span>` : ''}
-      ${c.custom_base ? '<span class="ai-warn">🧪 الخادم موجّه لعنوان اختبار بدل OpenRouter</span>' : ''}</div>`;
-    if (c.is_admin) {
-      h += `<div class="ai-sec"><h4>🔑 مفتاح OpenRouter</h4>
-        <div class="ai-row"><input type="password" data-ai-in="key" placeholder="${c.has_key ? 'مفتاح جديد يستبدل الحالي' : 'sk-or-v1-…'}" autocomplete="off" dir="ltr">
-          <button class="btn" data-ai="savekey">حفظ</button><button class="btn gh" data-ai="testkey">فحص</button>${c.has_key ? '<button class="btn gh" data-ai="delkey">حذف</button>' : ''}</div>
-        <div class="ai-dim">ما عندك مفتاح؟ سوّي حساب بـ <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a> وانسخ المفتاح هنا.
-          يُحفظ بحاسبتك فقط (civil/data/ai.json) وما يرجع للمتصفح.</div><div class="ai-res" data-ai-out="key"></div></div>
-        <div class="ai-sec"><h4>🧠 النموذج</h4><div data-ai-out="models">${modelsHtml()}</div></div>
-        ${localHtml(c)}
-        <div class="ai-sec"><h4>💬 أسلوب الجواب</h4><div class="ai-seg">${[['iq', 'عراقي'], ['msa', 'فصحى'], ['en', 'English']].map(([k, n]) =>
-          `<button class="${c.style === k ? 'on' : ''}" data-ai="style" data-v="${k}">${n}</button>`).join('')}</div></div>
-        <div class="ai-sec"><h4>🌐 الزوار (عبر الدومين)</h4>
-          <label class="ai-sw"><input type="checkbox" data-ai-in="pub" ${c.allow_public ? 'checked' : ''}> اسمح للزوار يستعملون مفتاحي</label>
-          <div class="ai-row"><label>بالساعة لكل زائر <input type="number" min="0" max="1000" data-ai-in="ph" value="${c.public_per_hour}"></label>
-            <label>باليوم للكل <input type="number" min="0" max="20000" data-ai-in="pd" value="${c.public_per_day}"></label><button class="btn gh" data-ai="savepub">حفظ</button></div>
-          <div class="ai-dim">مقفول افتراضياً حتى ما ينصرف رصيدك. الزائر يقدر يضيف مفتاحه الشخصي بدون ما يلمس مفتاحك.</div></div>
-        <div class="ai-sec"><h4>🛡️ كلمة سر المشرف</h4>
-          <div class="ai-row"><input type="password" data-ai-in="apw" placeholder="${c.has_admin_pass ? 'كلمة سر جديدة' : '6 أحرف على الأقل'}" autocomplete="new-password">
-            <button class="btn gh" data-ai="setpw">${c.has_admin_pass ? 'تغيير' : 'ضبط'}</button>${c.has_admin_pass && c.is_local ? '<button class="btn gh" data-ai="clrpw">إلغاء</button>' : ''}</div>
-          <div class="ai-dim">حتى تدير الإعدادات من موبايلك عبر الدومين. بدونها الإدارة من الحاسبة نفسها فقط.</div>
-          ${pwSet && !c.is_local ? '<button class="btn gh" data-ai="logout">خروج المشرف من هذا الجهاز</button>' : ''}<div class="ai-res" data-ai-out="pw"></div></div>`;
-    } else {
-      h += `<div class="ai-sec"><h4>🔑 مفتاحك الشخصي (اختياري)</h4>
-        <div class="ai-row"><input type="password" data-ai-in="own" placeholder="${own ? 'مضاف بهذا المتصفح' : 'sk-or-v1-…'}" autocomplete="off" dir="ltr">
-          <button class="btn" data-ai="saveown">حفظ</button><button class="btn gh" data-ai="testown">فحص</button>${own ? '<button class="btn gh" data-ai="delown">حذف</button>' : ''}</div>
-        <div class="ai-dim">${c.allow_public ? 'صاحب المنصة سامح بعدد أسئلة محدود. ' : 'المساعد مقفول للزوار. '}مفتاحك يُحفظ بهذا المتصفح فقط، وينرسل مع كل سؤال ولا يُخزَّن بالخادم.</div><div class="ai-res" data-ai-out="own"></div></div>
-        ${own ? `<div class="ai-sec"><h4>🧠 النموذج لمفتاحك</h4><div data-ai-out="models">${modelsHtml()}</div></div>` : ''}
-        <div class="ai-sec"><h4>👑 صاحب المنصة؟</h4><div class="ai-row"><input type="password" data-ai-in="login" placeholder="كلمة سر المشرف" autocomplete="current-password">
-          <label class="ai-sw"><input type="checkbox" data-ai-in="keep"> تذكّرني بهذا الجهاز</label><button class="btn gh" data-ai="login">دخول</button></div><div class="ai-res" data-ai-out="login"></div></div>`;
+    const pwSet = SS.get('ai.admin', '') || LS.get('ai.admin.keep', '');
+    if (!c.is_admin) {                                              // الزائر: بلا مفاتيح ولا إعدادات — يسأل وبس
+      const g = gate();
+      return `<div class="ai-stat"><span>${g && g.lock ? g.html : '✅ المساعد جاهز — اكتب سؤالك مباشرة، ما يحتاج أي إعداد.'}</span>
+          <span>📚 ${c.kb ? c.kb.chunks : 0} مقطع مرجعي · 🔧 ${c.tools} أداة حساب من محرّك المنصة</span>
+          ${c.me && c.me.left != null && !(g && g.lock) ? `<span>🗓️ باقيلك اليوم: <b>${c.me.left}</b> سؤال</span>` : ''}</div>
+        ${c.has_admin_pass ? `<details class="ai-own" ${S.ownOpen ? 'open' : ''}><summary>👑 دخول صاحب المنصة</summary>
+          <div class="ai-row"><input type="password" data-ai-in="login" placeholder="كلمة سر المشرف" autocomplete="current-password"><button class="btn gh" data-ai="login">دخول</button></div>
+          <label class="ai-sw"><input type="checkbox" data-ai-in="keep"> تذكّرني بهذا الجهاز</label><div class="ai-res" data-ai-out="login"></div></details>` : ''}`;
     }
+    const P = c.providers || [], live = P.filter(p => p.on && p.has_key);
+    let h = `<div class="ai-stat"><span>${c.is_local ? '👑 صاحب المنصة — من نفس الحاسبة' : '👑 صاحب المنصة — بكلمة سر المشرف'}</span>
+      <span>🔑 ${live.length ? live.length + ' ' + (live.length === 1 ? 'مفتاح شغّال' : 'مفاتيح شغّالة') + ' · الأساسي: <b dir="auto">' + esc(live[0].name) + '</b>' : '<b class="ai-warn">ما مضاف أي مفتاح بعد</b>'}</span>
+      <span>🌐 الزوار: <b>${c.allow_public ? 'يسألون مباشرة' : 'موقوف'}</b>${c.allow_public ? ' · ' + c.user_per_day + ' سؤال باليوم لكل زائر' : ''}</span>
+      <span>📚 ${c.kb ? c.kb.chunks : 0} مقطع مرجعي · 🔧 ${c.tools} أداة حساب</span>
+      ${c.custom_base ? '<span class="ai-warn">🧪 الخادم موجّه لعنوان اختبار بدل OpenRouter</span>' : ''}</div>
+      <div class="ai-sec"><h4>🔑 مفاتيح الذكاء — إنت بس تضيفها، والزوار يسألون مباشرة</h4>
+        <div class="ai-provs">${P.map((p, i) => provHtml(p, i, P.length)).join('') || '<div class="ai-dim">ضيف أول مفتاح من الأسفل حتى يشتغل المساعد.</div>'}</div>
+        ${addHtml(c)}
+        <div class="ai-dim">الأول هو الأساسي. إذا فشل (الرصيد خلص، ضغط، مفتاح ملغي) المساعد ينتقل للي بعده تلقائياً والزائر ما يحس.
+          المفاتيح تنحفظ بحاسبتك فقط (civil/data/ai.json) وما ترجع لأي متصفح.</div></div>
+      <div class="ai-sec"><h4>👥 منو يستخدم المساعد</h4><div data-ai-out="usage">${usageHtml(c)}</div></div>
+      <div class="ai-sec"><h4>🚦 حدود الزوار</h4>
+        <label class="ai-sw"><input type="checkbox" data-ai-in="pub" ${c.allow_public ? 'checked' : ''}> المساعد شغّال للزوار</label>
+        <div class="ai-lims"><label>لكل زائر باليوم <input type="number" min="0" max="5000" data-ai-in="ud" value="${c.user_per_day}"></label>
+          <label>لكل زائر بالساعة <input type="number" min="0" max="1000" data-ai-in="ph" value="${c.public_per_hour}"></label>
+          <label>لكل الزوار باليوم <input type="number" min="0" max="50000" data-ai-in="pd" value="${c.public_per_day}"></label>
+          <button class="btn gh" data-ai="savepub">حفظ</button></div>
+        <div class="ai-dim">الحدود تحمي رصيدك. إنت كصاحب المنصة ما عليك حد.</div><div class="ai-res" data-ai-out="pub"></div></div>
+      <div class="ai-sec"><h4>💬 أسلوب الجواب</h4><div class="ai-seg">${[['iq', 'عراقي'], ['msa', 'فصحى'], ['en', 'English']].map(([k, n]) =>
+        `<button class="${c.style === k ? 'on' : ''}" data-ai="style" data-v="${k}">${n}</button>`).join('')}</div><div class="ai-res" data-ai-out="style"></div></div>
+      <div class="ai-sec"><h4>🛡️ كلمة سر المشرف</h4>
+        <div class="ai-row"><input type="password" data-ai-in="apw" placeholder="${c.has_admin_pass ? 'كلمة سر جديدة' : '6 أحرف على الأقل'}" autocomplete="new-password">
+          <button class="btn gh" data-ai="setpw">${c.has_admin_pass ? 'تغيير' : 'ضبط'}</button>${c.has_admin_pass && c.is_local ? '<button class="btn gh" data-ai="clrpw">إلغاء</button>' : ''}</div>
+        <div class="ai-dim">حتى تدير المفاتيح وتشوف الاستخدام من موبايلك عبر الدومين. بدونها الإدارة من الحاسبة نفسها فقط.</div>
+        ${pwSet && !c.is_local ? '<button class="btn gh" data-ai="logout">خروج المشرف من هذا الجهاز</button>' : ''}<div class="ai-res" data-ai-out="pw"></div></div>`;
     return h;
   }
-  async function renderSettings(el, reloadModels) {
+  /* أزرار وعناوين تخص صاحب المنصة فقط (⚙️ باللوحة، عنوان بطاقة الإعدادات) */
+  function paintOwner() {
+    const adm = !!(S.cfg && S.cfg.is_admin);
+    document.querySelectorAll('[data-ai-owner]').forEach(x => { x.hidden = !adm; });
+    document.querySelectorAll('[data-ai-h]').forEach(x => { x.textContent = adm ? '⚙️ إعدادات المساعد' : 'ℹ️ عن المساعد'; });
+  }
+  async function renderSettings(el, keep) {
     if (!el) return;
-    await loadCfg();
+    if (!keep) await loadCfg();
     const c = S.cfg || {};
-    if ((c.is_admin || LS.get('ai.ownkey', '')) && (!S.models || reloadModels)) await loadModels(false);
     el.innerHTML = settingsHtml();
-    if (c.is_admin && !S.local && !S.localBusy) probeLocal(el);       // بدون انتظار: الإعدادات تطلع فوراً
+    if (!c.is_admin) return;
+    if (!keep || !S.usage) loadUsage().then(() => { const o = el.querySelector('[data-ai-out="usage"]'); if (o) o.innerHTML = usageHtml(S.cfg || {}); });
+    const p = prov(S.mopen);
+    if (p && !S.models[p.id]) loadModels(p.id).then(() => { const o = el.querySelector('[data-ai-out="models"]'); if (o && S.mopen === p.id) o.innerHTML = modelsHtml(prov(p.id) || p); });
   }
   const out = (el, sel, html, ok) => { const o = el && el.querySelector('[data-ai-out="' + sel + '"]'); if (o) { o.innerHTML = html; o.className = 'ai-res ' + (ok ? 'ok' : 'bad'); } };
   const keyResult = r => r.ok && r.data.ok ? '✓ المفتاح شغّال' + (r.data.credits ? ' · الرصيد المتبقي <b dir="ltr">$' + (+r.data.credits.left).toFixed(2) + '</b>' : '') +
-    (r.data.free_tier ? ' · حساب مجاني' : '') : '✗ ' + esc((r.data && r.data.error) || 'فشل الفحص');
+    (r.data.free_tier ? ' · حساب مجاني' : '') + (r.data.models ? ' · ' + r.data.models + ' نموذج متاح' : '') : '✗ ' + esc((r.data && r.data.error) || 'فشل الفحص');
 
   /* ============================ اللوحة والصفحة ============================ */
   function ensureDock() {
@@ -363,10 +415,11 @@
     if (d) return d;
     d = document.createElement('aside'); d.id = 'aiDock'; d.className = 'ai-dock'; d.setAttribute('aria-label', 'المساعد الهندسي');
     d.innerHTML = `<div class="ai-dh"><div><b>🤖 المساعد الهندسي</b><small>ACI 318-19 · الكود العراقي · مشروعك</small></div>
-      <div class="ai-dbtn"><button data-ai="settings" title="الإعدادات">⚙️</button><button data-ai="new" title="محادثة جديدة">🗑️</button>
+      <div class="ai-dbtn"><button data-ai="settings" data-ai-owner hidden title="الإعدادات">⚙️</button><button data-ai="new" title="محادثة جديدة">🗑️</button>
         <button data-ai="full" title="الصفحة الكاملة">⤢</button><button data-ai="close" title="إغلاق">✕</button></div></div>
       <div class="ai-set" hidden></div>${chatHtml('dock')}`;
     document.body.appendChild(d);
+    paintOwner();
     return d;
   }
   A.open = function (q, autosend) {
@@ -391,9 +444,9 @@
   A.pageHtml = () => `<div class="ai-page"><div class="card ai-pchat"><div class="ai-ph"><b>🤖 المساعد الهندسي</b>
       <span class="ai-dim">يجاوب عن مشروعك والمنصة وACI 318-19 والكود العراقي فقط — وبأرقام من حاسبات المنصة</span>
       <button class="btn gh" data-ai="new">🗑️ محادثة جديدة</button></div>${chatHtml('page')}</div>
-    <div class="card ai-pset"><h3>⚙️ الإعدادات</h3><div class="ai-set" data-where="page"></div>
-      <div class="ai-sec"><h4>🔒 الخصوصية</h4><ul class="ai-ul"><li>سؤالك وملخص مشروعك (إذا مفعّل) ينرسل للنموذج اللي تختاره عبر OpenRouter. ملفات الـDWG نفسها ما تنرسل.</li>
-        <li>النموذج المحلي (Ollama) يشتغل على حاسبتك — جوابه ما يطلع برّه الحاسبة.</li>
+    <div class="card ai-pset"><h3 data-ai-h>ℹ️ عن المساعد</h3><div class="ai-set" data-where="page"></div>
+      <div class="ai-sec"><h4>🔒 الخصوصية</h4><ul class="ai-ul"><li>سؤالك وملخص مشروعك (إذا مفعّل) ينرسل لنموذج الذكاء حتى يجاوب. ملفات الـDWG نفسها ما تنرسل.</li>
+        <li>المنصة تعدّ أسئلة كل جهاز (عدد فقط، بلا نص السؤال) حتى صاحبها ينظّم الاستخدام.</li>
         <li>المساعد مقصور على المنصة والتصميم الإنشائي، ويعتذر عن غيرها.</li><li>كل رقم يطلع من أداة 🔧 تقدر تفتحها وتشوف مدخلاتها ونتيجتها.</li></ul></div></div></div>`;
   A.pageInit = function () {
     S.root = document.querySelector('#view .ai-chat'); renderMsgs();
@@ -407,15 +460,17 @@
   const val = (el, k) => { const i = el && el.querySelector('[data-ai-in="' + k + '"]'); return i ? (i.type === 'checkbox' ? i.checked : i.value) : null; };
   async function saveCfg(el, body, outSel, msg) {
     const r = await api('config', body);
-    if (r.ok) { S.cfg = r.data.config; await renderSettings(el); out(el, outSel || 'key', msg || '✓ انحفظ', true); }
-    else out(el, outSel || 'key', '✗ ' + esc(r.data.error || 'فشل الحفظ'), false);
+    if (r.ok) { S.cfg = r.data.config; paintOwner(); await renderSettings(el, true); out(el, outSel, msg || '✓ انحفظ', true); if (S.root) renderMsgs(); }
+    else out(el, outSel, '✗ ' + esc(r.data.error || 'فشل الحفظ'), false);
     return r.ok;
   }
+  const paintUsage = el => { const o = el && el.querySelector('[data-ai-out="usage"]'); if (o) o.innerHTML = usageHtml(S.cfg || {}); };
 
   document.addEventListener('click', async e => {
     const b = e.target.closest('[data-ai]'); if (!b) return;
     const act = b.dataset.ai, el = setEl(b);
     if (act === 'ctx') { S.useCtx = b.checked; LS.set('ai.ctx', S.useCtx); renderMsgs(); return; }
+    if (act === 'pon') return saveCfg(el, { provider_set: { id: b.dataset.id, on: b.checked } }, 'p-' + b.dataset.id, b.checked ? '✓ شغّال' : '✓ موقوف — المساعد ما يستعمله');
     e.preventDefault();
     if (act === 'open') return A.open();
     if (act === 'askel') return A.askElement();
@@ -427,47 +482,66 @@
     if (act === 'sug') { S.root = b.closest('.ai-chat'); return send(b.dataset.q); }
     if (act === 'copy') { const m = S.msgs[+b.dataset.k]; try { await navigator.clipboard.writeText(m.content); b.textContent = '✓'; } catch (x) { /* */ } return; }
     if (act === 'settings') {
+      if (page() === 'ai') { const ps = document.querySelector('#view .ai-pset'); if (ps) ps.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
       const d = ensureDock(); if (!d.classList.contains('open')) A.open();
       const s = d.querySelector('.ai-set'); S.settingsOpen = s.hidden; s.hidden = !s.hidden;
       if (!s.hidden) { s.innerHTML = '<div class="ai-dim">جارٍ التحميل…</div>'; renderSettings(s); }
       return;
     }
-    if (act === 'savekey') { const k = (val(el, 'key') || '').trim(); if (!k) return out(el, 'key', '✗ الصق المفتاح أولاً', false);
-      if (await saveCfg(el, { key: k }, 'key', '✓ انحفظ المفتاح — جارٍ فحصه…')) out(el, 'key', keyResult(await api('test', {})), true); return; }
-    if (act === 'testkey') { const k = (val(el, 'key') || '').trim(); out(el, 'key', '… جارٍ الفحص', true); const r = await api('test', k ? { key: k } : {}); return out(el, 'key', keyResult(r), r.ok && r.data.ok); }
-    if (act === 'delkey') { if (confirm('أحذف مفتاح OpenRouter من المنصة؟')) await saveCfg(el, { key: '' }, 'key', '✓ انحذف المفتاح'); return; }
+    const id = b.dataset.id;
+    /* ---------- المفاتيح والمزوّدون ---------- */
+    if (act === 'akind') { S.addKind = b.dataset.v; return renderSettings(el, true); }
+    if (act === 'padd') {
+      const key = (val(el, 'nkey') || '').trim(); if (!key) return out(el, 'add', '✗ الصق المفتاح أولاً', false);
+      const a = { kind: S.addKind, key };
+      if (S.addKind === 'custom') { a.name = (val(el, 'nname') || '').trim(); a.base = (val(el, 'nbase') || '').trim(); a.model = (val(el, 'nmodel') || '').trim(); }
+      out(el, 'add', '… جارٍ الإضافة', true);
+      const before = (S.cfg.providers || []).map(p => p.id);
+      if (!await saveCfg(el, { provider_add: a }, 'add', '✓ انضاف المفتاح')) return;
+      const np = (S.cfg.providers || []).find(p => !before.includes(p.id)); if (!np) return;
+      out(el, 'p-' + np.id, '… جارٍ فحص المفتاح', true);
+      const r = await api('test', { id: np.id }); return out(el, 'p-' + np.id, keyResult(r), r.ok && r.data.ok);
+    }
+    if (act === 'ptest') { out(el, 'p-' + id, '… جارٍ الفحص', true); const r = await api('test', { id }); return out(el, 'p-' + id, keyResult(r), r.ok && r.data.ok); }
+    if (act === 'pmodel') { S.mopen = S.mopen === id ? '' : id; S.mfilter.q = ''; return renderSettings(el, true); }
+    if (act === 'pkey') { S.kopen = S.kopen === id ? '' : id; return renderSettings(el, true); }
+    if (act === 'pkeysave') {
+      const k = (val(el, 'pkey') || '').trim(); if (!k) return out(el, 'p-' + id, '✗ الصق المفتاح أولاً', false);
+      S.kopen = '';
+      if (!await saveCfg(el, { provider_set: { id, key: k } }, 'p-' + id, '✓ انحفظ المفتاح — جارٍ فحصه…')) { S.kopen = id; return; }
+      delete S.models[id];
+      const r = await api('test', { id }); return out(el, 'p-' + id, keyResult(r), r.ok && r.data.ok);
+    }
+    if (act === 'pfirst') return saveCfg(el, { provider_set: { id, first: true } }, 'p-' + id, '✓ صار الأساسي');
+    if (act === 'pdel') { const p = prov(id); if (p && confirm('أحذف مفتاح «' + p.name + '» من المنصة؟')) { if (S.mopen === id) S.mopen = ''; await saveCfg(el, { provider_del: id }, 'add', '✓ انحذف'); } return; }
     if (act === 'pick' || act === 'pickc') {
-      const id = act === 'pick' ? b.dataset.id : (val(el, 'mcustom') || '').trim(); if (!id) return;
-      if (S.cfg && S.cfg.is_admin) await saveCfg(el, { model: id }, 'key', '✓ النموذج: ' + esc(id));
-      else { LS.set('ai.model', id); el.querySelector('[data-ai-out="models"]').innerHTML = modelsHtml(); }
+      const pid = act === 'pick' ? b.dataset.p : id, m = act === 'pick' ? id : (val(el, 'mcustom') || '').trim(); if (!m) return;
+      S.mopen = ''; return saveCfg(el, { provider_set: { id: pid, model: m } }, 'p-' + pid, '✓ النموذج: <b dir="ltr">' + esc(m) + '</b>');
+    }
+    if (act === 'refresh') { const o = el.querySelector('[data-ai-out="models"]'); if (o) o.innerHTML = '<div class="ai-dim">… جارٍ تحديث القائمة</div>'; await loadModels(id, true); const p = prov(id); if (o && p) o.innerHTML = modelsHtml(p); return; }
+    /* ---------- الاستخدام ---------- */
+    if (act === 'uref') { b.disabled = true; await loadUsage(); return paintUsage(el); }
+    if (act === 'ublock') {
+      const on = b.dataset.on === '1';
+      if (on && !confirm('أوقف المساعد لهذا الزائر؟ (تكدر ترجّعه بأي وقت)')) return;
+      const r = await api('usage', { key: b.dataset.key, block: on });
+      if (r.ok) { S.usage = r.data.usage; paintUsage(el); } else alert(r.data.error || 'فشل');
       return;
     }
-    if (act === 'refresh') { out(el, 'key', '… جارٍ تحديث القائمة', true); await loadModels(true); el.querySelector('[data-ai-out="models"]').innerHTML = modelsHtml(); return; }
-    if (act === 'lmode') return saveCfg(el, { local_mode: b.dataset.v }, 'lsave', '✓ النموذج المحلي: ' + esc(LMODE[b.dataset.v] || ''));
-    if (act === 'lpick') { if (S.local) S.local.chosen = b.dataset.id; return saveCfg(el, { local_model: b.dataset.id }, 'lsave', '✓ النموذج المحلي: ' + esc(b.dataset.id)); }
-    if (act === 'lcheck') {
-      const u = (val(el, 'lurl') || '').trim().replace(/\/+$/, '');
-      const box = el.querySelector('[data-ai-local]'); if (box) box.innerHTML = '<div class="ai-dim">… جارٍ فحص Ollama</div>';
-      await probeLocal(el, u);
-      if (S.local.ok && (S.cfg.local_url || '') !== u) return saveCfg(el, { local_url: u }, 'lsave', '✓ انحفظ عنوان Ollama');
-      return;
-    }
-    if (act === 'style') return saveCfg(el, { style: b.dataset.v }, 'key', '✓ انحفظ الأسلوب');
-    if (act === 'savepub') return saveCfg(el, { allow_public: !!val(el, 'pub'), public_per_hour: +val(el, 'ph'), public_per_day: +val(el, 'pd') }, 'pw', '✓ انحفظت إعدادات الزوار');
+    if (act === 'uclear') { if (!confirm('أصفّر سجل الاستخدام؟ (الموقوفين يبقون موقوفين)')) return; const r = await api('usage', { clear: true }); if (r.ok) { S.usage = r.data.usage; paintUsage(el); } return; }
+    if (act === 'savepub') return saveCfg(el, { allow_public: !!val(el, 'pub'), user_per_day: +val(el, 'ud'), public_per_hour: +val(el, 'ph'), public_per_day: +val(el, 'pd') }, 'pub', '✓ انحفظت الحدود');
+    if (act === 'style') return saveCfg(el, { style: b.dataset.v }, 'style', '✓ انحفظ الأسلوب');
     if (act === 'setpw') { const p = val(el, 'apw') || ''; if (p.length < 6) return out(el, 'pw', '✗ 6 أحرف على الأقل', false); return saveCfg(el, { admin_pass: p }, 'pw', '✓ انضبطت كلمة السر'); }
     if (act === 'clrpw') { if (confirm('ألغي كلمة سر المشرف؟')) await saveCfg(el, { clear_admin_pass: true }, 'pw', '✓ انلغت'); return; }
-    if (act === 'logout') { SS.del('ai.admin'); LS.del('ai.admin.keep'); return renderSettings(el); }
+    if (act === 'logout') { SS.del('ai.admin'); LS.del('ai.admin.keep'); S.usage = null; await renderSettings(el); if (S.root) renderMsgs(); return; }
     if (act === 'login') {
       const p = val(el, 'login') || ''; if (!p) return;
-      (val(el, 'keep') ? LS : SS).set(val(el, 'keep') ? 'ai.admin.keep' : 'ai.admin', p);
+      const keep = val(el, 'keep');
+      (keep ? LS : SS).set(keep ? 'ai.admin.keep' : 'ai.admin', p);
       await loadCfg();
-      if (S.cfg && S.cfg.is_admin) return renderSettings(el, true);
-      SS.del('ai.admin'); LS.del('ai.admin.keep'); return out(el, 'login', '✗ كلمة السر غير صحيحة', false);
+      if (S.cfg && S.cfg.is_admin) { await renderSettings(el, true); if (S.root) renderMsgs(); return; }
+      SS.del('ai.admin'); LS.del('ai.admin.keep'); S.ownOpen = true; await renderSettings(el); return out(el, 'login', '✗ كلمة السر غير صحيحة', false);
     }
-    if (act === 'saveown') { const k = (val(el, 'own') || '').trim(); if (!/^[A-Za-z0-9._-]{20,220}$/.test(k)) return out(el, 'own', '✗ شكل المفتاح غير صحيح', false);
-      LS.set('ai.ownkey', k); await renderSettings(el, true); return out(el, 'own', keyResult(await api('test', {})), true); }
-    if (act === 'testown') { const r = await api('test', {}); return out(el, 'own', keyResult(r), r.ok && r.data.ok); }
-    if (act === 'delown') { LS.del('ai.ownkey'); LS.del('ai.model'); return renderSettings(el); }
   });
   document.addEventListener('input', e => {
     const t = e.target;
@@ -475,9 +549,9 @@
     const k = t.dataset && t.dataset.aiIn;
     if (k === 'mq' || k === 'mtools' || k === 'mfree') {
       if (k === 'mq') S.mfilter.q = t.value; else S.mfilter[k === 'mtools' ? 'tools' : 'free'] = t.checked;
-      const box = t.closest('[data-ai-out="models"]'); if (!box) return;
+      const box = t.closest('[data-ai-out="models"]'), p = prov(S.mopen); if (!box || !p) return;
       const pos = k === 'mq' ? t.selectionStart : null;
-      box.innerHTML = modelsHtml();
+      box.innerHTML = modelsHtml(p);
       if (k === 'mq') { const n = box.querySelector('[data-ai-in="mq"]'); n.focus(); try { n.setSelectionRange(pos, pos); } catch (x) { /* */ } }
     }
   });
@@ -499,7 +573,9 @@
     f.innerHTML = '🤖<span>اسأل المساعد</span>'; f.title = 'المساعد الهندسي — ACI 318-19 والكود العراقي';
     if (page() === 'ai') f.classList.add('hide');
     document.body.appendChild(f);
+    LS.del('ai.ownkey'); LS.del('ai.model');                        // من النسخة القديمة: مفتاح الزائر الشخصي انلغى
+    loadCfg().then(() => { if (S.root && document.body.contains(S.root)) renderMsgs(); });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
-  A._t = { md, context, projectDigest, cadDigest, suggestions, S };
+  A._t = { md, context, projectDigest, cadDigest, suggestions, S, gate };
 })();

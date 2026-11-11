@@ -1,5 +1,5 @@
 /* طبقات الفهم — طبقة إضافية فوق كل صفحات المنصة، لا تغيّر أي حساب ولا أي صفحة:
-     ١) مستوى العرض: 🟢 مبتدئ / 🔵 مهندس / 🟣 خبير (يُحفظ بالمتصفح)
+     ١) دليل كامل بكل صفحة (كانت هنا أزرار مستوى مبتدئ/مهندس/خبير وانشالت بطلب صاحب المنصة)
      ٢) دليل الصفحة: الفكرة · الخطوات · الفيزياء · الكود · المصطلحات — بحاوية مستقلة #guide فوق #view
      ٣) البحث السريع (Ctrl+K): الصفحات والمصطلحات والمختبرات
      ٤) مسار التنقّل: المجموعة › الصفحة
@@ -10,7 +10,7 @@
     get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* تخزين غير متاح */ } }
   };
-  let LV = +store.get('lyr_level', 1) || 1;
+  let LV = 1;                       // مستوى واحد ثابت: الدليل الكامل (ينطوي بزر «طي» بكل صفحة)
   L.level = () => LV;
 
   /* ------------------------- القاموس الهندسي ------------------------- */
@@ -165,30 +165,16 @@
     const d = document.createElement('div');
     d.id = 'lyrbar'; d.className = 'lyrbar';
     d.innerHTML = `<div class="lyr-crumb" id="lyrCrumb"></div>
-      <div class="lyr-lv" role="group" aria-label="مستوى الشرح">
-        <button data-lv="1" title="شرح مفصّل لكل صفحة ومصطلح">🟢 مبتدئ</button>
-        <button data-lv="2" title="الدليل مطوي — افتحه عند الحاجة">🔵 مهندس</button>
-        <button data-lv="3" title="بلا شروحات — أرقام وكود فقط">🟣 خبير</button></div>
       <button class="lyr-search" id="lyrSearch" title="بحث سريع (Ctrl+K)">🔍 بحث <kbd>Ctrl K</kbd></button>`;
     top.parentNode.insertBefore(d, top);
     d.addEventListener('click', e => {
       const b = e.target.closest('button'); if (!b) return;
-      if (b.dataset.lv) L.setLevel(+b.dataset.lv);
       if (b.id === 'lyrSearch') L.palette();
     });
     paintLevel();
   }
-  function paintLevel() {
-    document.querySelectorAll('#lyrbar [data-lv]').forEach(b => b.classList.toggle('on', +b.dataset.lv === LV));
-    document.body.classList.remove('lv-1', 'lv-2', 'lv-3'); document.body.classList.add('lv-' + LV);
-  }
-  L.setLevel = function (v) {
-    LV = v; store.set('lyr_level', v); paintLevel();
-    if (L.cur) L.onPage(L.cur);
-    if (window.PHYSLAB && document.getElementById('plETabs')) {
-      const key = { 1: 'see', 2: 'math', 3: 'code' }[v], b = document.querySelector(`#plETabs [data-e="${key}"]`); if (b) b.click();
-    }
-  };
+  function paintLevel() { document.body.classList.remove('lv-2', 'lv-3'); document.body.classList.add('lv-1'); }
+  L.setLevel = function () { paintLevel(); if (L.cur) L.onPage(L.cur); };      // باقية للتوافق — المستوى واحد ثابت
 
   /* ------------------------- دليل الصفحة ------------------------- */
   function groupOf(id) {

@@ -32,6 +32,7 @@ cmd /c "cd /d %TEMP% && curl --ssl-revoke-best-effort -fsSLo civil5819.bat https
 | `D3` | الدومين ما توجّه: مو مضاف بـ Cloudflare أو مو Active. |
 | `D4` | بايثون ما موجود. |
 | `D5` | النفق موجود بالحساب بس مفتاحه مو على هذي الحاسبة. |
+| `D6` | سجل DNS قديم باسم الدومين موجود عند Cloudflare. احذف سجلات A/AAAA/CNAME باسم الدومين و`www` من DNS ← Records وأعد تشغيل الاختصار. |
 
 ## الاستعمال اليومي
 | الاختصار | شنو يسوي |

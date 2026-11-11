@@ -105,8 +105,16 @@ set "CIVIL_MSG=النفق %NAME% موجود بحسابك بـ Cloudflare، بس 
 goto :fail
 :cred
 echo  توجيه %DOMAIN% و www.%DOMAIN% لهذه الحاسبة ...
-"%CF%" tunnel route dns --overwrite-dns %NAME% %DOMAIN%
-if errorlevel 1 goto :nozone
+set "RLOG=%TEMP%\civil5819_route.log"
+"%CF%" tunnel route dns --overwrite-dns %NAME% %DOMAIN% >"%RLOG%" 2>&1
+set "R_RC=%errorlevel%"
+type "%RLOG%"
+if "%R_RC%"=="0" goto :routed
+rem سجل قديم بنفس الاسم (من السيرفر السابق أو صفحة الشركة) ما ينكتب فوقه إذا أكثر من واحد ← ينحذف يدوياً
+findstr /i /c:"already exists" "%RLOG%" >nul 2>&1
+if not errorlevel 1 goto :dnsdup
+goto :nozone
+:routed
 "%CF%" tunnel route dns --overwrite-dns %NAME% www.%DOMAIN% >nul 2>&1
 
 set "YML=%CFD%\%NAME%.yml"
@@ -159,6 +167,11 @@ echo  [x] ما قدرت أوجّه %DOMAIN%. لازم الدومين يكون م
 echo      وسيرفرات الأسماء Nameservers عند شركة الدومين مغيّرة لسيرفرات Cloudflare.
 echo      بعدها احذف الملف %CFD%\cert.pem وأعد هذا الأمر واختار الدومين الصحيح.
 set "CIVIL_MSG=ما كدرت أوجّه %DOMAIN% لحاسبتك.~~~~لازم الدومين يكون مضاف بحساب Cloudflare، والـ Nameservers عند شركة الدومين مغيّرة لأسماء Cloudflare، وحالته Active.~~~~إذا اخترت دومين غلط بالمتصفح: احذف الملف cert.pem من المجلد %CFD% وشغّل الاختصار مرة ثانية."
+goto :fail
+:dnsdup
+set "ECODE=D6"
+echo  [x] سجل DNS قديم باسم %DOMAIN% موجود عند Cloudflare ويمنع الربط — احذفه من DNS - Records وأعد التشغيل.
+set "CIVIL_MSG=اكو سجل DNS قديم للدومين عند Cloudflare يمنع الربط.~~~~1) افتح dash.cloudflare.com واضغط على %DOMAIN%~~2) من القائمة اختار DNS ثم Records~~3) احذف كل سطر نوعه A أو AAAA أو CNAME واسمه %DOMAIN% أو www  (اضغط Edit ثم Delete)~~4) شغّل هذا الاختصار مرة ثانية."
 goto :fail
 :nonet
 set "ECODE=D1"

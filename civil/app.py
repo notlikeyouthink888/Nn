@@ -328,8 +328,14 @@ def _cad_job_run(jid, payload):
             gc.collect()
 
 
+class Server(ThreadingHTTPServer):
+    # طابور الاتصالات المنتظرة. الافتراضي 5، وعلى ويندوز إذا امتلأ يُرفض الاتصال الجديد فوراً
+    # («actively refused»)؛ والمتصفح عبر النفق يفتح عشرات الاتصالات بلحظة لتحميل ملفات الصفحة.
+    request_queue_size = 256
+
+
 if __name__ == '__main__':
-    srv = ThreadingHTTPServer(('0.0.0.0', PORT), H)
+    srv = Server(('0.0.0.0', PORT), H)
     print("Civil Engineering platform  →  http://0.0.0.0:%d" % PORT, flush=True)
     try:
         srv.serve_forever()

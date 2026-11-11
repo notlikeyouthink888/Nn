@@ -47,7 +47,8 @@ if %CF_ROUND% lss 2 goto :cfget
 goto :nonet
 :cfok
 
-rem السيرفر لازم يشتغل أولاً — إذا مو شغّال نفتحه بنافذة ثانية
+rem السيرفر لازم يشتغل أولاً — إذا مو شغّال نفتحه بنافذة ثانية.
+rem النفق يتصل بـ 127.0.0.1 صريحاً: localhost على ويندوز يجرّب ‎::1 (IPv6) أولاً والمنصة تستمع على IPv4.
 "%PYEXE%" %PYARG% "%~dp0util.py" up %PORT%
 if not errorlevel 1 goto :srvok
 echo  تشغيل السيرفر بنافذة ثانية ...
@@ -74,7 +75,7 @@ echo  الرابط يطلع بالأسفل بسطر فيه trycloudflare.com —
 echo  لا تسد هذه النافذة.   (keep this window open)
 if exist "%QLOG%" del /q "%QLOG%" >nul 2>&1
 if not defined CIVIL_NOGUI start "" /b "%PYEXE%" %PYARG% "%~dp0util.py" quickurl "%QLOG%" >nul 2>&1
-"%CF%" tunnel --no-autoupdate --logfile "%QLOG%" --url http://localhost:%PORT%
+"%CF%" tunnel --no-autoupdate --logfile "%QLOG%" --url http://127.0.0.1:%PORT%
 pause
 exit /b 0
 
@@ -113,9 +114,9 @@ set "YML=%CFD%\%NAME%.yml"
 >>"%YML%" echo credentials-file: %CFD%\%UUID%.json
 >>"%YML%" echo ingress:
 >>"%YML%" echo   - hostname: %DOMAIN%
->>"%YML%" echo     service: http://localhost:%PORT%
+>>"%YML%" echo     service: http://127.0.0.1:%PORT%
 >>"%YML%" echo   - hostname: www.%DOMAIN%
->>"%YML%" echo     service: http://localhost:%PORT%
+>>"%YML%" echo     service: http://127.0.0.1:%PORT%
 >>"%YML%" echo   - service: http_status:404
 
 set "CIVIL_MSG=تريد المنصة والدومين يشتغلون تلقائياً ويّا تشغيل الحاسبة؟"

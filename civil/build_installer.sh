@@ -124,3 +124,6 @@ FTR
 rm -f "$PAY"
 chmod +x install.sh
 echo "install.sh generated: $(wc -c < install.sh) bytes, $(wc -l < install.sh) lines"
+
+# حزمة ويندوز الخفيفة (windows/pkg) — نفس الملفات، ينزّلها install_windows.bat
+python3 windows/build_pkg.py

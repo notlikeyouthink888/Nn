@@ -1,1 +1,3 @@
 *.bat -text
+pkg/*.zip binary
+pkg/manifest.txt -text

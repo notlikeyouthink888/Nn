@@ -4,12 +4,13 @@
 // · المجسم: يُبنى بسياق وهمي (بلا متصفح) ونتأكد من الهندسة الأساسية — ارتفاعات، عدد الركائز، شكل Y، القشرة.
 global.window = global;
 require('./static/megaprojects.js');
-const R = window.MEGAPROJ, B = R._burj, H = R._heydar;
+require('./static/megaprojects2.js');
+const R = window.MEGAPROJ, B = R._burj, H = R._heydar, G = R._capitalgate, M = R._mbs, K = R._crescent;
 let fails = 0;
 const ok = (c, msg) => { console.log((c ? '✓ ' : '✗ ') + msg); if (!c) fails++; };
 const near = (a, b, tol, msg) => ok(Math.abs(a - b) <= tol, msg + ': ' + (+a).toFixed(3) + ' ≈ ' + b);
 const LABS = ['beam', 'column', 'section', 'quake', 'path', 'truss', 'plate', 'wind', 'age'];
-const FIGS = ['web', 'cant', 'truss', 'vortex', 'outr'];
+const FIGS = ['web', 'cant', 'truss', 'vortex', 'outr', 'lean', 'hang', 'tie'];
 
 // سياق بناء وهمي: يعدّ القطع ويحفظ حدودها
 function stub() {
@@ -31,18 +32,18 @@ function stub() {
       };
       return api;
     },
-    inst(el, key, opt, shape, at) { S.inst[el] = at; cnt(el); at.forEach(p => { grow(el, p[0], p[1] - shape[3] / 2, p[2]); grow(el, p[0], p[1] + shape[3] / 2, p[2]); }); },
+    inst(el, key, opt, shape, at) { S.inst[el] = (S.inst[el] || []).concat(at); (S.shape = S.shape || {})[el] = shape; cnt(el); at.forEach(p => { grow(el, p[0], p[1] - shape[3] / 2, p[2]); grow(el, p[0], p[1] + shape[3] / 2, p[2]); }); },
     surface(el, key, opt, pos, idx) { if (pos.some(v => !isFinite(v))) throw new Error(el + ': سطح بيه NaN'); S.surf[el] = { v: pos.length / 3, t: idx.length / 3 }; cnt(el); for (let i = 0; i < pos.length; i += 3) grow(el, pos[i], pos[i + 1], pos[i + 2]); },
     lines(el, arr) { if (arr.some(v => !isFinite(v))) throw new Error(el + ': خطوط بيها NaN'); S.lines[el] = (S.lines[el] || 0) + arr.length / 6; cnt(el); for (let i = 0; i < arr.length; i += 3) grow(el, arr[i], arr[i + 1], arr[i + 2]); },
     points(el, arr) { cnt(el); },
     label(t, p, cls, el) { S.labels.push([t, p, el]); },
     ground(el) { cnt(el); },
-    pit(el) { cnt(el); }
+    pit(el, R, yb, bands, gR, gC, cx, cz) { if ([R, yb].some(v => !isFinite(v)) || yb >= 0) throw new Error(el + ': حفرة غير صالحة'); cnt(el); grow(el, cx || 0, yb, cz || 0); }
   };
 }
 
 // ---------------------------------------------------------------- البيانات
-ok(R.order.join() === 'burj,heydar', 'المشروعين: برج خليفة ومركز حيدر علييف');
+ok(R.order.join() === 'burj,heydar,capitalgate,mbs,crescent', 'خمس مشاريع: برج خليفة، حيدر علييف، كابيتال جيت، مارينا باي ساندز، فندق الهلال');
 for (const id of R.order) {
   const P = R[id], srcIds = P.sources.map(s => s[0]);
   ok(P.name && P.en && P.place && P.tag && P.idea.length >= 2 && P.note.includes('تعليمي'), id + ': تعريف المشروع وملاحظة إنه مجسم تعليمي');
@@ -116,6 +117,41 @@ ok(S.box.floors[4] <= 42.01 && S.box.conc[4] < 74 && S.box.frame[4] < 74 && S.bo
 ok(S.box.skin[3] - S.box.skin[0] > 180 && S.box.skin[4] <= 74.13, 'أبعاد القشرة (فواصل الألواح مرفوعة 0.12 م فوق السطح)');
 paths = R.heydar.paths();
 ok(paths.length >= 8 && paths.every(p => p.pts.every(q => q.every(isFinite)) && p.pts[p.pts.length - 1][1] < 0), 'مسارات الحمل تنتهي بالأساس');
+
+// ---------------------------------------------------------------- كابيتال جيت
+ok(fact(R.capitalgate, 'الميلان') === '18° غرباً' && fact(R.capitalgate, 'الارتفاع') === '160 م' && fact(R.capitalgate, 'الأساس') === '490 ركيزة', 'كابيتال جيت: 18°، 160 م، 490 ركيزة');
+near(G.y(G.NF), 160, 1e-9, 'آخر طابق عند 160 م'); near(G.off(G.LV0), 0, 1e-9, 'لا إزاحة قبل الطابق 12');
+near(Math.atan2(G.off(G.LV0) - G.off(G.NF), G.y(G.NF) - G.y(G.LV0)) * 180 / Math.PI, 18, 1e-9, 'زاوية الميلان 18°');
+let coreIn = true; for (let lv = 0; lv <= G.NF; lv++) { const ox = G.off(lv); for (const x of [G.XC - G.CW / 2, G.XC + G.CW / 2]) for (const z of [-G.CD / 2, G.CD / 2]) if (((x - ox) / G.A) ** 2 + (z / G.B) ** 2 > 1) coreIn = false; }
+ok(coreIn, 'اللب العمودي يبقى داخل كل الطوابق المنزاحة');
+c = stub(); R.capitalgate.build(c); S = c.S;
+ok(S.inst.piles && G.nPiles === 490, 'المجسم: 490 ركيزة بالضبط');
+ok(['core', 'pt', 'camber', 'slabs', 'beams', 'diagrid', 'pins', 'glass', 'splash', 'pool', 'raft', 'piles', 'soil', 'context'].every(el => S.n[el] > 0), 'كل عناصر كابيتال جيت انبنت');
+ok(S.n.pins >= 8, 'وصلات المفصل (8)');
+ok(S.box.pool[0] > G.off(19), 'المسبح بالجهة الشرقية (عكس الميلان)');
+ok(S.box.glass[4] <= 161 && S.box.glass[0] < -55, 'الزجاج يلحق الطوابق المنزاحة لحد 160 م');
+paths = R.capitalgate.paths(); ok(paths.some(p => p.c === 0xf87171) && paths.every(p => p.pts.every(q => q.every(isFinite))), 'مسار الحمل: وزن + شد');
+// ---------------------------------------------------------------- مارينا باي ساندز
+ok(fact(R.mbs, 'السكاي بارك') === '340 م' && fact(R.mbs, 'الكابولي') === '67 م' && fact(R.mbs, 'المسبح') === '146 م', 'مارينا باي ساندز: 340 م، كابولي 67 م، مسبح 146 م');
+c = stub(); R.mbs.build(c); S = c.S;
+near(M.LEN - M.CANT, 67, 1e-9, 'طول الكابولي بالمجسم 67 م'); near(M.LEN, 340, 1e-9, 'طول السكاي بارك 340 م'); ok(S.box.cant[3] >= M.LEN - 2.1 && S.box.skypark[0] <= 2.1, 'الصناديق تغطي الطول كله');
+near(S.box.pool[3] - S.box.pool[0] - 2 * 2, 146, 1e-6, 'المسبح 146 م');
+ok(M.zoff(M.y23) === 0 && M.zoff(0) === M.SPL && M.zoff(40) > 0, 'الساق المنحنية تلتقي بالعمودية عند الطابق 23');
+ok(M.hull(M.CANT + 1) > 9 && M.hull(M.LEN - 2) === 3.5, 'عمق الكابولي ≈ 10 م عند البرج و3.5 م بالطرف');
+ok(['eastleg', 'westleg', 'facade', 'atrium', 'truss23', 'tie', 'skypark', 'cant', 'pool', 'garden', 'podium', 'bay', 'piles', 'soil'].every(el => S.n[el] > 0), 'كل عناصر مارينا باي ساندز انبنت');
+ok(S.box.westleg[5] > S.box.eastleg[5] + 30, 'قدم الساق المنحنية بعيدة عن الشرقية');
+// ---------------------------------------------------------------- فندق الهلال
+ok(fact(R.crescent, 'الارتفاع') === '166 م' && fact(R.crescent, 'القوس') === '≈ 90 م بحر' && R.crescent.idea[0].includes('مو بتركيا'), 'فندق الهلال: 166 م، قوس 90 م، وتوضيح الموقع');
+near(K.xo(0), K.Ro, 1e-9, 'قاعدة الهلال'); near(K.xi(0) * 2, 90, 1e-9, 'فراغ البوابة 90 م'); ok(K.xo(166) === 0 && K.xi(K.Hi) === 0, 'الهلال ينغلق بالأعلى');
+let coresIn = true; for (let y = 0; y <= 128; y += 2) if (K.CX - K.CW / 2 < K.xi(y) || K.CX + K.CW / 2 > K.xo(y)) coresIn = false;
+ok(coresIn, 'الألباب تبقى داخل البرجين لحد ارتفاعها');
+c = stub(); R.crescent.build(c); S = c.S;
+ok(['cores', 'slabs', 'edgecols', 'hung', 'hangers', 'truss', 'arch', 'facade', 'crown', 'podium', 'island', 'bridge', 'sea', 'piles', 'soil'].every(el => S.n[el] > 0), 'كل عناصر فندق الهلال انبنت');
+near(S.shape.piles[3], 76, 1e-9, 'طول الركيزة 76 م'); near(S.box.piles[1], -79, 1e-6, 'نهاية الركائز ≈ 79 م تحت السطح');
+const hungLv = []; for (let lv = 0; lv <= K.NF; lv++) { const y = lv * K.fh; if (y >= K.HUNG[0] && y < K.HUNG[1] + 0.1) hungLv.push(lv); }
+ok(hungLv.length === 5, 'خمس طوابق معلّقة بالضبط (' + hungLv.length + ')');
+ok(S.box.arch[3] - S.box.arch[0] >= 89.9 && S.box.facade[4] <= 166.01, 'القوس يعبر 90 م والهلال 166 م');
+paths = R.crescent.paths(); ok(paths.some(p => p.c === 0x34d399 && p.pts[1][1] > p.pts[0][1]), 'مسار الحمل: العلّاقات تشد لفوق');
 
 console.log(fails ? '\n' + fails + ' FAILED' : '\nALL PASS');
 process.exit(fails ? 1 : 0);

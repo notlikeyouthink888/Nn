@@ -159,7 +159,7 @@
     if (c.project && (id === 'wizard' || id === 'femproj' || id === 'bbs')) L.push('اشرح لي نتائج مشروعي باختصار', 'ليش العمود طلع بهذا المقطع والتسليح؟', 'هل الأساسات مطابقة لـ ACI 318-19؟ وليش؟');
     if (id === 'rebar' || id === 'phys' || id === 'detail66') L.push('شكد طول التماسك لـ Ø25 حديد علوي و f\'c = 28؟', 'شنو الفرق بين الوصلة صنف A و B؟', 'شكد قطر ثني الكانة Ø10 وامتداد عكفتها؟');
     if (id === 'loads' || id === 'seismic' || id === 'wind') L.push('شنو الحمل الحي للمدارس والمكاتب بالكود العراقي؟', 'احسب القوة الزلزالية لمبنى 4 طوابق ارتفاعه 13 م ووزنه 9000 kN بأربيل');
-    if (id === 'mega') L.push(c.mega && c.mega.element ? 'اشرح لي هذا العنصر: ليش هو بهذا المكان وشلون ينتقل الحمل بيه؟' : 'شنو النظام الإنشائي لهذا المشروع وليش اختاروه؟', 'شنو الدرس اللي أطبّقه من هذا المشروع على مبنى عادي؟');
+    if (id === 'mega') L.push(c.mega && c.mega.element ? 'اشرح لي «' + c.mega.element.name + '»: ليش هو بهذا المكان وشلون ينتقل الحمل بيه؟' : 'شنو النظام الإنشائي لهذا المشروع وليش اختاروه؟', 'شنو الدرس اللي أطبّقه من هذا المشروع على مبنى عادي؟');
     if (!c.project && id === 'wizard') L.push('شلون أبدي مشروع جديد بالمعالج؟');
     L.push('شنو الأكواد اللي تعتمدها المنصة؟', 'شكد الغطاء الخرساني للأساسات والجسور؟');
     return [...new Set(L)].slice(0, 5);
@@ -440,6 +440,10 @@
     const fab = document.getElementById('aiFab'); if (fab && page() !== 'ai') fab.classList.remove('hide');
   };
   A.ask = (q, autosend) => A.open(q, autosend);
+  // محادثة مضمّنة داخل أي صفحة (مثل «المشاريع الكبيرة») — نفس المحادثة ونفس السياق
+  A.embed = function (host) { if (!host) return null; host.innerHTML = chatHtml('embed'); S.root = host.querySelector('.ai-chat'); renderMsgs(); return S.root; };
+  A.refresh = function (root) { if (root && document.body.contains(root)) { S.root = root; renderMsgs(); } };
+  A.sendIn = function (root, q) { if (!root) return A.open(q, true); S.root = root; send(q); };
   A.askElement = function () {
     const el = elementDigest();
     A.open('اشرح لي هذا العنصر' + (el && el.title ? ' (' + el.title + ')' : '') + ': شلون انحسب، وشنو الفحوص اللي ما تحققت، وشلون أعالجها حسب ACI 318-19؟');

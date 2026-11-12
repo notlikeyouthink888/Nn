@@ -36,9 +36,24 @@ const MEGA = (() => {
       <rect x="140" y="14" width="40" height="124" fill="#d9c9a8" opacity=".85"/><rect x="52" y="14" width="9" height="124" fill="#b9c0cb"/><rect x="259" y="14" width="9" height="124" fill="#b9c0cb"/>
       <rect x="61" y="50" width="79" height="22" fill="#f59e0b"/><rect x="180" y="50" width="79" height="22" fill="#f59e0b"/>
       ${A(10, 30, 46, 30, '#38bdf8')}${TX(26, 22, 'ريح', '#7dd3fc')}${A(56, 132, 56, 96, '#34d399')}${A(264, 96, 264, 132, '#f87171')}
-      ${TX(36, 118, 'يخف', '#a7f3d0')}${TX(290, 118, 'ينضغط', '#fca5a5')}${TX(160, 108, 'اللب', '#1f2937')}${TX(100, 44, 'جدار ربط', '#fde68a')}</svg>`]
+      ${TX(36, 118, 'يخف', '#a7f3d0')}${TX(290, 118, 'ينضغط', '#fca5a5')}${TX(160, 108, 'اللب', '#1f2937')}</svg>`],
+    lean: ['الوزن المايل يسوي عزماً: جهة تنضغط وجهة تنشد', `<svg viewBox="0 0 320 150" role="img"><defs>${DEFS}</defs>
+      <polygon points="150,130 190,130 120,20 80,20" fill="#8fb4d6" opacity=".55"/><rect x="160" y="18" width="16" height="112" fill="#c9b99a"/>
+      <rect x="60" y="130" width="200" height="10" fill="#9aa3ad"/>${A(100, 40, 100, 74, '#fbbf24')}${TX(100, 34, 'وزن الطوابق المايلة', '#fde68a')}
+      ${A(85, 148, 85, 118, '#f87171')}${A(235, 118, 235, 148, '#34d399')}${TX(52, 128, 'ضغط', '#fca5a5', 'start')}${TX(292, 128, 'شد', '#a7f3d0', 'end')}
+      ${TX(168, 12, 'لب مشدود مسبقاً', '#e6edf7')}`],
+    hang: ['الطوابق معلّقة: الحمل يصعد بالشد ثم ينزل بالبرجين', `<svg viewBox="0 0 320 150" role="img"><defs>${DEFS}</defs>
+      <rect x="20" y="20" width="36" height="125" fill="#c9b99a"/><rect x="264" y="20" width="36" height="125" fill="#c9b99a"/>
+      <polyline points="56,20 96,44 136,20 176,44 216,20 264,44" fill="none" stroke="#cbd5e1" stroke-width="2"/><line x1="56" y1="20" x2="264" y2="20" stroke="#f87171" stroke-width="3"/><line x1="56" y1="44" x2="264" y2="44" stroke="#38bdf8" stroke-width="3"/>
+      ${[96, 136, 176, 216].map(x => `<line x1="${x}" y1="44" x2="${x}" y2="100" stroke="#a7f3d0" stroke-width="2"/>`).join('')}
+      ${[60, 76, 92].map(y => `<line x1="80" y1="${y}" x2="240" y2="${y}" stroke="#8fb4d6" stroke-width="5"/>`).join('')}
+      ${A(160, 110, 160, 50, '#34d399')}${A(38, 60, 38, 140, '#fbbf24')}${A(282, 60, 282, 140, '#fbbf24')}${TX(160, 126, 'علّاقات تنشد ← الجملون ← البرجين', '#d1fae5')}`],
+    tie: ['الساق المايلة تدفع لبرّه — والبلاطة المشدودة تربطها مثل وتر القوس', `<svg viewBox="0 0 320 150" role="img"><defs>${DEFS}</defs>
+      <rect x="60" y="14" width="22" height="116" fill="#c9b99a"/><path d="M98 14 L120 14 Q140 90 250 130 L214 130 Q120 96 98 40 Z" fill="#c9b99a"/>
+      <rect x="54" y="130" width="206" height="12" fill="#9aa3ad"/><line x1="58" y1="136" x2="256" y2="136" stroke="#f87171" stroke-width="3"/>
+      ${A(236, 118, 286, 118, '#fbbf24')}${TX(290, 108, 'دفع', '#fde68a', 'end')}${TX(158, 150, 'بلاطة القاعدة مشدودة مسبقاً', '#fecaca')}${TX(100, 44, 'جدار ربط', '#fde68a')}</svg>`]
   };
-  const ST = { pid: 'burj', sel: null, also: [], mode: 'struct', off: {}, cutH: 100, cutV: false, tour: -1 };
+  const ST = { pid: 'burj', sel: null, also: [], mode: 'struct', off: {}, cutH: 100, cutV: false, tour: -1, sky: 'day', pt: null };
   let V = null;
   const proj = () => PR()[ST.pid];
 
@@ -48,20 +63,57 @@ const MEGA = (() => {
     const rn = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     rn.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     rn.localClippingEnabled = true;
-    rn.setClearColor(0x0a1224);
+    rn.outputEncoding = THREE.sRGBEncoding;                        // ألوان وإضاءة أقرب للواقع: ترميز sRGB + خرائط نغمية سينمائية
+    rn.toneMapping = THREE.ACESFilmicToneMapping; rn.toneMappingExposure = 1.0;
+    rn.shadowMap.enabled = true; rn.shadowMap.type = THREE.PCFSoftShadowMap;
     host.innerHTML = ''; host.appendChild(rn.domElement);
     rn.domElement.style.cssText = 'display:block;width:100%;height:100%;touch-action:none;outline:none';
+    const lin = h => new THREE.Color(h).convertSRGBToLinear();
     const sc = new THREE.Scene();
     sc.fog = new THREE.Fog(0x0a1224, P.view.fog[0], P.view.fog[1]);
     const cam = new THREE.PerspectiveCamera(38, 1, 2, P.view.far);
-    sc.add(new THREE.HemisphereLight(0xd6e6ff, 0x232d42, 0.9));
-    const sun = new THREE.DirectionalLight(0xfff4e0, 0.85); sun.position.set(0.6, 1, 0.75); sc.add(sun);
-    const fill = new THREE.DirectionalLight(0x9fc4ff, 0.3); fill.position.set(-0.8, 0.4, -0.6); sc.add(fill);
-    // قبة سماء بتدرّج هادئ
-    const skyG = new THREE.SphereGeometry(P.view.far * 0.45, 24, 12), skyC = [];
-    for (let i = 0; i < skyG.attributes.position.count; i++) { const t = Math.max(0, skyG.attributes.position.getY(i) / (P.view.far * 0.45)); skyC.push(0.04 + 0.05 * (1 - t), 0.07 + 0.09 * (1 - t), 0.14 + 0.16 * (1 - t)); }
-    skyG.setAttribute('color', new THREE.Float32BufferAttribute(skyC, 3));
+    const VW = P.view, EXT = Math.max(VW.w, VW.h, VW.d) * 0.62;
+    const hemi = new THREE.HemisphereLight(0xd6e6ff, 0x3a3f4a, 0.6); sc.add(hemi);
+    const sun = new THREE.DirectionalLight(0xfff0d8, 2.2);
+    sun.position.set(VW.c[0] + EXT * 1.1, VW.c[1] + EXT * 1.9, VW.c[2] + EXT * 1.3);
+    sun.target.position.set(VW.c[0], VW.c[1] * 0.5, VW.c[2]); sc.add(sun); sc.add(sun.target);
+    sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -EXT, right: EXT, top: EXT, bottom: -EXT, near: 1, far: EXT * 6 });
+    sun.shadow.camera.updateProjectionMatrix(); sun.shadow.bias = -0.0004; sun.shadow.normalBias = EXT * 0.0012;
+    const fill = new THREE.DirectionalLight(0x9fc4ff, 0.35); fill.position.set(-0.8, 0.4, -0.6); sc.add(fill);
+    // قبة سماء + بيئة انعكاس (الزجاج والماء يعكسون السماء)
+    const R0 = P.view.far * 0.45, skyG = new THREE.SphereGeometry(R0, 32, 16), skyCol = new Float32Array(skyG.attributes.position.count * 3);
+    skyG.setAttribute('color', new THREE.BufferAttribute(skyCol, 3));
     sc.add(new THREE.Mesh(skyG, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false })));
+    const pmrem = new THREE.PMREMGenerator(rn); let envRT = null;
+    const SKIES = { day: [0x2a62a8, 0xcfe0ee, 0x5d6168, 0xffffff, 2.3, 0.62, 1.0], night: [0x040814, 0x1a2a48, 0x0a0f1c, 0x9fb6e0, 0.55, 0.38, 0.9] };
+    function setSky(mode) {
+      const k = SKIES[mode] || SKIES.day, zen = lin(k[0]), hor = lin(k[1]), gnd = lin(k[2]), c = new THREE.Color();
+      const P3 = skyG.attributes.position;
+      for (let i = 0; i < P3.count; i++) {
+        const t = P3.getY(i) / R0;
+        if (t >= 0) c.copy(hor).lerp(zen, Math.pow(t, 0.55)); else c.copy(hor).lerp(gnd, Math.min(1, -t * 4));
+        skyCol[i * 3] = c.r; skyCol[i * 3 + 1] = c.g; skyCol[i * 3 + 2] = c.b;
+      }
+      P3.needsUpdate = true; skyG.attributes.color.needsUpdate = true;
+      sc.fog.color.copy(hor).lerp(zen, 0.15);
+      sun.color.copy(lin(k[3])); sun.intensity = k[4]; hemi.intensity = k[5]; rn.toneMappingExposure = k[6];
+      hemi.color.copy(zen).lerp(new THREE.Color(1, 1, 1), 0.55); hemi.groundColor.copy(gnd);
+      const es = new THREE.Scene(), eg = new THREE.SphereGeometry(10, 32, 16), ec = [];
+      for (let i = 0; i < eg.attributes.position.count; i++) {
+        const t = eg.attributes.position.getY(i) / 10;
+        if (t >= 0) c.copy(hor).lerp(zen, Math.pow(t, 0.55)); else c.copy(hor).lerp(gnd, Math.min(1, -t * 3));
+        ec.push(c.r, c.g, c.b);
+      }
+      eg.setAttribute('color', new THREE.Float32BufferAttribute(ec, 3));
+      es.add(new THREE.Mesh(eg, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+      const sd = new THREE.Mesh(new THREE.SphereGeometry(0.9, 12, 8), new THREE.MeshBasicMaterial({ color: mode === 'night' ? 0x6677aa : 0xfff3d6 }));
+      sd.position.set(5, 6.5, 5); es.add(sd);
+      if (envRT) envRT.dispose();
+      envRT = pmrem.fromScene(es, 0.03); sc.environment = envRT.texture;
+      eg.dispose(); sd.geometry.dispose(); sd.material.dispose(); es.children[0].material.dispose();
+      if (typeof touch === 'function') touch();
+    }
     const ctl = new THREE.OrbitControls(cam, rn.domElement);
     ctl.enableDamping = true; ctl.dampingFactor = 0.09; ctl.screenSpacePanning = true;
     ctl.minDistance = P.view.min; ctl.maxDistance = P.view.max; ctl.maxPolarAngle = Math.PI * 0.74;
@@ -69,18 +121,66 @@ const MEGA = (() => {
 
     const E = {}, batches = {}, labels = [], trash = [];
     const keep = o => { trash.push(o); return o; };
+    /* قوام إجرائي مرسوم بالمتصفح (بلا صور خارجية): زجاج بإطارات، خرسانة، ماء، عشب، خشب، رمل، شبك معدني، بلاط */
+    const TEXB = {};
+    function texBase(kind) {
+      if (TEXB[kind]) return TEXB[kind];
+      const N = 256, cv = document.createElement('canvas'); cv.width = cv.height = N;
+      const g = cv.getContext('2d'), rnd = (() => { let x = 1234567 + kind.length * 97; return () => ((x = (x * 16807) % 2147483647) / 2147483647); })();
+      const noise = (base, amp, n, sz) => { g.fillStyle = base; g.fillRect(0, 0, N, N); for (let i = 0; i < n; i++) { const v = (rnd() - 0.5) * amp; g.fillStyle = v > 0 ? `rgba(255,255,255,${v})` : `rgba(0,0,0,${-v})`; g.fillRect(rnd() * N, rnd() * N, sz, sz); } };
+      if (kind === 'facade' || kind === 'diamond') {
+        const gr = g.createLinearGradient(0, 0, 0, N); gr.addColorStop(0, '#dfeefa'); gr.addColorStop(0.55, '#8fb4d6'); gr.addColorStop(1, '#5d7fa3');
+        g.fillStyle = gr; g.fillRect(0, 0, N, N);
+        g.fillStyle = 'rgba(255,255,255,.18)'; g.beginPath(); g.moveTo(0, 0); g.lineTo(N * 0.45, 0); g.lineTo(0, N * 0.7); g.fill();
+        g.strokeStyle = '#3c4b5c'; g.lineWidth = 7;
+        if (kind === 'facade') { g.fillStyle = '#56606c'; g.fillRect(0, N * 0.84, N, N * 0.16); g.strokeRect(0, 0, N, N); g.beginPath(); g.moveTo(N / 2, 0); g.lineTo(N / 2, N * 0.84); g.stroke(); }
+        else { g.lineWidth = 9; g.beginPath(); g.moveTo(0, N / 2); g.lineTo(N / 2, 0); g.lineTo(N, N / 2); g.lineTo(N / 2, N); g.closePath(); g.stroke(); g.lineWidth = 3; g.beginPath(); g.moveTo(N / 4, N / 4); g.lineTo(N * 0.75, N * 0.75); g.stroke(); }
+      } else if (kind === 'concrete') { noise('#c3c1bb', 0.16, 2600, 2); g.strokeStyle = 'rgba(0,0,0,.12)'; g.lineWidth = 2; g.strokeRect(0, 0, N, N); g.beginPath(); g.moveTo(0, N / 2); g.lineTo(N, N / 2); g.stroke(); }
+      else if (kind === 'water') {
+        g.fillStyle = '#2380b6'; g.fillRect(0, 0, N, N);
+        for (let i = 0; i < 140; i++) { g.strokeStyle = `rgba(255,255,255,${0.04 + rnd() * 0.12})`; g.lineWidth = 1 + rnd() * 2; const x = rnd() * N, y = rnd() * N, l = 10 + rnd() * 30; g.beginPath(); g.moveTo(x, y); g.quadraticCurveTo(x + l / 2, y - 3, x + l, y); g.stroke(); }
+      } else if (kind === 'grass') noise('#4c7a3a', 0.35, 4000, 2);
+      else if (kind === 'deck') { g.fillStyle = '#9a7650'; g.fillRect(0, 0, N, N); for (let i = 0; i < 8; i++) { g.fillStyle = `rgba(${rnd() > 0.5 ? '255,255,255' : '0,0,0'},${rnd() * 0.12})`; g.fillRect(0, i * N / 8, N, N / 8); g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(0, i * N / 8, N, 2); } }
+      else if (kind === 'sand') noise('#d8c7a2', 0.2, 3500, 2);
+      else if (kind === 'mesh') { g.fillStyle = '#c9ced4'; g.fillRect(0, 0, N, N); g.fillStyle = 'rgba(40,50,60,.55)'; for (let y = 8; y < N; y += 16) for (let x = (y / 16) % 2 ? 16 : 8; x < N; x += 16) { g.beginPath(); g.arc(x, y, 4.2, 0, 7); g.fill(); } }
+      else if (kind === 'stone') { noise('#bfb6a6', 0.14, 1800, 3); g.strokeStyle = 'rgba(70,60,50,.45)'; g.lineWidth = 3; for (let i = 0; i <= 4; i++) { g.beginPath(); g.moveTo(0, i * N / 4); g.lineTo(N, i * N / 4); g.stroke(); g.beginPath(); g.moveTo(i * N / 4 + ((i % 2) ? 0 : 0), 0); g.lineTo(i * N / 4, N); g.stroke(); } }
+      else noise('#bbbbbb', 0.1, 800, 2);
+      const t = new THREE.CanvasTexture(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.encoding = THREE.sRGBEncoding;
+      t.anisotropy = Math.min(8, rn.capabilities.getMaxAnisotropy ? rn.capabilities.getMaxAnisotropy() : 1);
+      TEXB[kind] = keep(t); return t;
+    }
+    function texOf(kind, rep) {
+      const t = texBase(kind).clone(); t.needsUpdate = true;
+      const r = rep || { facade: [3, 4], diamond: [4, 6], concrete: [4, 4], water: [30, 30], grass: [10, 10], deck: [4, 4], sand: [20, 20], mesh: [2, 2], stone: [6, 6] }[kind] || [5, 5];
+      t.repeat.set(1 / r[0], 1 / r[1]); return keep(t);
+    }
+    // إحداثيات UV من موقع النقطة بالعالم (متر) — القوام يلتف مستمراً على كل وجه بلا تمدد
+    function wuv(g) {
+      const P3 = g.attributes.position, N3 = g.attributes.normal; if (!P3 || !N3) return g;
+      const uv = new Float32Array(P3.count * 2);
+      for (let i = 0; i < P3.count; i++) {
+        const x = P3.getX(i), y = P3.getY(i), z = P3.getZ(i), nx = N3.getX(i), ny = N3.getY(i), nz = N3.getZ(i);
+        if (Math.abs(ny) > 0.72) { uv[i * 2] = x; uv[i * 2 + 1] = z; }
+        else { const l = Math.hypot(nx, nz) || 1; uv[i * 2] = (-nz * x + nx * z) / l; uv[i * 2 + 1] = y; }
+      }
+      g.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); return g;
+    }
     const ent = el => E[el] || (E[el] = { group: (g => { sc.add(g); return g; })(new THREE.Group()), mats: [], pick: [], box: null });
     function material(el, o) {
       o = o || {};
       const op = o.opacity == null ? 1 : o.opacity;
-      const m = keep(new THREE.MeshStandardMaterial({ color: o.color == null ? 0xb9c0cb : o.color, roughness: o.rough == null ? 0.8 : o.rough, metalness: o.metal || 0,
+      const m = keep(new THREE.MeshStandardMaterial({ color: lin(o.color == null ? 0xb9c0cb : o.color), roughness: o.rough == null ? 0.8 : o.rough, metalness: o.metal || 0,
         transparent: true, opacity: op, depthWrite: o.dw === false ? false : op >= 0.9, side: o.side === 2 ? THREE.DoubleSide : o.side === 1 ? THREE.BackSide : THREE.FrontSide,
-        vertexColors: !!o.vc, clippingPlanes: CLIP }));
-      m.userData = { o: op, dw: m.depthWrite, kind: 'mesh' };
+        vertexColors: !!o.vc, clippingPlanes: CLIP, envMapIntensity: o.env == null ? 1 : o.env }));
+      if (o.tex) m.map = texOf(o.tex, o.rep);
+      if (o.glow) { m.emissive = lin(o.glow); m.emissiveIntensity = 0; }
+      m.userData = { o: op, dw: m.depthWrite, kind: 'mesh', glow: o.glow ? lin(o.glow) : null, shadow: o.shadow !== false && op >= 0.9 };
       ent(el).mats.push(m); return m;
     }
     function addMesh(el, geom, mat, pickable) {
+      if (mat.map && !geom.attributes.uv) wuv(geom);
       const me = new THREE.Mesh(keep(geom), mat); me.userData.el = el; me.renderOrder = mat.userData.o < 0.9 ? 2 : 0; ent(el).group.add(me);
+      me.castShadow = !!mat.userData.shadow; me.receiveShadow = true;
       if (pickable !== false) ent(el).pick.push(me);
       return me;
     }
@@ -91,7 +191,7 @@ const MEGA = (() => {
       parts.forEach(q => { pos.set(q.attributes.position.array, o); nor.set(q.attributes.normal.array, o); o += q.attributes.position.array.length; q.dispose(); });
       const out = new THREE.BufferGeometry();
       out.setAttribute('position', new THREE.BufferAttribute(pos, 3)); out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-      return out;
+      return wuv(out);
     }
     const M4 = new THREE.Matrix4(), Q = new THREE.Quaternion(), UP = new THREE.Vector3(0, 1, 0), v3 = (a) => new THREE.Vector3(a[0], a[1], a[2]);
     function geo(pos, idx) {
@@ -140,11 +240,13 @@ const MEGA = (() => {
         return api;
       },
       inst(el, key, opt, shape, at) {
+        if (!at.length) return;
         const g = new THREE.CylinderGeometry(shape[1], shape[2], shape[3], shape[4] || 10), m = material(el, opt);
         const im = new THREE.InstancedMesh(keep(g), m, at.length);
         at.forEach((p, i) => im.setMatrixAt(i, M4.makeTranslation(p[0], p[1], p[2])));
-        im.instanceMatrix.needsUpdate = true; im.userData.el = el; ent(el).group.add(im); ent(el).pick.push(im);
-        ent(el).box = new THREE.Box3().setFromPoints(at.map(p => new THREE.Vector3(p[0], p[1] + shape[3] / 2, p[2])).concat(at.map(p => new THREE.Vector3(p[0], p[1] - shape[3] / 2, p[2]))));
+        im.instanceMatrix.needsUpdate = true; im.userData.el = el; im.castShadow = true; im.receiveShadow = true; ent(el).group.add(im); ent(el).pick.push(im);
+        const bx = new THREE.Box3().setFromPoints(at.map(p => new THREE.Vector3(p[0], p[1] + shape[3] / 2, p[2])).concat(at.map(p => new THREE.Vector3(p[0], p[1] - shape[3] / 2, p[2]))));
+        ent(el).box = ent(el).box ? ent(el).box.union(bx) : bx;
       },
       surface(el, key, opt, pos, idx, col) {
         const g = geo(pos, idx); if (col) g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
@@ -152,13 +254,13 @@ const MEGA = (() => {
       },
       lines(el, arr, color, opacity) {
         const g = keep(new THREE.BufferGeometry()); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
-        const m = keep(new THREE.LineBasicMaterial({ color, transparent: true, opacity: opacity == null ? 1 : opacity, clippingPlanes: CLIP }));
+        const m = keep(new THREE.LineBasicMaterial({ color: lin(color), transparent: true, opacity: opacity == null ? 1 : opacity, clippingPlanes: CLIP }));
         m.userData = { o: m.opacity, kind: 'line' }; ent(el).mats.push(m);
         const ln = new THREE.LineSegments(g, m); ln.userData.el = el; ent(el).group.add(ln); ent(el).pick.push(ln);
       },
       points(el, arr, color, size) {
         const g = keep(new THREE.BufferGeometry()); g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
-        const m = keep(new THREE.PointsMaterial({ color, size: size || 2, sizeAttenuation: false, transparent: true, opacity: 0.95, clippingPlanes: CLIP }));
+        const m = keep(new THREE.PointsMaterial({ color: lin(color), size: size || 2, sizeAttenuation: false, transparent: true, opacity: 0.95, clippingPlanes: CLIP }));
         m.userData = { o: 0.95, kind: 'line' }; ent(el).mats.push(m);
         ent(el).group.add(new THREE.Points(g, m));
       },
@@ -166,12 +268,13 @@ const MEGA = (() => {
         const d = document.createElement('div'); d.className = 'mg-lab ' + (cls || ''); d.textContent = text; labelBox.appendChild(d);
         labels.push({ d, p: v3(pos), el: el || null });
       },
-      ground(el, R, color, y) {
+      ground(el, R, color, y, opt) {
         const g = new THREE.CircleGeometry(R, 64); g.rotateX(-Math.PI / 2); g.translate(0, y || 0, 0);
-        addMesh(el, g, material(el, { color, rough: 0.95 }));
+        addMesh(el, g, material(el, Object.assign({ color, rough: 0.95 }, opt || {})));
       },
-      pit(el, R, yb, bands, groundR, groundColor) {                 // حفرة مقطوعة تبيّن ما تحت الأرض + سطح الأرض حولها
-        const g = new THREE.CylinderGeometry(R, R, -yb, 64, 24, true); g.translate(0, yb / 2, 0);
+      pit(el, R, yb, bands, groundR, groundColor, cx, cz) {        // حفرة مقطوعة تبيّن ما تحت الأرض + سطح الأرض حولها
+        cx = cx || 0; cz = cz || 0;
+        const g = new THREE.CylinderGeometry(R, R, -yb, 64, 24, true); g.translate(cx, yb / 2, cz);
         const col = [], c1 = new THREE.Color(), c2 = new THREE.Color();
         for (let i = 0; i < g.attributes.position.count; i++) {
           const y = g.attributes.position.getY(i); let k = 0; while (k < bands.length - 2 && y < bands[k + 1][0]) k++;
@@ -180,11 +283,12 @@ const MEGA = (() => {
         }
         g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
         addMesh(el, g, material(el, { vc: true, color: 0xffffff, rough: 1, side: 1 }));
-        const bot = new THREE.CircleGeometry(R, 64); bot.rotateX(-Math.PI / 2); bot.translate(0, yb, 0);
+        const bot = new THREE.CircleGeometry(R, 64); bot.rotateX(-Math.PI / 2); bot.translate(cx, yb, cz);
         addMesh(el, bot, material(el, { color: bands[bands.length - 1][1], rough: 1 }));
+        if (!(groundR > R)) return;
         const ring = new THREE.RingGeometry(R, groundR, 64, 1); ring.rotateX(-Math.PI / 2);
-        const rm = keep(new THREE.MeshStandardMaterial({ color: groundColor, roughness: 0.95, clippingPlanes: CLIP }));
-        sc.add(new THREE.Mesh(keep(ring), rm));
+        const rm = keep(new THREE.MeshStandardMaterial({ color: lin(groundColor), roughness: 0.95, clippingPlanes: CLIP, map: texOf('sand', [30, 30]) }));
+        wuv(ring); const rmM = new THREE.Mesh(keep(ring), rm); rmM.receiveShadow = true; sc.add(rmM);
       }
     };
     P.build(C);
@@ -202,7 +306,12 @@ const MEGA = (() => {
         e.mats.forEach(m => {
           const u = m.userData, o = ghost ? Math.min(u.o, u.o < 0.9 ? 0.05 : 0.11) : u.o;
           m.opacity = o;
-          if (u.kind === 'mesh') { m.depthWrite = ghost ? false : u.dw; m.emissive.setHex(hit ? 0x3a2f08 : 0x000000); m.emissiveIntensity = hit ? 1 : 0; }
+          if (u.kind === 'mesh') {
+            m.depthWrite = ghost ? false : u.dw;
+            if (hit) { m.emissive.setHex(0x3a2f08); m.emissiveIntensity = 1; }
+            else if (u.glow && ST.sky === 'night') { m.emissive.copy(u.glow); m.emissiveIntensity = ghost ? 0.15 : 0.9; }
+            else { m.emissive.setHex(0x000000); m.emissiveIntensity = 0; }
+          }
         });
       });
       touch();
@@ -304,7 +413,7 @@ const MEGA = (() => {
       ray.setFromCamera(ndc, cam);
       const list = []; Object.keys(E).forEach(el => { if (!ST.off[el] && P.els[el]) E[el].pick.forEach(o => list.push(o)); });
       const hits = ray.intersectObjects(list, false);
-      for (let i = 0; i < hits.length; i++) { const p = hits[i].point; if (planeH.distanceToPoint(p) >= 0 && planeV.distanceToPoint(p) >= 0) return hits[i].object.userData.el; }
+      for (let i = 0; i < hits.length; i++) { const p = hits[i].point; if (planeH.distanceToPoint(p) >= 0 && planeV.distanceToPoint(p) >= 0) return { el: hits[i].object.userData.el, p: [p.x, p.y, p.z] }; }
       return null;
     }
     let down = null, hov = 0;
@@ -313,11 +422,11 @@ const MEGA = (() => {
     const onUp = e => {
       if (!down) return; const moved = Math.hypot(e.clientX - down[0], e.clientY - down[1]); down = null;
       if (moved > 6) return;
-      const el = hitAt(e); if (V && V.onPick) V.onPick(el);
+      const h = hitAt(e); if (V && V.onPick) V.onPick(h && h.el, h && h.p);
     };
     const onMove = e => {
       if (down || e.pointerType === 'touch') return;
-      if (hov) return; hov = requestAnimationFrame(() => { hov = 0; if (dead) return; const el = hitAt(e); el0.style.cursor = el ? 'pointer' : 'grab'; if (V && V.onHover) V.onHover(el, e); });
+      if (hov) return; hov = requestAnimationFrame(() => { hov = 0; if (dead) return; const hh = hitAt(e), el = hh && hh.el; el0.style.cursor = el ? 'pointer' : 'grab'; if (V && V.onHover) V.onHover(el, e); });
     };
     el0.addEventListener('pointerdown', onDown); el0.addEventListener('pointerup', onUp); el0.addEventListener('pointermove', onMove);
     el0.addEventListener('pointerleave', () => { if (V && V.onHover) V.onHover(null); });
@@ -356,13 +465,13 @@ const MEGA = (() => {
     function dispose() {
       if (dead) return; dead = true; cancelAnimationFrame(raf); clearAnim();
       if (ro) ro.disconnect(); else window.removeEventListener('resize', size);
-      ctl.dispose(); trash.forEach(o => o.dispose && o.dispose()); skyG.dispose(); rn.dispose();
+      ctl.dispose(); trash.forEach(o => o.dispose && o.dispose()); skyG.dispose(); if (envRT) envRT.dispose(); pmrem.dispose(); rn.dispose();
       labels.forEach(l => l.d.remove());
       if (V && V.rn === rn) V = null;
     }
-    size(); view('home', true); paint(); setCut();
+    size(); setSky(ST.sky); view('home', true); paint(); setCut();
     raf = requestAnimationFrame(tick);
-    return { rn, paint, setCut, setMode, view, focus, fly, dispose, touch, has: el => !!E[el], els: () => Object.keys(E) };
+    return { rn, paint, setCut, setMode, view, focus, fly, dispose, touch, sky: m => { setSky(m); paint(); }, has: el => !!E[el], els: () => Object.keys(E) };
   }
 
   /* =============================== الواجهة =============================== */
@@ -407,18 +516,41 @@ const MEGA = (() => {
           <div class="mg-canvas" id="mgCanvas"></div><div class="mg-labels" id="mgLabels"></div>
           <div class="mg-hud tl" id="mgModes"></div>
           <div class="mg-hud tr"><button data-mg="view" data-v="home" title="المنظر الرئيسي">🏠</button><button data-mg="view" data-v="top" title="مسقط من فوق">⬇️ مسقط</button>
-            <button data-mg="view" data-v="front" title="واجهة">↔️ واجهة</button><button data-mg="full" title="ملء الشاشة">⛶</button></div>
+            <button data-mg="view" data-v="front" title="واجهة">↔️ واجهة</button><button data-mg="sky" id="mgSky" title="نهار / ليل">🌙</button><button data-mg="full" title="ملء الشاشة">⛶</button></div>
           <div class="mg-tip" id="mgTip" hidden></div>
           <div class="mg-tour" id="mgTour"></div>
           <div class="mg-hud bl"><label class="mg-cut">✂️ قطع أفقي <input type="range" min="0" max="100" value="100" id="mgCutH" aria-label="منسوب القطع الأفقي"><b id="mgCutT">كامل الارتفاع</b></label>
             <label class="mg-chk"><input type="checkbox" id="mgCutV"> مقطع عمودي</label></div>
           <div class="mg-ro">👁️ عرض فقط · دوّر بالسحب · قرّب بالعجلة · اضغط أي عنصر</div>
         </div>
-        <aside class="mg-side"><div class="mg-layers" id="mgLayers"></div><div id="mgInfo"></div></aside>
+        <aside class="mg-side"><div class="mg-layers" id="mgLayers"></div><div id="mgInfo"></div>
+          <section class="mg-ai" id="mgAI" aria-label="اسأل الذكاء الاصطناعي"><div class="mg-aih"><b>🤖 اسأل الذكاء الاصطناعي عن أي جزء</b>
+            <small>اضغط أي مكان بالمجسم، أو اختار سؤال، أو اكتب سؤالك — يجاوب من معلومات المشروع ومصادره</small></div>
+            <div class="mg-aiq" id="mgAIQ"></div><div class="mg-chat" id="mgChat"></div></section></aside>
       </div>
       <div class="mg-below" id="mgBelow"></div></div>`;
   };
   const $ = id => document.getElementById(id);
+  function aiQs() {
+    const P = proj(), el = ST.sel && P.els[ST.sel], pt = ST.pt, out = [];
+    if (pt && pt.y != null) {
+      const where = P.cutText(pt.y), nm = pt.el && P.els[pt.el] ? P.els[pt.el].name : 'هذا الجزء';
+      out.push(['🎯', 'شنو «' + nm + '» عند منسوب ' + Math.round(pt.y) + ' م (' + where + ')؟ وشنو دوره الإنشائي بهذا المكان؟']);
+    }
+    if (el) out.push(['📍', 'ليش «' + el.name + '» بهذا المكان بالضبط بـ' + P.name + '؟'], ['⬇️', 'شلون ينتقل الحمل بـ«' + el.name + '» لحد الأرض؟'],
+      ['⚠️', 'شنو يصير لو «' + el.name + '» ما موجود أو انصمّم أضعف؟'], ['🏗️', 'شلون نفّذوا «' + el.name + '» بالموقع؟']);
+    else out.push(['🏗️', 'شنو النظام الإنشائي لـ' + P.name + ' وليش اختاروه؟'], ['🧗', 'شنو أصعب تحدي إنشائي بـ' + P.name + ' وشلون حلّوه؟'],
+      ['🏛️', 'اشرح لي الفكرة المعمارية لـ' + P.name + ' وشلون أثّرت على الهيكل.'], ['🇮🇶', 'شنو الدرس اللي أطبّقه من ' + P.name + ' على مبنى عادي بالعراق؟']);
+    return out.slice(0, 5);
+  }
+  function paintAI() {
+    const box = $('mgAIQ'); if (!box) return;
+    box.innerHTML = aiQs().map(q => `<button data-mg="aiq" data-q="${esc(q[1])}"><i>${q[0]}</i>${esc(q[1])}</button>`).join('');
+    const ch = $('mgChat');
+    if (ch && window.AIASK && AIASK.embed && !ch.firstChild) AIASK.embed(ch);
+    else if (ch && window.AIASK && AIASK.refresh && ch.firstChild) AIASK.refresh(ch.querySelector('.ai-chat'));
+    if (!window.AIASK || !AIASK.embed) box.innerHTML += '<div class="mg-hint">وحدة المساعد غير محمَّلة.</div>';
+  }
   function paintUi() {
     const P = proj(); if (!$('mgInfo')) return;
     $('mgModes').innerHTML = P.modes.map(m => `<button class="${ST.mode === m[0] ? 'on' : ''}" data-mg="mode" data-v="${m[0]}">${m[1]}</button>`).join('') +
@@ -426,6 +558,8 @@ const MEGA = (() => {
     $('mgLayers').innerHTML = '<span class="mg-lt">الطبقات:</span>' + P.layers.map(l => `<button class="${ST.off[l[0]] ? '' : 'on'} ${ST.sel === l[0] ? 'sel' : ''}" data-mg="layer" data-el="${l[0]}">${esc(l[1])}</button>`).join('') +
       '<button class="all" data-mg="reset" title="رجّع كل شي مثل البداية">↺</button>';
     $('mgInfo').innerHTML = infoHtml();
+    const sk = $('mgSky'); if (sk) { sk.textContent = ST.sky === 'night' ? '☀️' : '🌙'; sk.title = ST.sky === 'night' ? 'نهار' : 'ليل (الأضوية تشتغل)'; }
+    paintAI();
     const t = P.tour[ST.tour], box = $('mgTour'); $('mgView').classList.toggle('touring', !!t);
     box.innerHTML = t ? `<div class="mg-tcard"><div class="mg-tn">${ST.tour + 1} / ${P.tour.length}</div><b>${esc(t.t)}</b><p>${esc(t.x)}</p>
       <div class="mg-tb"><button data-mg="tprev" ${ST.tour ? '' : 'disabled'}>→ السابق</button><button class="go" data-mg="tnext">${ST.tour < P.tour.length - 1 ? 'التالي ←' : 'إنهاء ✓'}</button><button data-mg="tend" title="إغلاق الجولة">✕</button></div></div>` : '';
@@ -453,14 +587,18 @@ const MEGA = (() => {
   }
   function start(pid) {
     if (V) V.dispose();
-    ST.pid = PR()[pid] ? pid : 'burj'; ST.tour = -1; defaults();
+    ST.pid = PR()[pid] ? pid : 'burj'; ST.tour = -1; ST.pt = null; defaults();
     const P = proj();
     document.querySelectorAll('.mg-proj').forEach(b => b.classList.toggle('on', b.dataset.id === ST.pid));
     $('mgLabels').innerHTML = '';
     try { V = mount($('mgCanvas'), $('mgLabels'), P); } catch (e) { console.error(e); V = null; }
     if (!V) { $('mgCanvas').innerHTML = '<div class="mg-nogl">المتصفح ما قدر يشغّل العرض الثلاثي (WebGL). الشرح والأرقام تحت يشتغلون عادي.</div>'; }
     else {
-      V.onPick = el => { if (ST.tour >= 0 && !el) return; select(el === ST.sel ? null : el); };
+      V.onPick = (el, p) => {
+        if (ST.tour >= 0 && !el) return;
+        ST.pt = el && p ? { el, y: p[1], x: p[0], z: p[2] } : null;
+        select(el === ST.sel && !p ? null : el);
+      };
       V.onHover = (el, e) => {
         const tip = $('mgTip'); if (!tip) return;
         if (!el || !P.els[el]) { tip.hidden = true; return; }
@@ -479,10 +617,16 @@ const MEGA = (() => {
       if (a === 'proj') return start(b.dataset.id);
       if (a === 'src') { e.preventDefault(); const s = $('mgSrc'); if (s) s.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
       if (a === 'lab') { if (window.LAYERS) LAYERS.openLab(b.dataset.lab); return; }
-      if (a === 'ask') { if (window.AIASK) AIASK.ask(b.dataset.q); return; }
+      if (a === 'ask' || a === 'aiq') {
+        const ch = $('mgChat'), root = ch && ch.querySelector('.ai-chat');
+        if (root && AIASK.sendIn) { AIASK.sendIn(root, b.dataset.q); $('mgAI').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+        else if (window.AIASK) AIASK.ask(b.dataset.q, true);
+        return;
+      }
       if (a === 'full') { const v = $('mgView'); if (document.fullscreenElement) document.exitFullscreen(); else if (v.requestFullscreen) v.requestFullscreen().catch(() => { /* غير مدعوم */ }); return; }
       if (!V) return;
       if (a === 'view') return V.view(b.dataset.v);
+      if (a === 'sky') { ST.sky = ST.sky === 'night' ? 'day' : 'night'; V.sky(ST.sky); return paintUi(); }
       if (a === 'mode') { ST.mode = ST.mode === b.dataset.v ? 'struct' : b.dataset.v; V.setMode(ST.mode); if (ST.mode !== 'struct') { ST.sel = null; ST.also = []; V.paint(); V.view('home'); } return paintUi(); }
       if (a === 'layer') { const el = b.dataset.el; ST.off[el] = !ST.off[el]; if (ST.off[el] && ST.sel === el) { ST.sel = null; ST.also = []; } V.paint(); return paintUi(); }
       if (a === 'pick') return select(b.dataset.el);
@@ -504,8 +648,13 @@ const MEGA = (() => {
   function current() {
     const P = proj(); if (!P || !document.querySelector('#view .mg')) return null;
     const el = ST.sel && P.els[ST.sel], strip = s => String(s || '').replace(/<[^>]+>/g, '');
-    return { project: P.name + ' (' + P.en + ')', facts: P.facts.map(f => f[0] + ': ' + f[1]).join(' · '),
-      element: el ? { name: el.name, what: strip(el.what), why: strip(el.why), load: strip(el.load), numbers: (el.nums || []).map(n => n[0] + ': ' + n[1]).join(' · ') } : null };
+    const pt = ST.pt && ST.pt.y != null ? { element: P.els[ST.pt.el] ? P.els[ST.pt.el].name : ST.pt.el, height_m: Math.round(ST.pt.y * 10) / 10, where: P.cutText(ST.pt.y) } : null;
+    return { project: P.name + ' (' + P.en + ')', place: P.place + ' · ' + P.year, idea: P.idea.map(strip).join(' '),
+      facts: P.facts.map(f => f[0] + ': ' + f[1] + ' (' + strip(f[2]) + ')').join(' · '),
+      elements: Object.keys(P.els).map(k => P.els[k].name).join('، '), clicked_point: pt,
+      element: el ? { name: el.name, what: strip(el.what), why: strip(el.why), load: strip(el.load), numbers: (el.nums || []).map(n => n[0] + ': ' + n[1]).join(' · '),
+        code: el.aci || '' } : null,
+      model_note: P.note, sources: P.sources.map(x => '[' + x[0] + '] ' + x[1]).join(' · ') };
   }
   return { pageHtml, init, current, select, state: () => ST, viewer: () => V, tour: tourGo, start };
 })();

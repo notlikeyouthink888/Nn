@@ -183,7 +183,7 @@ window.MEGAPROJ = (() => {
       const core = c.use('core', 'c', { color: 0xd9c9a8, rough: 0.8 }), cor = c.use('corridor', 'c', { color: 0x8fb3d9, rough: 0.8 }),
         ham = c.use('hammer', 'c', { color: 0xe0a070, rough: 0.8 }), col = c.use('pcol', 'c', conc), out = c.use('outrigger', 'c', { color: 0xf59e0b, rough: 0.7 }),
         band = c.use('outrigger', 'b', { color: 0x1f2937, rough: 0.5, metal: 0.4, opacity: 0.55 }), slab = c.use('slab', 'c', { color: 0xdfe5ee, rough: 0.9, opacity: 0.92 }),
-        glass = c.use('clad', 'g', { color: 0x8ec5ee, rough: 0.12, metal: 0.55, opacity: 0.2, dw: false });
+        glass = c.use('clad', 'g', { color: 0xd6e8f6, rough: 0.08, metal: 0.6, opacity: 0.32, dw: false, tex: 'facade', rep: [3, 3.8], glow: 0xffd9a0, shadow: false });
       // اللب السداسي: ستة جدران
       const ap = B.RC * Math.cos(Math.PI / 6);
       for (let i = 0; i < 6; i++) { const a = B.ANG[0] + i * Math.PI / 3; core.box(B.RC + 0.6, 1.3, y0, yT, ap * Math.cos(a), ap * Math.sin(a), a + Math.PI / 2); }
@@ -244,7 +244,7 @@ window.MEGAPROJ = (() => {
       const yp = y0 - B.RAFT_T;
       c.inst('piles', 'c', { color: 0x7c8794, rough: 0.9 }, ['cyl', 0.75, 0.75, B.PILE_L, 10], pts.map(p => [p[0], yp - B.PILE_L / 2, p[1]]));
       // قطاع التربة (حفرة مقطوعة) + سطح الأرض
-      c.pit('soil', 96, yp - B.PILE_L - 8, [[0, 0x8a7a5c], [-14, 0x7b6a52], [-70, 0x5b5146]], 1500, 0x10192b);
+      c.pit('soil', 96, yp - B.PILE_L - 8, [[0, 0x8a7a5c], [-14, 0x7b6a52], [-70, 0x5b5146]], 1500, 0xd9c7a0);
       // مقارنة الارتفاع
       const cmp = c.use('compare', 'c', { color: 0x64748b, rough: 0.7, opacity: 0.55 });
       cmp.cyl(1.5, 62, 0, 330, -330, 0, 4, Math.PI / 4);
@@ -457,13 +457,13 @@ window.MEGAPROJ = (() => {
       }
       for (let u = 0.71; u <= 0.75; u += 0.012) { const e = edge(u); if (e[1] > 2) bt.tube([[e[0], 0, e[2] - 6], [e[0], e[1] * 0.25, e[2] - 6], [e[0], e[1] * 0.8, e[2] - 4.4], [e[0], e[1] - 0.6, e[2] - 0.6]], 0.55); }
       // ---- الساحة: أرض + خطوط تكمل فواصل القشرة
-      c.ground('plaza', 900, 0x18233a, -0.05);
+      c.ground('plaza', 900, 0xd6d0c4, -0.05, { tex: 'stone', rep: [6, 6] });
       const pl = [];
       for (let k = 1; k <= 7; k++) for (let i = 0; i < 160; i++) {
         const t0 = i / 160 * Math.PI * 2, t1 = (i + 1) / 160 * Math.PI * 2, rx = H.LX / 2 + 10 + k * 13, rz = 66 + k * 12;
         pl.push(rx * Math.cos(t0), 0.05, 8 + rz * Math.sin(t0), rx * Math.cos(t1), 0.05, 8 + rz * Math.sin(t1));
       }
-      c.lines('plaza', pl, 0x55657f, 0.5);
+      c.lines('plaza', pl, 0x9aa3ad, 0.6);
       // ---- الوظائف (مواقع تقريبية)
       [[0.27, -0.1, 44, 30, 26, 0xf472b6, 'القاعة · 1,000 مقعد'], [0.5, -0.12, 40, 15, 34, 0x60a5fa, 'المتحف'], [0.77, -0.1, 30, 12, 26, 0xa78bfa, 'المكتبة']].forEach(([u, v, lx, hy, lz, colr, t], i) => {
         const p = S(u, v); c.use('prog', 'p' + i, { color: colr, rough: 0.6, opacity: 0.4, dw: false }).box(lx, lz, 0.6, hy, p[0], p[2], 0);

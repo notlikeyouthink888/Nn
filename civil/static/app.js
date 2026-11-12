@@ -3764,6 +3764,13 @@ PAGES.ai = {
   html: () => (window.AIASK ? AIASK.pageHtml() : '<div class="card">وحدة المساعد غير محمَّلة.</div>'),
   init: () => { if (window.AIASK) AIASK.pageInit(); }
 };
+PAGES.mega = {
+  ic: '🏙️', name: 'المشاريع الكبيرة', ttl: 'المشاريع الكبيرة في الهندسة — شوف وافهم',
+  sub: 'مجسمات تعليمية للعرض فقط: دوّر، اضغط أي عنصر، واعرف ليش هو هنا وشلون ينتقل الحمل — بأرقام منشورة ومصادرها',
+  desc: 'برج خليفة ومركز حيدر علييف: النظام الإنشائي ومسار الحمل',
+  html: () => (window.MEGA ? MEGA.pageHtml() : '<div class="card">وحدة المشاريع الكبيرة غير محمَّلة.</div>'),
+  init: () => { if (window.MEGA) MEGA.init(); }
+};
 PAGES.map = {
   ic: '🗺️', name: 'خريطة المنصة', ttl: 'خريطة المنصة — طبقات العمل الهندسي',
   sub: 'من المدخلات إلى القراءة والتحليل والتصميم والمخرجات — اضغط أي قسم لتتبّع مساره',
@@ -3780,7 +3787,7 @@ PAGES.terms = {
 const ORDER = [
   ['المشروع', ['wizard', 'femproj', 'cad', 'room', 'bbs', 'detail66', 'projects']],
   ['التحليل الإنشائي', ['fem']],
-  ['الفهم والتعلّم', ['ai', 'phys', 'rebar', 'map', 'terms']],
+  ['الفهم والتعلّم', ['ai', 'mega', 'phys', 'rebar', 'map', 'terms']],
   ['ما تحت الصفر', ['survey', 'earth', 'soil', 'fndpick']],
   ['حاسبات منفردة', ['loads', 'seismic', 'wind', 'beam', 'column', 'footing']],
   ['مرجع', ['ref', 'home']],

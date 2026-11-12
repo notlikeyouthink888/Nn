@@ -108,6 +108,7 @@
     if (id === 'cad' || elementDigest()) { const cd = cadDigest(); if (cd) c.cad = cd; }
     const el = elementDigest(); if (el) c.element = el;
     const lb = labDigest(); if (lb) c.lab = lb;
+    try { const mg = window.MEGA && MEGA.current(); if (mg) c.mega = mg; } catch (e) { /* القسم غير مفتوح */ }
     return c;
   }
   function chips(c) {
@@ -116,6 +117,7 @@
     if (c.cad) out.push('🧩 ' + esc(c.cad.building || 'الأوتوكاد') + (c.cad.audit ? ' · ' + c.cad.audit.fail + ' مخالفة' : ''));
     if (c.element) out.push('📘 ' + esc(c.element.title || c.element.kind));
     if (c.lab) out.push('🔬 ' + esc(c.lab.name));
+    if (c.mega) out.push('🏙️ ' + esc(c.mega.element ? c.mega.element.name : c.mega.project));
     return out.map(t => `<span class="ai-chip">${t}</span>`).join('');
   }
 
@@ -157,6 +159,7 @@
     if (c.project && (id === 'wizard' || id === 'femproj' || id === 'bbs')) L.push('اشرح لي نتائج مشروعي باختصار', 'ليش العمود طلع بهذا المقطع والتسليح؟', 'هل الأساسات مطابقة لـ ACI 318-19؟ وليش؟');
     if (id === 'rebar' || id === 'phys' || id === 'detail66') L.push('شكد طول التماسك لـ Ø25 حديد علوي و f\'c = 28؟', 'شنو الفرق بين الوصلة صنف A و B؟', 'شكد قطر ثني الكانة Ø10 وامتداد عكفتها؟');
     if (id === 'loads' || id === 'seismic' || id === 'wind') L.push('شنو الحمل الحي للمدارس والمكاتب بالكود العراقي؟', 'احسب القوة الزلزالية لمبنى 4 طوابق ارتفاعه 13 م ووزنه 9000 kN بأربيل');
+    if (id === 'mega') L.push(c.mega && c.mega.element ? 'اشرح لي هذا العنصر: ليش هو بهذا المكان وشلون ينتقل الحمل بيه؟' : 'شنو النظام الإنشائي لهذا المشروع وليش اختاروه؟', 'شنو الدرس اللي أطبّقه من هذا المشروع على مبنى عادي؟');
     if (!c.project && id === 'wizard') L.push('شلون أبدي مشروع جديد بالمعالج؟');
     L.push('شنو الأكواد اللي تعتمدها المنصة؟', 'شكد الغطاء الخرساني للأساسات والجسور؟');
     return [...new Set(L)].slice(0, 5);

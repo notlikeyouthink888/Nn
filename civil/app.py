@@ -169,6 +169,17 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(meta(), ensure_ascii=False))
         if path == '/api/cad/job':
             return self._job_status(self.path.partition('id=')[2][:40])
+        if path == '/api/cad/demo':                # ملف مخططات تجريبي من صنع المنصة (يُولَّد عند الطلب، لا يُحفظ)
+            import caddemo
+            data = caddemo.build().encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/dxf')
+            self.send_header('Content-Disposition', 'attachment; filename="%s"' % caddemo.NAME)
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            try: return self.wfile.write(data)
+            except BrokenPipeError: return
         if path.startswith('/api/ai/'):
             try: return AI.handle_get(self, path[8:])
             except Exception as e:

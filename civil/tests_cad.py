@@ -292,6 +292,90 @@ class TestTablesAndScale(unittest.TestCase):
         self.assertEqual(C.scale_from_dims_wide(ents)['scale'], 1.0)
 
 
+class TestDemoBuilding(unittest.TestCase):
+    """الملف التجريبي (caddemo.py) من صنع المنصة: مجموعة لوحات كاملة تُقرأ كما رُسمت.
+    اختبار ذهبي للقارئ يشتغل دائماً — بلا ملفات المستخدم."""
+    @classmethod
+    def setUpClass(cls):
+        import caddemo
+        import cadread
+        cls.D = caddemo
+        cls.R = cadread.read_set(caddemo.payload())
+        cls.B = cls.R['buildings'][0]
+
+    def test_sheets_titles_and_floors(self):
+        R = self.R
+        self.assertTrue(R['ok'])
+        self.assertEqual([(d['kind'], d['floor'] and d['floor']['key'], d['title_trusted']) for d in R['drawings']],
+                         [('cols_key', None, True), ('beams_key', 'ground', True), ('slab_rft', 'ground', True),
+                          ('beams_key', 'first', True), ('slab_rft', 'first', True)])
+        self.assertTrue(all(d['building_name'] == 'Block-A' for d in R['drawings']))
+        self.assertEqual([d['thickness'] for d in R['drawings'] if d['kind'] == 'slab_rft'], [200, 200])
+        self.assertEqual(R['unknown'], [])
+        self.assertEqual(len(R['buildings']), 1)
+
+    def test_axes_and_scale(self):
+        B, R = self.B, self.R
+        self.assertEqual(B['axes_sig'], '1→4 × A→C')
+        self.assertEqual([(a['name'], round(a['pos'], 3)) for a in B['grid']['x']], [(n, x) for n, x in self.D.XS])
+        self.assertEqual([(a['name'], round(a['pos'], 3)) for a in B['grid']['y']], [(n, y) for n, y in self.D.YS])
+        self.assertEqual(R['scale'], 1.0)
+        self.assertEqual([round(v, 2) for v in B['size']], [16.5, 10.0])
+
+    def test_columns_and_beams_as_drawn(self):
+        fl = self.B['floors']
+        self.assertEqual([f['key'] for f in fl], ['ground', 'first'])
+        for f in fl:
+            cols = {(round(c['x'], 2), round(c['y'], 2)): c for c in f['columns']}
+            self.assertEqual(len(cols), 12)
+            for i, (_, x) in enumerate(self.D.XS):
+                for j, (_, y) in enumerate(self.D.YS):
+                    c, mk = cols[(x, y)], self.D.col_mark(i, j)
+                    self.assertEqual((c['mark'], c['b'], c['h']), (mk,) + self.D.COLS[mk])
+            self.assertEqual(len(f['beams']), 17)                      # 3×3 على A/B/C + 2×4 على 1…4
+            self.assertEqual(sorted({(b['mark'], b['b'], b['h']) for b in f['beams']}), [('B1', 300, 600), ('B2', 300, 500)])
+            self.assertFalse(any(b['guess'] for b in f['beams']))
+            self.assertEqual(f['slab']['t'], 200)
+            self.assertEqual((f['slab']['mesh']['bot']['d'], f['slab']['mesh']['bot']['s']), (12, 150))
+            self.assertEqual((f['slab']['mesh']['top']['d'], f['slab']['mesh']['top']['s']), (12, 200))
+        self.assertEqual([len(f['slab']['openings']) for f in fl], [1, 0])     # فتحة الدرج بسقف الأرضي فقط
+        op = fl[0]['slab']['openings'][0]
+        self.assertAlmostEqual(op['x1'] - op['x0'], 3.0, places=2)
+        self.assertAlmostEqual(op['y1'] - op['y0'], 3.2, places=2)
+
+    def test_schedules_and_materials(self):
+        S = self.R['schedules']
+        self.assertEqual((S['beams']['B1']['b'], S['beams']['B1']['h']), (300, 600))
+        self.assertEqual(S['beams']['B1']['bot']['cont'], dict(n=3, d=20))
+        self.assertEqual(S['beams']['B1']['stir']['end']['s'], 100)
+        self.assertIsNone(S['beams']['B2']['bot']['extra'])                    # «----» = غير موجود
+        self.assertEqual(sorted(S['columns']), ['C1', 'C2'])
+        self.assertEqual(S['columns']['C1']['ground']['main'], dict(n=8, d=20))
+        self.assertEqual(S['columns']['C1']['first']['main'], dict(n=8, d=16))
+        self.assertEqual(S['columns']['C1']['ground']['ties'], dict(d=10, s=125, sets=2))
+        self.assertEqual(self.R['materials'], dict(fc=30, fy=420, cover=25))
+        self.assertEqual({d['mark']: (d['size']['b'], d['size']['h']) for d in self.R['definitions']}, dict(C1=(400, 600), C2=(400, 400)))
+        self.assertEqual(sorted(t['kind'] for t in self.R['tables']), ['beams', 'columns'])
+
+    def test_notes_arabic_and_english_and_footings(self):
+        txt = ' | '.join(n['text'] for n in self.R['notes'])
+        self.assertIn('الغطاء الخرساني للأساسات 75 مم', txt)
+        self.assertIn('Lap splices shall be staggered', txt)
+        self.assertEqual(self.R['text_stats']['fixes'], dict(ok=sum(1 for e in self.D.payload()['ents'] if e['t'] == 'T')))
+        ft = self.B['footings']
+        self.assertEqual(len(ft), 12)
+        self.assertTrue(all(f['ok'] and f['designed'] for f in ft))
+
+    def test_dxf_text_matches_entities(self):
+        txt, P = self.D.build(), self.D.payload()
+        self.assertTrue(txt.startswith('0\nSECTION') and txt.rstrip().endswith('EOF'))
+        n = dict(L=txt.count('\n0\nLINE\n8\n'), C=txt.count('\n0\nCIRCLE\n8\n'), T=txt.count('\n0\nTEXT\n8\n'))   # «0» قبلها: كيان لا اسم طبقة
+        for t in 'LCT':
+            self.assertEqual(n[t], sum(1 for e in P['ents'] if e['t'] == t), t)
+        self.assertLess(len(txt), 80000)
+        self.assertEqual(sum(l['n'] for l in P['layers']), len(P['ents']))
+
+
 SCHOOL = os.environ.get('SCHOOL_FIXTURE')
 
 

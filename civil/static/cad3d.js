@@ -653,6 +653,13 @@ const CAD3D = (() => {
         return m ? m.userData : null;
       },
       reset,
+      // فصل الطوابق (0 إلى 1): يباعد كل سقف عن اللي جوّاه للعرض فقط — الدرج والأساسات تبقى بمكانها
+      explode(k) {
+        const gap = Math.max(0, Math.min(1, +k || 0)) * Math.max(3, (B.height || 3) * 0.9);
+        let i = 0;
+        floorsG.forEach(F => { if (F.f.key === 'stairs') return; F.g.position.y = i * gap; i++; });
+        draw();
+      },
       stats() { return { floors: floorsG.length, pick: pickables.length, bars: nBars }; },
       canvas: () => rn.domElement,
       dispose() {

@@ -70,8 +70,8 @@ const CADPAGE = (() => {
   }
 
   function html() {
-    return `<div id="cad">
-      <div class="card"><h3>🧩 الأوتوكاد — اقرأ مجموعة مخططاتك وركّب المبنى</h3>
+    // منطقة الرفع الجديدة (سحب وإفلات + ملف تجريبي + تقدّم بالمراحل) من cadux.js — وإن لم تُحمَّل فالبطاقة الأصلية كما كانت
+    const up = window.CADUX ? CADUX.uploadHtml() : `      <div class="card"><h3>🧩 الأوتوكاد — اقرأ مجموعة مخططاتك وركّب المبنى</h3>
         <div class="f"><div><label>ملف DWG أو DXF إنشائي (عدة لوحات بملف واحد)</label>
           <input type="file" id="cad_file" accept=".dwg,.dxf" multiple></div></div>
         <div class="note" style="margin-top:6px">تقدر تختار <b>أكثر من ملف</b> مرة وحدة (معماري + إنشائي، أو مباني المشروع كلها) — تُدمج بمشروع واحد:
@@ -79,7 +79,10 @@ const CADPAGE = (() => {
           <button class="btn gh" id="cad_add_btn" style="display:none;margin-inline-start:6px">➕ أضف ملفاً آخر للمشروع</button>
           <input type="file" id="cad_add" accept=".dwg,.dxf" multiple style="display:none"></div>
         <div id="cad_msg" class="note" style="margin-top:8px">ارفع ملف المخططات: لوحات تسليح السقوف،
-          مفاتيح الجسور والأعمدة، وجداول الجسور والأعمدة — يُقرأ كل شي ويُركّب المبنى تلقائياً.</div></div>
+          مفاتيح الجسور والأعمدة، وجداول الجسور والأعمدة — يُقرأ كل شي ويُركّب المبنى تلقائياً.</div></div>`;
+    return `<div id="cad">
+      ${up}
+      <div id="cad_health"></div>
       <div class="ctabs">${TABS.map(([k, t]) => `<button data-t="${k}" class="${k === TAB ? 'on' : ''}">${t}</button>`).join('')}</div>
       ${TABS.map(([k]) => `<div class="cp${k === TAB ? ' on' : ''}" data-p="${k}"></div>`).join('')}
     </div>`;
@@ -101,6 +104,7 @@ const CADPAGE = (() => {
       if (a) { e.preventDefault(); e.stopPropagation(); CADAUDIT.openKey(a.dataset.aud, cur(), RES, OPTS); return; }
       if (e.target.closest('[data-cdos]') && LASTPICK) CADAUDIT.openPick(LASTPICK, VIEWB || cur(), RES, OPTS);
     });
+    if (window.CADUX) CADUX.init({ load, tab, state: () => ({ RES, BI, OPTS }), view: () => VIEW });
     render();
     // مغادرة الصفحة = تحرير العارض (لا يبقى WebGL معلّقاً)
     window.addEventListener('hashchange', () => { if (location.hash !== '#cad') drop3d(); });
@@ -109,6 +113,7 @@ const CADPAGE = (() => {
   function msg(s, cls) {
     const m = q('#cad_msg');
     if (m) { m.innerHTML = s; m.style.color = cls === 'bad' ? '#fca5a5' : ''; }
+    if (window.CADUX) CADUX.progress(s, cls);
   }
 
   async function load(files, append) {
@@ -293,6 +298,7 @@ const CADPAGE = (() => {
       P('file').innerHTML = `<div class="card"><h3>ماذا يفهم هذا القسم؟</h3>${dictHtml(true)}</div>`;
       ['dash', 'sheets', 'axes', 'tables', 'audit', 'notes', 'floors', 'stairs', 'layers', '3d', 'send'].forEach(k =>
         P(k).innerHTML = '<div class="note">ارفع الملف أولاً.</div>');
+      if (window.CADUX) CADUX.afterRender(null, null);
       return;
     }
     P('file').innerHTML = fileTab();
@@ -308,6 +314,7 @@ const CADPAGE = (() => {
     P('3d').innerHTML = view3dTab();
     P('send').innerHTML = sendTab();
     bind();
+    if (window.CADUX) CADUX.afterRender(RES, cur());
     if (TAB === '3d') show3d();
   }
 
